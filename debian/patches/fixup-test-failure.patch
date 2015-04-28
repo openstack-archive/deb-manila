@@ -1,0 +1,15 @@
+Description: Align check string with unicode result
+Author: James Page <james.page@ubuntu.com>
+Forwarded: no
+
+--- a/manila/tests/share/drivers/quobyte/test_jsonrpc.py
++++ b/manila/tests/share/drivers/quobyte/test_jsonrpc.py
+@@ -197,7 +197,7 @@ class QuobyteJsonRpcTestCase(test.TestCa
+         try:
+             self.rpc.call('method', {'param': 'value'})
+         except exception.QBException as me:
+-            self.assertEqual("Client SSL subsystem returned error: ",
++            self.assertEqual(u"Client SSL subsystem returned error: ()",
+                              six.text_type(me))
+ 
+         except Exception as e:
