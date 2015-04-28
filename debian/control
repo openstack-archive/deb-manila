@@ -1,8 +1,7 @@
 Source: manila
 Section: net
 Priority: extra
-Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
-XSBC-Original-Maintainer: Chuck Short <zulcss@ubuntu.com>
+Maintainer: PKG OpenStack <openstack-devel@lists.alioth.debian.org>
 Build-Depends:
  debhelper (>= 9~),
  dh-python,
