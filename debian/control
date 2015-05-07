@@ -8,7 +8,8 @@ Build-Depends:
  dh-python,
  dh-systemd,
  openstack-pkg-tools (>= 21ubuntu5~),
- python-all (>= 2.6)
+ python-all (>= 2.6),
+ python-pbr
 Build-Depends-Indep:
  alembic (>= 0.7.2),
  python-amqplib,
@@ -47,7 +48,6 @@ Build-Depends-Indep:
  python-paramiko,
  python-paste,
  python-pastedeploy,
- python-pbr,
  python-requests (>= 2.2.0),
  python-requests-mock (>= 0.5.1),
  python-routes,
