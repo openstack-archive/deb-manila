@@ -99,7 +99,7 @@ Depends: alembic (>= 0.7.2),
          python-webob (>= 1.2.3),
          ${misc:Depends},
          ${python:Depends},
-Description: Manila Python libraries
+Description: OpenStack shared file system service - Python libs
  OpenStack is a reliable cloud infrastructure. Its mission is to produce
  the ubiquitous cloud computing platform that will meet the needs of public
  and private cloud providers regardless of size, by being simple to implement
@@ -116,7 +116,7 @@ Depends: adduser,
          ${misc:Depends},
          ${python:Depends},
 Provides: ${python:Provides},
-Description: Manila storage service - common files
+Description: OpenStack shared file system service - common files
  OpenStack is a reliable cloud infrastructure. Its mission is to produce
  the ubiquitous cloud computing platform that will meet the needs of public
  and private cloud providers regardless of size, by being simple to implement
@@ -131,7 +131,7 @@ Architecture: all
 Depends: manila-common (= ${binary:Version}),
          ${misc:Depends},
          ${python:Depends},
-Description: Manila storage service - API server
+Description: OpenStack shared file system service - API server
  OpenStack is a reliable cloud infrastructure. Its mission is to produce
  the ubiquitous cloud computing platform that will meet the needs of public
  and private cloud providers regardless of size, by being simple to implement
@@ -146,7 +146,7 @@ Architecture: all
 Depends: manila-common (= ${binary:Version}),
          ${misc:Depends},
          ${python:Depends},
-Description: Manila storage service - Scheduler server
+Description: OpenStack shared file system service - Scheduler server
  OpenStack is a reliable cloud infrastructure. Its mission is to produce
  the ubiquitous cloud computing platform that will meet the needs of public
  and private cloud providers regardless of size, by being simple to implement

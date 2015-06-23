@@ -1,4 +1,0 @@
-etc/manila
-var/lib/manila
-var/log/manila
-var/lib/manila/volumes

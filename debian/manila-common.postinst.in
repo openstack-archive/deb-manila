@@ -1,0 +1,40 @@
+#!/bin/sh
+
+set -e
+
+#PKGOS-INCLUDE#
+
+if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
+	pkgos_var_user_group manila
+
+	# We need that extra folder.
+	mkdir /var/lib/manila/volumes
+	chown -R manila:manila /var/lib/manila/volumes
+
+	# Install config files.
+	pkgos_write_new_conf manila manila.conf
+	pkgos_write_new_conf manila api-paste.ini
+	pkgos_write_new_conf manila logging.conf
+	pkgos_write_new_conf manila policy.json
+	pkgos_write_new_conf manila rootwrap.conf
+	chown root:root /etc/manila/rootwrap.conf
+	if ! [ -e /etc/manila/rootwrap.d ] ; then
+		cp -auxf /usr/share/manila-common/rootwrap.d /etc/manila
+		chown -R root:root /etc/manila/rootwrap.d
+		chmod 0755 /etc/manila/rootwrap.d
+	fi
+
+
+	if ! grep -q sql_connection /etc/manila/manila.conf ; then
+		su -s /bin/sh -c 'manila-manage db sync' manila
+	fi
+
+	if [ -e /var/lib/manila/manila.sqlite ]; then
+		chown manila:manila /var/lib/manila/manila.sqlite
+		chmod 0600 /var/lib/manila/manila.sqlite
+	fi
+fi
+
+#DEBHELPER#
+
+exit 0

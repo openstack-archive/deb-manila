@@ -11,13 +11,24 @@ export OSLO_PACKAGE_VERSION=$(VERSION)
 
 override_dh_auto_build:
 	dh_auto_build
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func manila-common.postinst
+
+	# Generate the config file
+	mkdir -p $(CURDIR)/debian/manila-common/usr/share/manila-common
 	oslo-config-generator --config-file etc/oslo-config-generator/manila.conf \
-		--output-file etc/manila/manila.conf
+		--output-file $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
+	# and copy the remaining
+	for i in api-paste.ini policy.json rootwrap.conf ; do \
+		cp $(CURDIR)/etc/manila/$$i $(CURDIR)/debian/manila-common/usr/share/manila-common ; \
+	fi
+	cp $(CURDIR)/etc/manila/logging_sample.conf $(CURDIR)/debian/manila-common/usr/share/manila-common/logging.conf
+	cp -rfv $(CURDIR)/etc/manila/rootwrap.d $(CURDIR)/debian/manila-common/usr/share/manila-common
 
 override_dh_auto_clean:
 	dh_auto_clean
 	rm -f etc/manila/manila.conf
 	rm -f debian/*.service debian/*.upstart debian/*.init
+	rm -f debian/manila-common.postinst
 
 override_dh_install:
 	dh_install --fail-missing
