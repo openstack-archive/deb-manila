@@ -1,0 +1,9 @@
+Document: manila-doc
+Title: Manila Documentation
+Author: N/A
+Abstract: Sphinx documentation for Manila
+Section: Programming/Python
+
+Format: HTML
+Index: /usr/share/doc/manila-doc/html/index.html
+Files: /usr/share/doc/manila-doc/html/*

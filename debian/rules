@@ -7,7 +7,7 @@ include /usr/share/openstack-pkg-tools/pkgos.make
 export OSLO_PACKAGE_VERSION=$(VERSION)
 
 %:
-	dh $@ --buildsystem=python_distutils --with python2,systemd
+	dh $@ --buildsystem=python_distutils --with python2,systemd,sphinxdoc
 
 override_dh_auto_build:
 	dh_auto_build -O--buildsystem=python_distutils
@@ -51,4 +51,10 @@ ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 		rm -f $$TEMP_REZ ; \
 		testr-python$$PYMAJOR slowest ; \
 	done
+endif
+
+override_dh_sphinxdoc:
+ifeq (,$(findstring nodocs, $(DEB_BUILD_OPTIONS)))
+	sphinx-build -b html doc/source $(CURDIR)/debian/manila-doc/usr/share/doc/manila-doc/html
+	dh_sphinxdoc -O--buildsystem=python_distutils
 endif
