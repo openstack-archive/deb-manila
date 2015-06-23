@@ -7,16 +7,20 @@ include /usr/share/openstack-pkg-tools/pkgos.make
 export OSLO_PACKAGE_VERSION=$(VERSION)
 
 %:
-	dh $@ --with python2,systemd
+	dh $@ --buildsystem=python_distutils --with python2,systemd
 
 override_dh_auto_build:
-	dh_auto_build
+	dh_auto_build -O--buildsystem=python_distutils
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func manila-common.postinst
+
+override_dh_auto_install:
+	dh_auto_install -O--buildsystem=python_distutils
 
 	# Generate the config file
 	mkdir -p $(CURDIR)/debian/manila-common/usr/share/manila-common
 	oslo-config-generator --config-file etc/oslo-config-generator/manila.conf \
 		--output-file $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
+
 	# and copy the remaining
 	set -e ; for i in api-paste.ini policy.json rootwrap.conf ; do \
 		cp $(CURDIR)/etc/manila/$$i $(CURDIR)/debian/manila-common/usr/share/manila-common ; \
