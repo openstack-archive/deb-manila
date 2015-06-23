@@ -20,7 +20,7 @@ override_dh_auto_build:
 	# and copy the remaining
 	for i in api-paste.ini policy.json rootwrap.conf ; do \
 		cp $(CURDIR)/etc/manila/$$i $(CURDIR)/debian/manila-common/usr/share/manila-common ; \
-	fi
+	done
 	cp $(CURDIR)/etc/manila/logging_sample.conf $(CURDIR)/debian/manila-common/usr/share/manila-common/logging.conf
 	cp -rfv $(CURDIR)/etc/manila/rootwrap.d $(CURDIR)/debian/manila-common/usr/share/manila-common
 
@@ -33,7 +33,18 @@ override_dh_auto_clean:
 override_dh_install:
 	dh_install --fail-missing
 
-ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 override_dh_auto_test:
-	./run_tests.sh -N -P
+ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
+	@echo "===> Running tests"
+	set -e ; set -x ; for i in 2.7 ; do \
+		PYMAJOR=`echo $$i | cut -d'.' -f1` ; \
+		echo "===> Testing with python$$i (python$$PYMAJOR)" ; \
+		rm -rf .testrepository ; \
+		testr-python$$PYMAJOR init ; \
+		TEMP_REZ=`mktemp -t` ; \
+		PYTHONPATH=$(CURDIR) PYTHON=python$$i testr-python$$PYMAJOR run --subunit | tee $$TEMP_REZ | subunit2pyunit ; \
+		cat $$TEMP_REZ | subunit-filter -s --no-passthrough | subunit-stats ; \
+		rm -f $$TEMP_REZ ; \
+		testr-python$$PYMAJOR slowest ; \
+	done
 endif
