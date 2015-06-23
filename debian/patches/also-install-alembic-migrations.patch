@@ -2,7 +2,7 @@ Description: Also install alembic migrations
  The upstream MANIFEST.in doesn't have the necessary to install the files in
  the manila/db/migrations/alembic_migrations folder. This patch fixes it.
 Author: Thomas Goirand <zigo@debian.org>
-Forwarded: no
+Forwarded: yes, https://review.openstack.org/194553
 Last-Update: 2015-06-17
 
 --- manila-2015.1.0.orig/MANIFEST.in
