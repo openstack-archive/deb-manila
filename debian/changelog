@@ -1,5 +1,5 @@
 manila (2015.1.0-1) unstable; urgency=medium
 
-  * Initial release
+  * Initial release (Closes: #789660).
 
  -- Malihe Asemani <ml.asemani@gmail.com>  Thu, 07 May 2015 10:04:28 +0000

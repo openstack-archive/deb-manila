@@ -99,13 +99,15 @@ Depends: alembic (>= 0.7.2),
          python-webob (>= 1.2.3),
          ${misc:Depends},
          ${python:Depends},
-Description: OpenStack shared file system service - Python libs
- OpenStack is a reliable cloud infrastructure. Its mission is to produce
- the ubiquitous cloud computing platform that will meet the needs of public
- and private cloud providers regardless of size, by being simple to implement
- and massively scalable.
- .
- Manila is the OpenStack shared filesystem service.
+Description: OpenStack shared file system as a service - Python libs
+ Manila is an OpenStack project to provide Shared Filesystems as a service.
+ It provides coordinated access to shared or distributed file systems. While
+ the primary consumption of file shares would be across OpenStack Compute
+ instances, the service is also intended to be accessible as an independent
+ capability in line with the modular design established by other OpenStack
+ services. Manila is extensible for multiple backends (to support vendor or
+ file system specific nuances / capabilities) and accommodates any of a
+ variety of shared or distributed file system types.
  .
  This package contains the Python library for Manila.
 
@@ -116,13 +118,15 @@ Depends: adduser,
          ${misc:Depends},
          ${python:Depends},
 Provides: ${python:Provides},
-Description: OpenStack shared file system service - common files
- OpenStack is a reliable cloud infrastructure. Its mission is to produce
- the ubiquitous cloud computing platform that will meet the needs of public
- and private cloud providers regardless of size, by being simple to implement
- and massively scalable.
- .
- Manila is the OpenStack shared filesystem service.
+Description: OpenStack shared file system as a service - common files
+ Manila is an OpenStack project to provide Shared Filesystems as a service.
+ It provides coordinated access to shared or distributed file systems. While
+ the primary consumption of file shares would be across OpenStack Compute
+ instances, the service is also intended to be accessible as an independent
+ capability in line with the modular design established by other OpenStack
+ services. Manila is extensible for multiple backends (to support vendor or
+ file system specific nuances / capabilities) and accommodates any of a
+ variety of shared or distributed file system types.
  .
  This package contains commons components for Manila.
 
@@ -131,13 +135,15 @@ Architecture: all
 Depends: manila-common (= ${binary:Version}),
          ${misc:Depends},
          ${python:Depends},
-Description: OpenStack shared file system service - API server
- OpenStack is a reliable cloud infrastructure. Its mission is to produce
- the ubiquitous cloud computing platform that will meet the needs of public
- and private cloud providers regardless of size, by being simple to implement
- and massively scalable.
- .
- Manila is the OpenStack shared filesystem storage service.
+Description: OpenStack shared file system as a service - API server
+ Manila is an OpenStack project to provide Shared Filesystems as a service.
+ It provides coordinated access to shared or distributed file systems. While
+ the primary consumption of file shares would be across OpenStack Compute
+ instances, the service is also intended to be accessible as an independent
+ capability in line with the modular design established by other OpenStack
+ services. Manila is extensible for multiple backends (to support vendor or
+ file system specific nuances / capabilities) and accommodates any of a
+ variety of shared or distributed file system types.
  .
  This package contains the Manila API server.
 
@@ -146,12 +152,14 @@ Architecture: all
 Depends: manila-common (= ${binary:Version}),
          ${misc:Depends},
          ${python:Depends},
-Description: OpenStack shared file system service - Scheduler server
- OpenStack is a reliable cloud infrastructure. Its mission is to produce
- the ubiquitous cloud computing platform that will meet the needs of public
- and private cloud providers regardless of size, by being simple to implement
- and massively scalable.
- .
- Manila is the OpenStack shared filesystem service.
+Description: OpenStack shared file system as a service - Scheduler server
+ Manila is an OpenStack project to provide Shared Filesystems as a service.
+ It provides coordinated access to shared or distributed file systems. While
+ the primary consumption of file shares would be across OpenStack Compute
+ instances, the service is also intended to be accessible as an independent
+ capability in line with the modular design established by other OpenStack
+ services. Manila is extensible for multiple backends (to support vendor or
+ file system specific nuances / capabilities) and accommodates any of a
+ variety of shared or distributed file system types.
  .
  This package contains the Manila Scheduler server
