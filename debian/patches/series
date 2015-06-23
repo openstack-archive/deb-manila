@@ -1,2 +1,3 @@
 fixup-test-failure.patch
 skipped-tests.patch
+also-install-alembic-migrations.patch
