@@ -163,4 +163,21 @@ Description: OpenStack shared file system as a service - Scheduler server
  file system specific nuances / capabilities) and accommodates any of a
  variety of shared or distributed file system types.
  .
- This package contains the Manila Scheduler server
+ This package contains the Manila Scheduler server.
+
+Package: manila-share
+Architecture: all
+Depends: manila-common (= ${binary:Version}),
+         ${misc:Depends},
+         ${python:Depends},
+Description: OpenStack shared file system as a service - Share server
+ Manila is an OpenStack project to provide Shared Filesystems as a service.
+ It provides coordinated access to shared or distributed file systems. While
+ the primary consumption of file shares would be across OpenStack Compute
+ instances, the service is also intended to be accessible as an independent
+ capability in line with the modular design established by other OpenStack
+ services. Manila is extensible for multiple backends (to support vendor or
+ file system specific nuances / capabilities) and accommodates any of a
+ variety of shared or distributed file system types.
+ .
+ This package contains the Manila Share daemon.

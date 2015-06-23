@@ -8,13 +8,10 @@
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
 # Short-Description: Manila API
-# Description:       Shared filesytem services for instances
+# Description:       Shared filesytem services for instances: API
 ### END INIT INFO
 
-# Author: James Page <james.page@ubuntu.com>
-
-# PATH should only include /usr/* if it runs after the mountnfs.sh script
-PATH=/sbin:/usr/sbin:/bin:/usr/bin
+# Author: James Page <james.page@ubuntu.com>, Thomas Goirand <zigo@debian.org>
 DESC="OpenStack Manila API"
 PROJECT_NAME=manila
 NAME=${PROJECT_NAME}-api

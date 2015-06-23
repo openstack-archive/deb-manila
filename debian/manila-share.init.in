@@ -1,17 +1,17 @@
 #!/bin/sh
 ### BEGIN INIT INFO
-# Provides:          manila-scheduler
+# Provides:          manila-share
 # Required-Start:    $network $local_fs $remote_fs $syslog
 # Required-Stop:     $remote_fs
 # Should-Start:      postgresql mysql keystone rabbitmq-server ntp
 # Should-Stop:       postgresql mysql keystone rabbitmq-server ntp
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
-# Short-Description: Manila Scheduler
-# Description:       Shared filesytem services for instances: Scheduler
+# Short-Description: Manila Share
+# Description:       Shared filesytem services for instances: share service
 ### END INIT INFO
 
-# Author: James Page <james.page@ubuntu.com>, Thomas Goirand <zigo@debian.org>
-DESC="OpenStack Manila Scheduler"
+# Author: Thomas Goirand <zigo@debian.org>
+DESC="OpenStack Manila API"
 PROJECT_NAME=manila
-NAME=${PROJECT_NAME}-scheduler
+NAME=${PROJECT_NAME}-share
