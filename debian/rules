@@ -18,7 +18,7 @@ override_dh_auto_build:
 	oslo-config-generator --config-file etc/oslo-config-generator/manila.conf \
 		--output-file $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
 	# and copy the remaining
-	for i in api-paste.ini policy.json rootwrap.conf ; do \
+	set -e ; for i in api-paste.ini policy.json rootwrap.conf ; do \
 		cp $(CURDIR)/etc/manila/$$i $(CURDIR)/debian/manila-common/usr/share/manila-common ; \
 	done
 	cp $(CURDIR)/etc/manila/logging_sample.conf $(CURDIR)/debian/manila-common/usr/share/manila-common/logging.conf
