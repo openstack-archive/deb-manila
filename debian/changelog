@@ -1,4 +1,4 @@
-manila (2015.1.0-1) unstable; urgency=medium
+manila (1.0.0~b2-1) unstable; urgency=medium
 
   * Initial release (Closes: #789660).
 
