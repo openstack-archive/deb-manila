@@ -26,7 +26,7 @@ Supports working with multiple glusterfs volumes.
 """
 
 import errno
-import pipes
+import os
 import random
 import re
 import shutil
@@ -117,10 +117,9 @@ class GlusterfsNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         1.1 - Support for working with multiple gluster volumes.
     """
 
-    def __init__(self, db, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super(GlusterfsNativeShareDriver, self).__init__(
             False, *args, **kwargs)
-        self.db = db
         self._helpers = None
         self.gluster_used_vols_dict = {}
         self.configuration.append_config_values(
@@ -223,24 +222,6 @@ class GlusterfsNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 LOG.error(msg)
                 raise
 
-        # Update gluster_used_vols_dict by walking through the DB.
-        self._update_gluster_vols_dict(context)
-        unused_vols = gluster_volumes_initial - set(
-            self.gluster_used_vols_dict)
-        if not unused_vols:
-            # No volumes available for use as share. Warn user.
-            msg = (_("No unused gluster volumes available for use as share! "
-                     "Create share won't be supported unless existing shares "
-                     "are deleted or some gluster volumes are created with "
-                     "names matching 'glusterfs_volume_pattern'."))
-            LOG.warn(msg)
-        else:
-            LOG.info(_LI("Number of gluster volumes in use:  "
-                         "%(inuse-numvols)s. Number of gluster volumes "
-                         "available for use as share: %(unused-numvols)s"),
-                     {'inuse-numvols': len(self.gluster_used_vols_dict),
-                     'unused-numvols': len(unused_vols)})
-
     def _glustermanager(self, gluster_address, has_volume=True):
         """Create GlusterManager object for gluster_address."""
 
@@ -287,18 +268,6 @@ class GlusterfsNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                         pattern_dict[key] = trans(keymatch)
                 volumes_dict[gsrv + ':/' + volname] = pattern_dict
         return volumes_dict
-
-    @utils.synchronized("glusterfs_native", external=False)
-    def _update_gluster_vols_dict(self, context):
-        """Update dict of gluster vols that are used/unused."""
-
-        shares = self.db.share_get_all(context)
-
-        for s in shares:
-            if (s['status'].lower() == 'available'):
-                vol = s['export_location']
-                gluster_mgr = self._glustermanager(vol)
-                self.gluster_used_vols_dict[vol] = gluster_mgr
 
     def _setup_gluster_vol(self, vol):
         # Enable gluster volumes for SSL access only.
@@ -390,6 +359,21 @@ class GlusterfsNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             set(d) for d in (voldict, self.gluster_used_vols_dict)
         )
         unused_vols = set1 - set2
+
+        if not unused_vols:
+            # No volumes available for use as share. Warn user.
+            msg = (_("No unused gluster volumes available for use as share! "
+                     "Create share won't be supported unless existing shares "
+                     "are deleted or some gluster volumes are created with "
+                     "names matching 'glusterfs_volume_pattern'."))
+            LOG.warn(msg)
+        else:
+            LOG.info(_LI("Number of gluster volumes in use:  "
+                         "%(inuse-numvols)s. Number of gluster volumes "
+                         "available for use as share: %(unused-numvols)s"),
+                     {'inuse-numvols': len(self.gluster_used_vols_dict),
+                     'unused-numvols': len(unused_vols)})
+
         # volmap is the data structure used to categorize and sort
         # the unused volumes. It's a nested dictionary of structure
         # {<size>: <hostmap>}
@@ -524,8 +508,24 @@ class GlusterfsNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             shutil.rmtree(tmpdir, ignore_errors=True)
             raise
 
-        # Delete only the contents, not the directory.
-        cmd = ['find', pipes.quote(tmpdir), '-mindepth', '1', '-delete']
+        # Delete the contents of a GlusterFS volume that is temporarily
+        # mounted.
+        # From GlusterFS version 3.7, two directories, '.trashcan' at the root
+        # of the GlusterFS volume and 'internal_op' within the '.trashcan'
+        # directory, are internally created when a GlusterFS volume is started.
+        # GlusterFS does not allow unlink(2) of the two directories. So do not
+        # delete the paths of the two directories, but delete their contents
+        # along with the rest of the contents of the volume.
+        srvaddr = gluster_mgr.management_address
+        if glusterfs.GlusterManager.numreduct(self.glusterfs_versions[srvaddr]
+                                              ) < (3, 7):
+            cmd = ['find', tmpdir, '-mindepth', '1', '-delete']
+        else:
+            ignored_dirs = map(lambda x: os.path.join(tmpdir, *x),
+                               [('.trashcan', ), ('.trashcan', 'internal_op')])
+            cmd = ['find', tmpdir, '-mindepth', '1', '!', '-path',
+                   ignored_dirs[0], '!', '-path', ignored_dirs[1], '-delete']
+
         try:
             self._execute(*cmd, run_as_root=True)
         except exception.ProcessExecutionError as exc:
@@ -622,15 +622,14 @@ class GlusterfsNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Creates a snapshot."""
-        # FIXME: need to access db to retrieve share data
-        vol = self.db.share_get(context,
-                                snapshot['share_id'])['export_location']
+
+        vol = snapshot['share']['export_location']
+        gluster_mgr = self.gluster_used_vols_dict[vol]
         if vol in self.gluster_nosnap_vols_dict:
             opret, operrno = -1, 0
             operrstr = self.gluster_nosnap_vols_dict[vol]
         else:
-            gluster_mgr = self.gluster_used_vols_dict[vol]
-            args = ('--xml', 'snapshot', 'create', snapshot['id'],
+            args = ('--xml', 'snapshot', 'create', 'manila-' + snapshot['id'],
                     gluster_mgr.volume)
             try:
                 out, err = gluster_mgr.gluster_call(*args)
@@ -651,7 +650,7 @@ class GlusterfsNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             operrstr = outxml.find('opErrstr').text
 
         if opret == -1:
-            vers = self.glusterfs_versions[vol]
+            vers = self.glusterfs_versions[gluster_mgr.management_address]
             if glusterfs.GlusterManager.numreduct(vers) > (3, 6):
                 # This logic has not yet been implemented in GlusterFS 3.6
                 if operrno == 0:
@@ -670,21 +669,36 @@ class GlusterfsNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Deletes a snapshot."""
-        # FIXME: need to access db to retrieve share data
-        vol = self.db.share_get(context,
-                                snapshot['share_id'])['export_location']
+
+        vol = snapshot['share']['export_location']
         gluster_mgr = self.gluster_used_vols_dict[vol]
-        args = ('--xml', 'snapshot', 'delete', snapshot['id'], '--mode=script')
+        args = ('snapshot', 'list', gluster_mgr.volume, '--mode=script')
         try:
             out, err = gluster_mgr.gluster_call(*args)
         except exception.ProcessExecutionError as exc:
-            LOG.error(_LE("Error retrieving volume info: %s"), exc.stderr)
-            raise exception.GlusterfsException("gluster %s failed" %
+            LOG.error(_LE("Error retrieving snapshot list: %s"), exc.stderr)
+            raise exception.GlusterfsException(_("gluster %s failed") %
+                                               ' '.join(args))
+        snapgrep = filter(lambda x: snapshot['id'] in x, out.split("\n"))
+        if len(snapgrep) != 1:
+            msg = (_("Failed to identify backing GlusterFS object "
+                     "for snapshot %(snap_id)s of share %(share_id)s: "
+                     "a single candidate was expected, %(found)d was found.") %
+                   {'snap_id': snapshot['id'],
+                    'share_id': snapshot['share_id'],
+                    'found': len(snapgrep)})
+            raise exception.GlusterfsException(msg)
+        args = ('--xml', 'snapshot', 'delete', snapgrep[0], '--mode=script')
+        try:
+            out, err = gluster_mgr.gluster_call(*args)
+        except exception.ProcessExecutionError as exc:
+            LOG.error(_LE("Error deleting snapshot: %s"), exc.stderr)
+            raise exception.GlusterfsException(_("gluster %s failed") %
                                                ' '.join(args))
 
         if not out:
             raise exception.GlusterfsException(
-                'gluster volume info %s: no data received' %
+                _('gluster snapshot delete %s: no data received') %
                 gluster_mgr.volume
             )
 
@@ -818,4 +832,6 @@ class GlusterfsNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def ensure_share(self, context, share, share_server=None):
         """Invoked to ensure that share is exported."""
-        pass
+        vol = share['export_location']
+        gluster_mgr = self._glustermanager(vol)
+        self.gluster_used_vols_dict[vol] = gluster_mgr

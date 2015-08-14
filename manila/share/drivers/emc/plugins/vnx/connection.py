@@ -18,6 +18,7 @@ from oslo_utils import excutils
 from oslo_utils import units
 import six
 
+from manila.common import constants as const
 from manila import db as manila_db
 from manila import exception
 from manila.i18n import _
@@ -30,7 +31,7 @@ from manila.share.drivers.emc.plugins.vnx import utils as vnx_utils
 from manila import utils
 
 
-VERSION = "0.1.0"
+VERSION = "1.0.0"
 
 LOG = log.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class VNXStorageConnection(driver.StorageConnection):
         share_name = share['name']
         size = share['size'] * units.Ki
         vdm = self.share_server_validation(share_server)
-        self.allocate_container(share_name, size, vdm['id'])
+        self._allocate_container(share_name, size, vdm['id'])
 
         if share['share_proto'] == 'NFS':
             location = self._create_nfs_share(share_name, vdm['name'],
@@ -88,7 +89,7 @@ class VNXStorageConnection(driver.StorageConnection):
 
         return {'id': vdm_id, 'name': vdm_name}
 
-    def allocate_container(self, share_name, size, vdm_id):
+    def _allocate_container(self, share_name, size, vdm_id):
         """Is called to allocate container for share."""
         status, out = self._XMLAPI_helper.create_file_system(
             share_name, size, self._pool['id'], vdm_id)
@@ -97,7 +98,7 @@ class VNXStorageConnection(driver.StorageConnection):
             LOG.error(message)
             raise exception.EMCVnxXMLAPIError(err=message)
 
-    def allocate_container_from_snapshot(self, share, snapshot, vdm_ref):
+    def _allocate_container_from_snapshot(self, share, snapshot, vdm_ref):
         """Is called to create share from snapshot."""
         self._replicate_snapshot(share, snapshot, self._mover_name, vdm_ref)
 
@@ -154,7 +155,7 @@ class VNXStorageConnection(driver.StorageConnection):
         """Is called to create share from snapshot."""
         share_name = share['name']
         vdm_ref = self.share_server_validation(share_server)
-        self.allocate_container_from_snapshot(share, snapshot, vdm_ref)
+        self._allocate_container_from_snapshot(share, snapshot, vdm_ref)
 
         if share['share_proto'] == 'NFS':
             self._create_nfs_share(share_name, vdm_ref['name'], share_server)
@@ -270,7 +271,7 @@ class VNXStorageConnection(driver.StorageConnection):
         name = share_name
         path = '/' + name
         if vdm_id is None:
-            vdm = self.get_vdm_by_name(vdm_name, allow_absence=True)
+            vdm = self._get_vdm_by_name(vdm_name, allow_absence=True)
             vdm_id = vdm['id'] if vdm else None
 
         if vdm_id is not None:
@@ -279,7 +280,7 @@ class VNXStorageConnection(driver.StorageConnection):
                 path,
                 'true')
             if constants.STATUS_OK != status:
-                if self._XMLAPI_helper._is_mount_point_unexist_error(out):
+                if self._XMLAPI_helper.is_mount_point_nonexistent(out):
                     LOG.warn(_LW("Mount point %(path)s on %(vdm)s not found."),
                              {'path': path, 'vdm': vdm_name})
                 else:
@@ -345,6 +346,9 @@ class VNXStorageConnection(driver.StorageConnection):
     def allow_access(self, emc_share_driver, context, share, access,
                      share_server=None):
         """Allow access to the share."""
+        access_level = access['access_level']
+        if access_level not in const.ACCESS_LEVELS:
+            raise exception.InvalidShareAccessLevel(level=access_level)
         if share['share_proto'] == 'NFS':
             self._nfs_allow_access(context, share, access, share_server)
         elif share['share_proto'] == 'CIFS':
@@ -367,12 +371,17 @@ class VNXStorageConnection(driver.StorageConnection):
         share_name = share['name']
         mover_name = self._get_vdm_name(share_server)
         user_name = access['access_to']
-
+        access_level = access['access_level']
+        if access_level == const.ACCESS_LEVEL_RW:
+            cifs_access = constants.CIFS_ACL_FULLCONTROL
+        else:
+            cifs_access = constants.CIFS_ACL_READ
         status, out = self._NASCmd_helper.allow_cifs_access(
             mover_name,
             share_name,
             user_name,
-            security_services[0]['domain'])
+            security_services[0]['domain'],
+            access=cifs_access)
         if constants.STATUS_OK != status:
             message = _("Could not allow CIFS access. Reason: %s.") % out
             LOG.error(message)
@@ -388,9 +397,10 @@ class VNXStorageConnection(driver.StorageConnection):
             raise exception.InvalidShareAccess(reason)
 
         host_ip = access['access_to']
+        access_level = access['access_level']
         mover_name = self._get_vdm_name(share_server)
         status, reason = self._NASCmd_helper.allow_nfs_share_access(
-            share_path, host_ip, mover_name)
+            share_path, host_ip, mover_name, access_level)
         if constants.STATUS_OK != status:
             message = (_("Could not allow access to NFS share. Reason: %s.")
                        % reason)
@@ -421,12 +431,17 @@ class VNXStorageConnection(driver.StorageConnection):
         share_name = share['name']
         mover_name = self._get_vdm_name(share_server)
         user_name = access['access_to']
-
+        access_level = access['access_level']
+        if access_level == const.ACCESS_LEVEL_RW:
+            cifs_access = constants.CIFS_ACL_FULLCONTROL
+        else:
+            cifs_access = constants.CIFS_ACL_READ
         status, out = self._NASCmd_helper.deny_cifs_access(
             mover_name,
             share_name,
             user_name,
-            security_services[0]['domain'])
+            security_services[0]['domain'],
+            access=cifs_access)
         if constants.STATUS_OK != status:
             message = (_("Could not deny access to CIFS share. Reason: %s.")
                        % out)
@@ -471,7 +486,7 @@ class VNXStorageConnection(driver.StorageConnection):
         self._NASCmd_helper = helper.NASCommandHelper(configuration)
 
         # To verify the input from manila configuration
-        self.get_mover_ref_by_name(self._mover_name)
+        self._get_mover_ref_by_name(self._mover_name)
         self._pool = self._get_available_pool_by_name(self._pool_name)
 
     def update_share_stats(self, stats_dict):
@@ -510,7 +525,7 @@ class VNXStorageConnection(driver.StorageConnection):
 
         try:
             # Refresh DataMover/VDM by the configuration
-            moverRef = self.get_mover_ref_by_name(self._mover_name)
+            moverRef = self._get_mover_ref_by_name(self._mover_name)
             if not self._vdm_exist(vdm_name):
                 LOG.debug('Share server %s not found, creating.', vdm_name)
                 self._create_vdm(vdm_name, moverRef)
@@ -566,11 +581,11 @@ class VNXStorageConnection(driver.StorageConnection):
         except Exception as ex:
             with excutils.save_and_reraise_exception():
                 LOG.error(_LE('Could not setup server. Reason: %s.'), ex)
-                server_details = self._contruct_backend_details(
+                server_details = self._construct_backend_details(
                     vdm_name, vdmRef, interface_info)
                 self.teardown_server(None, server_details, sec_services)
 
-    def _contruct_backend_details(self, vdm_name, vdmRef, interfaces):
+    def _construct_backend_details(self, vdm_name, vdmRef, interfaces):
         vdm_id = vdmRef['id'] if vdmRef else ""
         if_number = len(interfaces)
         cifs_if = interfaces[0]['ip'] if if_number > 0 else None
@@ -620,7 +635,7 @@ class VNXStorageConnection(driver.StorageConnection):
 
     def _configure_active_directory(self, security_service, vdmRef, interface):
 
-        moverRef = self.get_mover_ref_by_name(self._mover_name)
+        moverRef = self._get_mover_ref_by_name(self._mover_name)
         self._configure_dns(security_service, moverRef)
 
         data = {
@@ -667,10 +682,14 @@ class VNXStorageConnection(driver.StorageConnection):
             LOG.debug('Server details are empty.')
             return
 
-        vdm_name = server_details['share_server_name']
-        vdm_id = server_details['share_server_id']
-        cifs_if = server_details['cifs_if']
-        nfs_if = server_details['nfs_if']
+        vdm_name = server_details.get('share_server_name')
+        if not vdm_name:
+            LOG.debug('No share server found in server details.')
+            return
+
+        vdm_id = server_details.get('share_server_id')
+        cifs_if = server_details.get('cifs_if')
+        nfs_if = server_details.get('nfs_if')
 
         status, vdmRef = self._XMLAPI_helper.get_vdm_by_name(vdm_name)
         if constants.STATUS_OK != status or vdmRef['id'] != vdm_id:
@@ -747,7 +766,7 @@ class VNXStorageConnection(driver.StorageConnection):
 
         return self._pool
 
-    def get_mover_ref_by_name(self, name):
+    def _get_mover_ref_by_name(self, name):
         status, mover = self._XMLAPI_helper.get_mover_ref_by_name(name)
         if constants.STATUS_ERROR == status:
             message = _("Could not find Data Mover by name: %s.") % name
@@ -756,7 +775,7 @@ class VNXStorageConnection(driver.StorageConnection):
 
         return mover
 
-    def get_vdm_by_name(self, name, allow_absence=False):
+    def _get_vdm_by_name(self, name, allow_absence=False):
         status, vdm = self._XMLAPI_helper.get_vdm_by_name(name)
         if constants.STATUS_OK != status:
             if allow_absence and constants.STATUS_NOT_FOUND == status:

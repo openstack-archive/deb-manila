@@ -25,6 +25,8 @@ from oslo_log import log
 from oslo_utils import excutils
 from oslo_utils import importutils
 from oslo_utils import strutils
+from oslo_utils import units
+import retrying
 import six
 
 from manila.common import constants as const
@@ -59,6 +61,9 @@ share_opts = [
     cfg.IntOpt('max_time_to_create_volume',
                default=180,
                help="Maximum time to wait for creating cinder volume."),
+    cfg.IntOpt('max_time_to_extend_volume',
+               default=180,
+               help="Maximum time to wait for extending cinder volume."),
     cfg.IntOpt('max_time_to_attach',
                default=120,
                help="Maximum time to wait for attaching cinder volume."),
@@ -84,11 +89,14 @@ share_opts = [
 CONF = cfg.CONF
 CONF.register_opts(share_opts)
 
+# NOTE(u_glide): These constants refer to the column number in the "df" output
+BLOCK_DEVICE_SIZE_INDEX = 1
+USED_SPACE_INDEX = 2
+
 
 def ensure_server(f):
 
-    def wrap(self, *args, **kwargs):
-        context = args[0]
+    def wrap(self, context, *args, **kwargs):
         server = kwargs.get('share_server')
 
         if not self.driver_handles_share_servers:
@@ -113,7 +121,7 @@ def ensure_server(f):
                 context, server['backend_details']):
             raise exception.ServiceInstanceUnavailable()
 
-        return f(self, *args, **kwargs)
+        return f(self, context, *args, **kwargs)
 
     return wrap
 
@@ -121,12 +129,11 @@ def ensure_server(f):
 class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     """Executes commands relating to Shares."""
 
-    def __init__(self, db, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         """Do initialization."""
         super(GenericShareDriver, self).__init__(
             [False, True], *args, **kwargs)
         self.admin_context = context.get_admin_context()
-        self.db = db
         self.configuration.append_config_values(share_opts)
         self._helpers = {}
         self.backend_name = self.configuration.safe_get(
@@ -134,7 +141,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.ssh_connections = {}
         self.service_instance_manager = (
             service_instance.ServiceInstanceManager(
-                self.db, driver_config=self.configuration))
+                driver_config=self.configuration))
+        self.private_storage = kwargs.get('private_storage')
 
     def _ssh_exec(self, server, command):
         connection = self.ssh_connections.get(server['instance_id'])
@@ -294,6 +302,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 raise exception.ShareBackendException(msg=six.text_type(e))
         return _mount_device_with_lock()
 
+    @utils.retry(exception.ProcessExecutionError)
     def _unmount_device(self, share, server_details):
         """Unmounts block device from directory on service vm."""
 
@@ -337,10 +346,16 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                     raise exception.ManilaException(
                         _('Volume %s is already attached to another instance')
                         % volume['id'])
-            self.compute_api.instance_volume_attach(self.admin_context,
-                                                    instance_id,
-                                                    volume['id'],
-                                                    )
+
+            @retrying.retry(stop_max_attempt_number=3,
+                            wait_fixed=2000,
+                            retry_on_exception=lambda exc: True)
+            def attach_volume():
+                self.compute_api.instance_volume_attach(
+                    self.admin_context, instance_id, volume['id'])
+
+            attach_volume()
+
             t = time.time()
             while time.time() - t < self.configuration.max_time_to_attach:
                 volume = self.volume_api.get(context, volume['id'])
@@ -361,6 +376,16 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_volume(self, context, share_id):
         """Finds volume, associated to the specific share."""
+        volume_id = self.private_storage.get(share_id, 'volume_id')
+
+        if volume_id is not None:
+            return self.volume_api.get(context, volume_id)
+        else:  # Fallback to legacy method
+            return self._get_volume_legacy(context, share_id)
+
+    def _get_volume_legacy(self, context, share_id):
+        # NOTE(u_glide): this method is deprecated and will be removed in
+        # future versions
         volume_name = self._get_volume_name(share_id)
         search_opts = {'name': volume_name}
         if context.is_admin:
@@ -380,6 +405,17 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_volume_snapshot(self, context, snapshot_id):
         """Find volume snapshot associated to the specific share snapshot."""
+        volume_snapshot_id = self.private_storage.get(
+            snapshot_id, 'volume_snapshot_id')
+
+        if volume_snapshot_id is not None:
+            return self.volume_api.get_snapshot(context, volume_snapshot_id)
+        else:  # Fallback to legacy method
+            return self._get_volume_snapshot_legacy(context, snapshot_id)
+
+    def _get_volume_snapshot_legacy(self, context, snapshot_id):
+        # NOTE(u_glide): this method is deprecated and will be removed in
+        # future versions
         volume_snapshot_name = (
             self.configuration.volume_snapshot_name_template % snapshot_id)
         volume_snapshot_list = self.volume_api.get_all_snapshots(
@@ -418,7 +454,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 t = time.time()
                 while time.time() - t < self.configuration.max_time_to_attach:
                     volume = self.volume_api.get(context, volume['id'])
-                    if volume['status'] in ('available', 'error'):
+                    if volume['status'] in (const.STATUS_AVAILABLE,
+                                            const.STATUS_ERROR):
                         break
                     time.sleep(1)
                 else:
@@ -441,19 +478,32 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             snapshot=volume_snapshot,
             volume_type=self.configuration.cinder_volume_type)
 
+        self.private_storage.update(
+            share['id'], {'volume_id': volume['id']})
+
+        msg_error = _('Failed to create volume')
+        msg_timeout = (
+            _('Volume has not been created in %ss. Giving up') %
+            self.configuration.max_time_to_create_volume
+        )
+
+        return self._wait_for_available_volume(
+            volume, self.configuration.max_time_to_create_volume,
+            msg_error=msg_error, msg_timeout=msg_timeout
+        )
+
+    def _wait_for_available_volume(self, volume, timeout,
+                                   msg_error, msg_timeout):
         t = time.time()
-        while time.time() - t < self.configuration.max_time_to_create_volume:
-            if volume['status'] == 'available':
+        while time.time() - t < timeout:
+            if volume['status'] == const.STATUS_AVAILABLE:
                 break
-            if volume['status'] == 'error':
-                raise exception.ManilaException(_('Failed to create volume'))
+            if volume['status'] == const.STATUS_ERROR:
+                raise exception.ManilaException(msg_error)
             time.sleep(1)
-            volume = self.volume_api.get(context, volume['id'])
+            volume = self.volume_api.get(self.admin_context, volume['id'])
         else:
-            raise exception.ManilaException(
-                _('Volume have not been created '
-                  'in %ss. Giving up') %
-                self.configuration.max_time_to_create_volume)
+            raise exception.ManilaException(msg_timeout)
 
         return volume
 
@@ -503,6 +553,96 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                         share['name'])
         return location
 
+    @ensure_server
+    def extend_share(self, share, new_size, share_server=None):
+        server_details = share_server['backend_details']
+
+        helper = self._get_helper(share)
+        helper.disable_access_for_maintenance(server_details, share['name'])
+        self._unmount_device(share, server_details)
+        self._detach_volume(self.admin_context, share, server_details)
+
+        volume = self._get_volume(self.admin_context, share['id'])
+        volume = self._extend_volume(self.admin_context, volume, new_size)
+
+        volume = self._attach_volume(
+            self.admin_context,
+            share,
+            server_details['instance_id'],
+            volume)
+        self._resize_filesystem(server_details, volume)
+        self._mount_device(share, server_details, volume)
+        helper.restore_access_after_maintenance(server_details,
+                                                share['name'])
+
+    def _extend_volume(self, context, volume, new_size):
+        self.volume_api.extend(context, volume['id'], new_size)
+
+        msg_error = _('Failed to extend volume %s') % volume['id']
+        msg_timeout = (
+            _('Volume has not been extended in %ss. Giving up') %
+            self.configuration.max_time_to_extend_volume
+        )
+        return self._wait_for_available_volume(
+            volume, self.configuration.max_time_to_extend_volume,
+            msg_error=msg_error, msg_timeout=msg_timeout
+        )
+
+    @ensure_server
+    def shrink_share(self, share, new_size, share_server=None):
+        server_details = share_server['backend_details']
+
+        helper = self._get_helper(share)
+        export_location = share['export_locations'][0]['path']
+        mount_path = helper.get_share_path_by_export_location(
+            server_details, export_location)
+
+        consumed_space = self._get_consumed_space(mount_path, server_details)
+
+        LOG.debug("Consumed space on share: %s", consumed_space)
+
+        if consumed_space >= new_size:
+            raise exception.ShareShrinkingPossibleDataLoss(
+                share_id=share['id'])
+
+        volume = self._get_volume(self.admin_context, share['id'])
+
+        helper.disable_access_for_maintenance(server_details, share['name'])
+        self._unmount_device(share, server_details)
+
+        try:
+            self._resize_filesystem(server_details, volume, new_size=new_size)
+        except exception.Invalid:
+            raise exception.ShareShrinkingPossibleDataLoss(
+                share_id=share['id'])
+        except Exception as e:
+            msg = _("Cannot shrink share: %s") % six.text_type(e)
+            raise exception.Invalid(msg)
+        finally:
+            self._mount_device(share, server_details, volume)
+            helper.restore_access_after_maintenance(server_details,
+                                                    share['name'])
+
+    def _resize_filesystem(self, server_details, volume, new_size=None):
+        """Resize filesystem of provided volume."""
+        check_command = ['sudo', 'fsck', '-pf', volume['mountpoint']]
+        self._ssh_exec(server_details, check_command)
+        command = ['sudo', 'resize2fs', volume['mountpoint']]
+
+        if new_size:
+            command.append("%sG" % six.text_type(new_size))
+
+        try:
+            self._ssh_exec(server_details, command)
+        except processutils.ProcessExecutionError as e:
+            if e.stderr.find('New size smaller than minimum') != -1:
+                msg = (_("Invalid 'new_size' provided: %s")
+                       % six.text_type(new_size))
+                raise exception.Invalid(msg)
+            else:
+                msg = _("Cannot resize file-system: %s") % six.text_type(e)
+                raise exception.ManilaException(msg)
+
     def _is_share_server_active(self, context, share_server):
         """Check if the share server is active."""
         has_active_share_server = (
@@ -527,6 +667,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         # with any reason that caused absence of Nova instances.
         self._deallocate_container(self.admin_context, share)
 
+        self.private_storage.delete(share['id'])
+
     def create_snapshot(self, context, snapshot, share_server=None):
         """Creates a snapshot."""
         volume = self._get_volume(self.admin_context, snapshot['share_id'])
@@ -536,15 +678,18 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             self.admin_context, volume['id'], volume_snapshot_name, '')
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_create_volume:
-            if volume_snapshot['status'] == 'available':
+            if volume_snapshot['status'] == const.STATUS_AVAILABLE:
                 break
-            if volume_snapshot['status'] == 'error':
+            if volume_snapshot['status'] == const.STATUS_ERROR:
                 raise exception.ManilaException(_('Failed to create volume '
                                                   'snapshot'))
             time.sleep(1)
             volume_snapshot = self.volume_api.get_snapshot(
                 self.admin_context,
                 volume_snapshot['id'])
+
+            self.private_storage.update(
+                snapshot['id'], {'volume_snapshot_id': volume_snapshot['id']})
         else:
             raise exception.ManilaException(
                 _('Volume snapshot have not been '
@@ -566,6 +711,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                         volume_snapshot['id'])
             except exception.VolumeSnapshotNotFound:
                 LOG.debug('Volume snapshot was deleted successfully')
+                self.private_storage.delete(snapshot['id'])
                 break
             time.sleep(1)
         else:
@@ -718,6 +864,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 self.volume_api.update(self.admin_context, share_volume['id'],
                                        {'name': linked_volume_name})
 
+            self.private_storage.update(
+                share['id'], {'volume_id': share_volume['id']})
+
             share_size = share_volume['size']
         else:
             share_size = self._get_mounted_share_size(
@@ -727,19 +876,48 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             server_details, old_export_location)
         return {'size': share_size, 'export_locations': export_locations}
 
-    def _get_mounted_share_size(self, mount_path, server_details):
-        share_size_cmd = ['df', '-PBG', mount_path]
+    def _get_mount_stats_by_index(self, mount_path, server_details, index,
+                                  block_size='G'):
+        """Get mount stats using df shell command.
+
+        :param mount_path: Share path on share server
+        :param server_details: Share server connection details
+        :param index: Data index in df command output:
+            BLOCK_DEVICE_SIZE_INDEX - Size of block device
+            USED_SPACE_INDEX - Used space
+        :param block_size: size of block (example: G, M, Mib, etc)
+        :returns: value of provided index
+        """
+        share_size_cmd = ['df', '-PB%s' % block_size, mount_path]
         output, __ = self._ssh_exec(server_details, share_size_cmd)
         lines = output.split('\n')
+        return int(lines[1].split()[index][:-1])
 
+    def _get_mounted_share_size(self, mount_path, server_details):
         try:
-            size = int(lines[1].split()[1][:-1])
+            size = self._get_mount_stats_by_index(
+                mount_path, server_details, BLOCK_DEVICE_SIZE_INDEX)
         except Exception as e:
             msg = _("Cannot calculate size of share %(path)s : %(error)s") % {
                 'path': mount_path,
                 'error': six.text_type(e)
             }
             raise exception.ManageInvalidShare(reason=msg)
+
+        return size
+
+    def _get_consumed_space(self, mount_path, server_details):
+        try:
+            size = self._get_mount_stats_by_index(
+                mount_path, server_details, USED_SPACE_INDEX, block_size='M')
+            size /= float(units.Ki)
+        except Exception as e:
+            msg = _("Cannot calculate consumed space on share "
+                    "%(path)s : %(error)s") % {
+                'path': mount_path,
+                'error': six.text_type(e)
+            }
+            raise exception.InvalidShare(reason=msg)
 
         return size
 
@@ -785,6 +963,16 @@ class NASHelperBase(object):
     def get_share_path_by_export_location(self, server, export_location):
         """Returns share path by its export location."""
         raise NotImplementedError()
+
+    def disable_access_for_maintenance(self, server, share_name):
+        """Disables access to share to perform maintenance operations."""
+
+    def restore_access_after_maintenance(self, server, share_name):
+        """Enables access to share after maintenance operations were done."""
+
+    def _get_maintenance_file_path(self, share_name):
+        return os.path.join(self.configuration.share_mount_path,
+                            "%s.maintenance" % share_name)
 
 
 def nfs_synchronized(f):
@@ -876,6 +1064,32 @@ class NFSHelper(NASHelperBase):
 
     def get_share_path_by_export_location(self, server, export_location):
         return export_location.split(':')[-1]
+
+    @nfs_synchronized
+    def disable_access_for_maintenance(self, server, share_name):
+        maintenance_file = self._get_maintenance_file_path(share_name)
+        backup_exports = [
+            'cat', const.NFS_EXPORTS_FILE,
+            '| grep', share_name,
+            '| sudo tee', maintenance_file
+        ]
+        self._ssh_exec(server, backup_exports)
+
+        local_path = os.path.join(self.configuration.share_mount_path,
+                                  share_name)
+        self._ssh_exec(server, ['sudo', 'exportfs', '-u', local_path])
+        self._sync_nfs_temp_and_perm_files(server)
+
+    @nfs_synchronized
+    def restore_access_after_maintenance(self, server, share_name):
+        maintenance_file = self._get_maintenance_file_path(share_name)
+        restore_exports = [
+            'cat', maintenance_file,
+            '| sudo tee -a', const.NFS_EXPORTS_FILE,
+            '&& sudo exportfs -r',
+            '&& sudo rm -f', maintenance_file
+        ]
+        self._ssh_exec(server, restore_exports)
 
 
 class CIFSHelper(NASHelperBase):
@@ -1018,3 +1232,19 @@ class CIFSHelper(NASHelperBase):
 
         # Remove special symbols from response and return path
         return out.strip()
+
+    def disable_access_for_maintenance(self, server, share_name):
+        maintenance_file = self._get_maintenance_file_path(share_name)
+        allowed_hosts = " ".join(self._get_allow_hosts(server, share_name))
+
+        backup_exports = [
+            'echo', "'%s'" % allowed_hosts, '| sudo tee', maintenance_file
+        ]
+        self._ssh_exec(server, backup_exports)
+        self._set_allow_hosts(server, [], share_name)
+
+    def restore_access_after_maintenance(self, server, share_name):
+        maintenance_file = self._get_maintenance_file_path(share_name)
+        (exports, __) = self._ssh_exec(server, ['cat', maintenance_file])
+        self._set_allow_hosts(server, exports.split(), share_name)
+        self._ssh_exec(server, ['sudo rm -f', maintenance_file])

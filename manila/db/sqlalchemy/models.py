@@ -47,6 +47,14 @@ class ManilaBase(models.ModelBase,
                 model_dict[k] = v
         return model_dict
 
+    def soft_delete(self, session, update_status=False,
+                    status_field_name='status'):
+        """Mark this object as deleted."""
+        if update_status:
+            setattr(self, status_field_name, constants.STATUS_DELETED)
+
+        return super(ManilaBase, self).soft_delete(session)
+
 
 class Service(BASE, ManilaBase):
     """Represents a running service on a host."""
@@ -164,6 +172,7 @@ class Reservation(BASE, ManilaBase):
 class Share(BASE, ManilaBase):
     """Represents an NFS and CIFS shares."""
     __tablename__ = 'shares'
+    _extra_keys = ['name', 'export_location']
 
     @property
     def name(self):
@@ -284,11 +293,11 @@ class ShareMetadata(BASE, ManilaBase):
 
 class ShareAccessMapping(BASE, ManilaBase):
     """Represents access to NFS."""
-    STATE_NEW = 'new'
-    STATE_ACTIVE = 'active'
-    STATE_DELETING = 'deleting'
-    STATE_DELETED = 'deleted'
-    STATE_ERROR = 'error'
+    STATE_NEW = constants.STATUS_NEW
+    STATE_ACTIVE = constants.STATUS_ACTIVE
+    STATE_DELETING = constants.STATUS_DELETING
+    STATE_DELETED = constants.STATUS_DELETED
+    STATE_ERROR = constants.STATUS_ERROR
 
     __tablename__ = 'share_access_map'
     id = Column(String(36), primary_key=True)
@@ -349,9 +358,6 @@ class SecurityService(BASE, ManilaBase):
     password = Column(String(255), nullable=True)
     name = Column(String(255), nullable=True)
     description = Column(String(255), nullable=True)
-    status = Column(Enum(constants.STATUS_NEW, constants.STATUS_ACTIVE,
-                         constants.STATUS_ERROR),
-                    default=constants.STATUS_NEW)
 
 
 class ShareNetwork(BASE, ManilaBase):
@@ -417,6 +423,22 @@ class ShareServer(BASE, ManilaBase):
                               'ShareServer.id == Share.share_server_id,'
                               'Share.deleted == "False")')
 
+    _backend_details = orm.relationship(
+        "ShareServerBackendDetails",
+        lazy='immediate',
+        viewonly=True,
+        primaryjoin='and_('
+                    'ShareServer.id == '
+                    'ShareServerBackendDetails.share_server_id, '
+                    'ShareServerBackendDetails.deleted == "False")')
+
+    @property
+    def backend_details(self):
+        return dict((model['key'], model['value'])
+                    for model in self._backend_details)
+
+    _extra_keys = ['backend_details']
+
 
 class ShareServerBackendDetails(BASE, ManilaBase):
     """Represents a metadata key/value pair for a share server."""
@@ -452,9 +474,15 @@ class NetworkAllocation(BASE, ManilaBase):
     mac_address = Column(String(32), nullable=True)
     share_server_id = Column(String(36), ForeignKey('share_servers.id'),
                              nullable=False)
-    status = Column(Enum(constants.STATUS_NEW, constants.STATUS_ACTIVE,
-                         constants.STATUS_ERROR),
-                    default=constants.STATUS_NEW)
+
+
+class DriverPrivateData(BASE, ManilaBase):
+    """Represents a private data as key-value pairs for a driver."""
+    __tablename__ = 'drivers_private_data'
+    host = Column(String(255), nullable=False, primary_key=True)
+    entity_uuid = Column(String(36), nullable=False, primary_key=True)
+    key = Column(String(255), nullable=False, primary_key=True)
+    value = Column(String(1023), nullable=False)
 
 
 def register_models():

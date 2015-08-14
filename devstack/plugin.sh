@@ -23,7 +23,7 @@
 
 # Save trace setting
 XTRACE=$(set +o | grep xtrace)
-set +o xtrace
+set -o xtrace
 
 # Defaults
 # --------
@@ -34,11 +34,16 @@ MANILA_REPO_ROOT=${MANILA_REPO_ROOT:-openstack}
 MANILACLIENT_REPO=${MANILA_GIT_BASE}/${MANILA_REPO_ROOT}/python-manilaclient.git
 MANILACLIENT_BRANCH=${MANILACLIENT_BRANCH:-master}
 
+MANILA_UI_REPO=${MANILA_GIT_BASE}/${MANILA_REPO_ROOT}/manila-ui.git
+MANILA_UI_BRANCH=${MANILA_UI_BRANCH:-$MANILACLIENT_BRANCH}
+MANILA_UI_ENABLED=$(trueorfalse True MANILA_UI_ENABLED)
+
 # set up default directories
 MANILA_DIR=${MANILA_DIR:=$DEST/manila}
 MANILA_LOCK_PATH=${MANILA_LOCK_PATH:=$OSLO_LOCK_PATH}
 MANILA_LOCK_PATH=${MANILA_LOCK_PATH:=$MANILA_DIR/manila_locks}
 MANILACLIENT_DIR=${MANILACLIENT_DIR:=$DEST/python-manilaclient}
+MANILA_UI_DIR=${MANILA_UI_DIR:=$DEST/manila-ui}
 MANILA_STATE_PATH=${MANILA_STATE_PATH:=$DATA_DIR/manila}
 MANILA_AUTH_CACHE_DIR=${MANILA_AUTH_CACHE_DIR:-/var/cache/manila}
 
@@ -74,21 +79,27 @@ MANILA_ENABLED_SHARE_PROTOCOLS=${ENABLED_SHARE_PROTOCOLS:-"NFS,CIFS"}
 MANILA_SCHEDULER_DRIVER=${MANILA_SCHEDULER_DRIVER:-manila.scheduler.filter_scheduler.FilterScheduler}
 MANILA_SERVICE_SECGROUP="manila-service"
 
+# Following env var defines whether to apply downgrade migrations setting up DB or not.
+# If it is set to False, then only 'upgrade' migrations will be applied.
+# If it is set to True, then will be applied 'upgrade', 'downgrade' and 'upgrade'
+# migrations again.
+MANILA_USE_DOWNGRADE_MIGRATIONS=${MANILA_USE_DOWNGRADE_MIGRATIONS:-"False"}
+
 # Common info for Generic driver(s)
 SHARE_DRIVER=${SHARE_DRIVER:-manila.share.drivers.generic.GenericShareDriver}
 
 eval USER_HOME=~
 MANILA_PATH_TO_PUBLIC_KEY=${MANILA_PATH_TO_PUBLIC_KEY:-"$USER_HOME/.ssh/id_rsa.pub"}
 MANILA_PATH_TO_PRIVATE_KEY=${MANILA_PATH_TO_PRIVATE_KEY:-"$USER_HOME/.ssh/id_rsa"}
+MANILA_SERVICE_KEYPAIR_NAME=${MANILA_SERVICE_KEYPAIR_NAME:-"manila-service"}
 
-MANILA_SERVICE_INSTANCE_USER=${MANILA_SERVICE_INSTANCE_USER:-"ubuntu"}
-MANILA_SERVICE_INSTANCE_PASSWORD=${MANILA_SERVICE_INSTANCE_PASSWORD:-"ubuntu"}
-MANILA_SERVICE_IMAGE_URL=${MANILA_SERVICE_IMAGE_URL:-"https://www.dropbox.com/s/vi5oeh10q1qkckh/ubuntu_1204_nfs_cifs.qcow2"}
-MANILA_SERVICE_IMAGE_NAME=${MANILA_SERVICE_IMAGE_NAME:-"ubuntu_1204_nfs_cifs"}
+MANILA_SERVICE_INSTANCE_USER=${MANILA_SERVICE_INSTANCE_USER:-"manila"}
+MANILA_SERVICE_IMAGE_URL=${MANILA_SERVICE_IMAGE_URL:-"https://github.com/uglide/manila-image-elements/releases/download/0.1.0/manila-service-image.qcow2"}
+MANILA_SERVICE_IMAGE_NAME=${MANILA_SERVICE_IMAGE_NAME:-"manila-service-image"}
 
 MANILA_SERVICE_VM_FLAVOR_REF=${MANILA_SERVICE_VM_FLAVOR_REF:-100}
 MANILA_SERVICE_VM_FLAVOR_NAME=${MANILA_SERVICE_VM_FLAVOR_NAME:-"manila-service-flavor"}
-MANILA_SERVICE_VM_FLAVOR_RAM=${MANILA_SERVICE_VM_FLAVOR_RAM:-64}
+MANILA_SERVICE_VM_FLAVOR_RAM=${MANILA_SERVICE_VM_FLAVOR_RAM:-128}
 MANILA_SERVICE_VM_FLAVOR_DISK=${MANILA_SERVICE_VM_FLAVOR_DISK:-0}
 MANILA_SERVICE_VM_FLAVOR_VCPUS=${MANILA_SERVICE_VM_FLAVOR_VCPUS:-1}
 
@@ -136,7 +147,6 @@ function configure_default_backends {
         iniset $MANILA_CONF $group_name path_to_private_key $MANILA_PATH_TO_PRIVATE_KEY
         iniset $MANILA_CONF $group_name service_image_name $MANILA_SERVICE_IMAGE_NAME
         iniset $MANILA_CONF $group_name service_instance_user $MANILA_SERVICE_INSTANCE_USER
-        iniset $MANILA_CONF $group_name service_instance_password $MANILA_SERVICE_INSTANCE_PASSWORD
         iniset $MANILA_CONF $group_name driver_handles_share_servers True
     done
 }
@@ -225,9 +235,7 @@ function configure_manila {
     # Remove old conf file if exists
     rm -f $MANILA_CONF
 
-    iniset $MANILA_CONF keystone_authtoken auth_host $KEYSTONE_AUTH_HOST
-    iniset $MANILA_CONF keystone_authtoken auth_port $KEYSTONE_AUTH_PORT
-    iniset $MANILA_CONF keystone_authtoken auth_protocol $KEYSTONE_AUTH_PROTOCOL
+    iniset $MANILA_CONF keystone_authtoken identity_uri $KEYSTONE_AUTH_URI
     iniset $MANILA_CONF keystone_authtoken admin_tenant_name $SERVICE_TENANT_NAME
     iniset $MANILA_CONF keystone_authtoken admin_user manila
     iniset $MANILA_CONF keystone_authtoken admin_password $SERVICE_PASSWORD
@@ -253,6 +261,8 @@ function configure_manila {
 
     iniset $MANILA_CONF oslo_concurrency lock_path $MANILA_LOCK_PATH
 
+    iniset $MANILA_CONF DEFAULT wsgi_keep_alive False
+
     # Note: set up config group does not mean that this backend will be enabled.
     # To enable it, specify its name explicitly using "enabled_share_backends" opt.
     configure_default_backends
@@ -269,6 +279,8 @@ function configure_manila {
     if [ ! -f $MANILA_PATH_TO_PRIVATE_KEY ]; then
         ssh-keygen -N "" -t rsa -f $MANILA_PATH_TO_PRIVATE_KEY;
     fi
+
+    iniset $MANILA_CONF DEFAULT manila_service_keypair_name $MANILA_SERVICE_KEYPAIR_NAME
 
     if is_service_enabled tls-proxy; then
         # Set the service port for a proxy to take the original
@@ -296,7 +308,26 @@ function configure_manila {
     MANILA_CONFIGURE_GROUPS=${MANILA_CONFIGURE_GROUPS:-"$MANILA_ENABLED_BACKENDS"}
     set_config_opts $MANILA_CONFIGURE_GROUPS
     set_config_opts DEFAULT
+
+    if is_service_enabled horizon && [ "$MANILA_UI_ENABLED" = "True" ]; then
+        configure_manila_ui
+    fi
 }
+
+
+function configure_manila_ui {
+    setup_develop $MANILA_UI_DIR
+    local local_settings=$HORIZON_DIR/openstack_dashboard/local/local_settings.py
+
+    _horizon_config_set $local_settings "HORIZON_CONFIG" customization_module "'manila_ui.overrides'"
+    cp $MANILA_UI_DIR/manila_ui/enabled/_90_manila_*.py $HORIZON_DIR/openstack_dashboard/local/enabled
+}
+
+
+function create_manila_service_keypair {
+    openstack keypair create $MANILA_SERVICE_KEYPAIR_NAME --public-key $MANILA_PATH_TO_PUBLIC_KEY
+}
+
 
 # create_service_share_servers - creates service Nova VMs, one per generic
 # driver, and only if it is configured to mode without handling of share servers.
@@ -312,7 +343,8 @@ function create_service_share_servers {
                 --flavor $MANILA_SERVICE_VM_FLAVOR_NAME \
                 --image $MANILA_SERVICE_IMAGE_NAME \
                 --nic net-id=$private_net_id \
-                --security-groups $MANILA_SERVICE_SECGROUP
+                --security-groups $MANILA_SERVICE_SECGROUP \
+                --key-name $MANILA_SERVICE_KEYPAIR_NAME
 
             vm_id=$(nova show $vm_name | grep ' id ' | get_field 2)
 
@@ -338,7 +370,7 @@ function create_manila_service_flavor {
 # create_manila_service_image - creates image, that will be used by backends
 # with configured generic driver to boot Nova VMs from.
 function create_manila_service_image {
-    TOKEN=$(keystone token-get | grep ' id ' | get_field 2)
+    TOKEN=$(openstack token issue -c id -f value)
 
     # Download Manila's image
     if is_service_enabled g-reg; then
@@ -393,30 +425,29 @@ function create_manila_service_secgroup {
 # ------------------------------------------------------------------
 # service              manila     admin        # if enabled
 function create_manila_accounts {
-    SERVICE_TENANT=$(keystone tenant-list | awk "/ $SERVICE_TENANT_NAME / { print \$2 }")
-    ADMIN_ROLE=$(keystone role-list | awk "/ admin / { print \$2 }")
-    MANILA_USER=$(keystone user-create \
-        --name=manila \
-        --pass="$SERVICE_PASSWORD" \
-        --tenant_id $SERVICE_TENANT \
+    SERVICE_TENANT=$(openstack project show $SERVICE_TENANT_NAME -f value -c id)
+    ADMIN_ROLE=$(openstack role show admin -f value -c id)
+    MANILA_USER=$(openstack user create \
+        --password="$SERVICE_PASSWORD" \
+        --project=$SERVICE_TENANT \
         --email=manila@example.com \
-        | grep " id " | get_field 2)
-    keystone user-role-add \
-        --tenant_id $SERVICE_TENANT \
-        --user_id $MANILA_USER \
-        --role_id $ADMIN_ROLE
+        manila \
+        -f value -c id)
+    openstack role add \
+        --project $SERVICE_TENANT \
+        --user $MANILA_USER \
+        $ADMIN_ROLE
     if [[ "$KEYSTONE_CATALOG_BACKEND" = 'sql' ]]; then
-        MANILA_SERVICE=$(keystone service-create \
-            --name=manila \
+        MANILA_SERVICE=$(openstack service create \
             --type=share \
             --description="Manila Shared Filesystem Service" \
-            | grep " id " | get_field 2)
-        keystone endpoint-create \
+            manila -f value -c id)
+        openstack endpoint create \
             --region RegionOne \
-            --service_id $MANILA_SERVICE \
             --publicurl "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v1/\$(tenant_id)s" \
             --adminurl "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v1/\$(tenant_id)s" \
-            --internalurl "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v1/\$(tenant_id)s"
+            --internalurl "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v1/\$(tenant_id)s" \
+            $MANILA_SERVICE
     fi
 }
 
@@ -443,7 +474,18 @@ function init_manila {
     if is_service_enabled $DATABASE_BACKENDS; then
         # (re)create manila database
         recreate_database manila utf8
+
         $MANILA_BIN_DIR/manila-manage db sync
+
+        if [[ $(trueorfalse False MANILA_USE_DOWNGRADE_MIGRATIONS) == True ]]; then
+            # Use both - upgrade and downgrade migrations to verify that
+            # downgrade migrations do not break structure of Manila database.
+            $MANILA_BIN_DIR/manila-manage db downgrade
+            $MANILA_BIN_DIR/manila-manage db sync
+        fi
+
+        # Display version as debug-action (see bug/1473400)
+        $MANILA_BIN_DIR/manila-manage db version
     fi
 
     # Create cache dir
@@ -455,10 +497,21 @@ function init_manila {
 # install_manila - Collect source and prepare
 function install_manila {
     git_clone $MANILACLIENT_REPO $MANILACLIENT_DIR $MANILACLIENT_BRANCH
+
+    # install manila-ui if horizon is enabled
+    if is_service_enabled horizon && [ "$MANILA_UI_ENABLED" = "True" ]; then
+        git_clone $MANILA_UI_REPO $MANILA_UI_DIR $MANILA_UI_BRANCH
+    fi
 }
 
 # start_manila - Start running processes, including screen
 function start_manila {
+    # restart apache to reload running horizon if manila-ui is enabled
+    if is_service_enabled horizon && [ "$MANILA_UI_ENABLED" = "True" ]; then
+        restart_apache_server
+        sleep 3 # Wait for 3 sec to ensure that apache is running
+    fi
+
     screen_it m-api "cd $MANILA_DIR && $MANILA_BIN_DIR/manila-api --config-file $MANILA_CONF"
     screen_it m-shr "cd $MANILA_DIR && $MANILA_BIN_DIR/manila-share --config-file $MANILA_CONF"
     screen_it m-sch "cd $MANILA_DIR && $MANILA_BIN_DIR/manila-scheduler --config-file $MANILA_CONF"
@@ -499,6 +552,9 @@ elif [[ "$1" == "stack" && "$2" == "extra" ]]; then
 
     echo_summary "Creating Manila service image"
     create_manila_service_image
+
+    echo_summary "Creating Manila service keypair"
+    create_manila_service_keypair
 
     echo_summary "Creating Manila service VMs for generic driver \
         backends for which handlng of share servers is disabled."

@@ -23,9 +23,9 @@ import time
 import ddt
 import mock
 from oslo_log import log
+from oslo_service import loopingcall
 
 from manila import exception
-from manila.openstack.common import loopingcall
 from manila.share.drivers.netapp.dataontap.client import client_cmode
 from manila.share.drivers.netapp.dataontap.cluster_mode import lib_base
 from manila.share.drivers.netapp.dataontap.protocols import cifs_cmode
@@ -61,13 +61,11 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                          'debug',
                          mock.Mock(side_effect=mock_logger.debug))
 
-        self.mock_db = mock.Mock()
         kwargs = {
             'configuration': fake.get_config_cmode(),
             'app_version': fake.APP_VERSION
         }
-        self.library = lib_base.NetAppCmodeFileStorageLibrary(self.mock_db,
-                                                              fake.DRIVER_NAME,
+        self.library = lib_base.NetAppCmodeFileStorageLibrary(fake.DRIVER_NAME,
                                                               **kwargs)
         self.library._client = mock.Mock()
         self.client = self.library._client
@@ -75,7 +73,6 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
     def test_init(self):
         self.assertEqual(fake.DRIVER_NAME, self.library.driver_name)
-        self.assertEqual(self.mock_db, self.library.db)
         self.assertEqual(1, na_utils.validate_driver_instantiation.call_count)
         self.assertEqual(1, na_utils.setup_tracing.call_count)
         self.assertIsNone(self.library._helpers)
@@ -287,9 +284,8 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
     def test_get_share_stats(self):
 
         self.mock_object(self.library,
-                         '_get_aggregate_space',
-                         mock.Mock(return_value=fake.AGGREGATE_CAPACITIES))
-        self.library._ssc_stats = fake.SSC_INFO
+                         '_get_pools',
+                         mock.Mock(return_value=fake.POOLS))
 
         result = self.library.get_share_stats()
 
@@ -302,29 +298,30 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             'storage_protocol': 'NFS_CIFS',
             'total_capacity_gb': 0.0,
             'free_capacity_gb': 0.0,
-            'pools': [
-                {'pool_name': fake.AGGREGATES[0],
-                 'total_capacity_gb': 3.3,
-                 'free_capacity_gb': 1.1,
-                 'allocated_capacity_gb': 2.2,
-                 'QoS_support': 'False',
-                 'reserved_percentage': 0,
-                 'netapp_raid_type': 'raid4',
-                 'netapp_disk_type': 'FCAL'
-                 },
-                {'pool_name': fake.AGGREGATES[1],
-                 'total_capacity_gb': 6.0,
-                 'free_capacity_gb': 2.0,
-                 'allocated_capacity_gb': 4.0,
-                 'QoS_support': 'False',
-                 'reserved_percentage': 0,
-                 'netapp_raid_type': 'raid_dp',
-                 'netapp_disk_type': 'SSD'
-                 },
-            ]
+            'pools': fake.POOLS,
         }
-
         self.assertDictEqual(expected, result)
+
+    def test_get_share_server_pools(self):
+
+        self.mock_object(self.library,
+                         '_get_pools',
+                         mock.Mock(return_value=fake.POOLS))
+
+        result = self.library.get_share_server_pools(fake.SHARE_SERVER)
+
+        self.assertListEqual(fake.POOLS, result)
+
+    def test_get_pools(self):
+
+        self.mock_object(self.library,
+                         '_get_aggregate_space',
+                         mock.Mock(return_value=fake.AGGREGATE_CAPACITIES))
+        self.library._ssc_stats = fake.SSC_INFO
+
+        result = self.library._get_pools()
+
+        self.assertListEqual(fake.POOLS, result)
 
     def test_handle_ems_logging(self):
 
@@ -541,6 +538,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             return_value=fake.POOL_NAME))
         self.mock_object(share_types, 'get_extra_specs_from_share',
                          mock.Mock(return_value=fake.EXTRA_SPEC))
+
         self.mock_object(self.library, '_check_boolean_extra_specs_validity')
         self.mock_object(self.library, '_get_boolean_provisioning_options',
                          mock.Mock(return_value=fake.PROVISIONING_OPTIONS))
@@ -552,7 +550,8 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         vserver_client.create_volume.assert_called_once_with(
             fake.POOL_NAME, fake.SHARE_NAME, fake.SHARE['size'],
             thin_provisioned=True, snapshot_policy='default',
-            language='en-US', max_files=5000)
+            language='en-US', dedup_enabled=True,
+            compression_enabled=False, max_files=5000)
 
     def test_allocate_container_no_pool_name(self):
         self.mock_object(self.library, '_get_valid_share_name', mock.Mock(
@@ -576,12 +575,26 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         self.assertEqual(0, self.library._get_provisioning_options.call_count)
 
     def test_check_extra_specs_validity(self):
+        boolean_extra_spec_keys = list(
+            self.library.BOOLEAN_QUALIFIED_EXTRA_SPECS_MAP)
+        mock_bool_check = self.mock_object(
+            self.library, '_check_boolean_extra_specs_validity')
+        mock_string_check = self.mock_object(
+            self.library, '_check_string_extra_specs_validity')
+
         self.library._check_extra_specs_validity(
             fake.EXTRA_SPEC_SHARE, fake.EXTRA_SPEC)
 
+        mock_bool_check.assert_called_once_with(
+            fake.EXTRA_SPEC_SHARE, fake.EXTRA_SPEC, boolean_extra_spec_keys)
+        mock_string_check.assert_called_once_with(
+            fake.EXTRA_SPEC_SHARE, fake.EXTRA_SPEC)
+
     def test_check_extra_specs_validity_empty_spec(self):
-        self.library._check_extra_specs_validity(
+        result = self.library._check_extra_specs_validity(
             fake.EXTRA_SPEC_SHARE, fake.EMPTY_EXTRA_SPEC)
+
+        self.assertIsNone(result)
 
     def test_check_extra_specs_validity_invalid_value(self):
         self.assertRaises(
@@ -589,12 +602,16 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             fake.EXTRA_SPEC_SHARE, fake.INVALID_EXTRA_SPEC)
 
     def test_check_string_extra_specs_validity(self):
-        self.library._check_string_extra_specs_validity(
+        result = self.library._check_string_extra_specs_validity(
             fake.EXTRA_SPEC_SHARE, fake.EXTRA_SPEC)
 
+        self.assertIsNone(result)
+
     def test_check_string_extra_specs_validity_empty_spec(self):
-        self.library._check_string_extra_specs_validity(
+        result = self.library._check_string_extra_specs_validity(
             fake.EXTRA_SPEC_SHARE, fake.EMPTY_EXTRA_SPEC)
+
+        self.assertIsNone(result)
 
     def test_check_string_extra_specs_validity_invalid_value(self):
         self.assertRaises(
@@ -602,21 +619,18 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             self.library._check_string_extra_specs_validity,
             fake.EXTRA_SPEC_SHARE, fake.INVALID_MAX_FILE_EXTRA_SPEC)
 
-    def test_check_boolean_extra_specs_validity(self):
-        self.library._check_boolean_extra_specs_validity(
-            fake.EXTRA_SPEC_SHARE, fake.EXTRA_SPEC,
-            list(self.library.BOOLEAN_QUALIFIED_EXTRA_SPECS_MAP))
-
-    def test_check_boolean_extra_specs_validity_empty_spec(self):
-        self.library._check_boolean_extra_specs_validity(
-            fake.EXTRA_SPEC_SHARE, fake.EMPTY_EXTRA_SPEC,
-            list(self.library.BOOLEAN_QUALIFIED_EXTRA_SPECS_MAP))
-
     def test_check_boolean_extra_specs_validity_invalid_value(self):
         self.assertRaises(
             exception.Invalid,
             self.library._check_boolean_extra_specs_validity,
             fake.EXTRA_SPEC_SHARE, fake.INVALID_EXTRA_SPEC,
+            list(self.library.BOOLEAN_QUALIFIED_EXTRA_SPECS_MAP))
+
+    def test_check_extra_specs_validity_invalid_combination(self):
+        self.assertRaises(
+            exception.Invalid,
+            self.library._check_boolean_extra_specs_validity,
+            fake.EXTRA_SPEC_SHARE, fake.INVALID_EXTRA_SPEC_COMBO,
             list(self.library.BOOLEAN_QUALIFIED_EXTRA_SPECS_MAP))
 
     def test_get_provisioning_options(self):
@@ -635,15 +649,20 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         result = self.library._get_provisioning_options(
             fake.EMPTY_EXTRA_SPEC)
 
-        expected = {'language': None, 'max_files': None,
-                    'snapshot_policy': None,
-                    'thin_provisioned': False}
+        expected = {
+            'language': None,
+            'max_files': None,
+            'snapshot_policy': None,
+            'thin_provisioned': False,
+            'compression_enabled': False,
+            'dedup_enabled': False,
+        }
 
         self.assertEqual(expected, result)
 
     def test_get_boolean_provisioning_options(self):
         result = self.library._get_boolean_provisioning_options(
-            fake.BOOLEAN_EXTRA_SPEC,
+            fake.SHORT_BOOLEAN_EXTRA_SPEC,
             self.library.BOOLEAN_QUALIFIED_EXTRA_SPECS_MAP)
 
         self.assertEqual(fake.PROVISIONING_OPTIONS_BOOLEAN, result)
@@ -656,11 +675,17 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         self.assertEqual(fake.PROVISIONING_OPTIONS_BOOLEAN, result)
 
     def test_get_boolean_provisioning_options_implicit_false(self):
+        expected = {
+            'thin_provisioned': False,
+            'dedup_enabled': False,
+            'compression_enabled': False,
+        }
+
         result = self.library._get_boolean_provisioning_options(
             fake.EMPTY_EXTRA_SPEC,
             self.library.BOOLEAN_QUALIFIED_EXTRA_SPECS_MAP)
 
-        self.assertEqual({'thin_provisioned': False}, result)
+        self.assertEqual(expected, result)
 
     def test_get_string_provisioning_options(self):
         result = self.library._get_string_provisioning_options(

@@ -625,19 +625,22 @@ def share_server_get_by_host_and_share_net(context, host, share_net_id,
                                                        session=session)
 
 
-def share_server_get_by_host_and_share_net_valid(context, host,
-                                                 share_net_id,
-                                                 session=None):
+def share_server_get_all_by_host_and_share_net_valid(context, host,
+                                                     share_net_id,
+                                                     session=None):
     """Get share server DB records by host and share net not error."""
-    return IMPL.share_server_get_by_host_and_share_net_valid(context,
-                                                             host,
-                                                             share_net_id,
-                                                             session=session)
+    return IMPL.share_server_get_all_by_host_and_share_net_valid(
+        context, host, share_net_id, session=session)
 
 
 def share_server_get_all(context):
     """Get all share server DB records."""
     return IMPL.share_server_get_all(context)
+
+
+def share_server_get_all_by_host(context, host):
+    """Get all share servers related to particular host."""
+    return IMPL.share_server_get_all_by_host(context, host)
 
 
 def share_server_get_all_unused_deletable(context, host, updated_before):
@@ -650,11 +653,6 @@ def share_server_backend_details_set(context, share_server_id, server_details):
     """Create DB record with backend details."""
     return IMPL.share_server_backend_details_set(context, share_server_id,
                                                  server_details)
-
-
-def share_server_backend_details_get(context, share_server_id):
-    """Get all backend details records for share server."""
-    return IMPL.share_server_backend_details_get(context, share_server_id)
 
 
 ##################
@@ -756,3 +754,20 @@ def share_type_extra_specs_update_or_create(context, share_type_id,
     return IMPL.share_type_extra_specs_update_or_create(context,
                                                         share_type_id,
                                                         extra_specs)
+
+
+def driver_private_data_get(context, host, entity_id, key=None, default=None):
+    """Get one, list or all key-value pairs for given host and entity_id."""
+    return IMPL.driver_private_data_get(context, host, entity_id, key, default)
+
+
+def driver_private_data_update(context, host, entity_id, details,
+                               delete_existing=False):
+    """Update key-value pairs for given host and entity_id."""
+    return IMPL.driver_private_data_update(context, host, entity_id, details,
+                                           delete_existing)
+
+
+def driver_private_data_delete(context, host, entity_id, key=None):
+    """Remove one, list or all key-value pairs for given host and entity_id."""
+    return IMPL.driver_private_data_delete(context, host, entity_id, key)

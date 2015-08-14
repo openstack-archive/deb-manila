@@ -32,16 +32,16 @@ import socket
 
 from oslo_concurrency import processutils
 from oslo_config import cfg
+from oslo_log import log
 from oslo_utils import units
 import six
 
 from manila import exception
 from manila.i18n import _
-from manila.openstack.common import log as logging
 from manila.share import driver
 from manila import utils
 
-LOG = logging.getLogger(__name__)
+LOG = log.getLogger(__name__)
 
 hdfs_native_share_opts = [
     cfg.StrOpt('hdfs_namenode_ip',
@@ -80,9 +80,8 @@ class HDFSNativeShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         1.0 - Initial Version
     """
 
-    def __init__(self, db, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super(HDFSNativeShareDriver, self).__init__(False, *args, **kwargs)
-        self.db = db
         self.configuration.append_config_values(hdfs_native_share_opts)
         self.backend_name = self.configuration.safe_get(
             'share_backend_name') or 'HDFS-Native'

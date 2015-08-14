@@ -24,12 +24,12 @@ import socket
 import time
 
 from oslo_log import log
+from oslo_service import loopingcall
 from oslo_utils import units
 import six
 
 from manila import exception
 from manila.i18n import _, _LE, _LI, _LW
-from manila.openstack.common import loopingcall
 from manila.share.drivers.netapp.dataontap.client import client_cmode
 from manila.share.drivers.netapp.dataontap.protocols import cifs_cmode
 from manila.share.drivers.netapp.dataontap.protocols import nfs_cmode
@@ -51,7 +51,9 @@ class NetAppCmodeFileStorageLibrary(object):
     # client library argument keywords.  When we expose more backend
     # capabilities here, we will add them to this map.
     BOOLEAN_QUALIFIED_EXTRA_SPECS_MAP = {
-        'netapp:thin_provisioned': 'thin_provisioned'
+        'netapp:thin_provisioned': 'thin_provisioned',
+        'netapp:dedup': 'dedup_enabled',
+        'netapp:compression': 'compression_enabled',
     }
     STRING_QUALIFIED_EXTRA_SPECS_MAP = {
         'netapp:snapshot_policy': 'snapshot_policy',
@@ -59,10 +61,9 @@ class NetAppCmodeFileStorageLibrary(object):
         'netapp:max_files': 'max_files',
     }
 
-    def __init__(self, db, driver_name, **kwargs):
+    def __init__(self, driver_name, **kwargs):
         na_utils.validate_driver_instantiation(**kwargs)
 
-        self.db = db
         self.driver_name = driver_name
 
         self.configuration = kwargs['configuration']
@@ -200,7 +201,25 @@ class NetAppCmodeFileStorageLibrary(object):
             'storage_protocol': 'NFS_CIFS',
             'total_capacity_gb': 0.0,
             'free_capacity_gb': 0.0,
+            'pools': self._get_pools(),
         }
+        return data
+
+    @na_utils.trace
+    def get_share_server_pools(self, share_server):
+        """Return list of pools related to a particular share server.
+
+        Note that the multi-SVM cDOT driver assigns all available pools to
+        each Vserver, so there is no need to filter the pools any further
+        by share_server.
+
+        :param share_server: ShareServer class instance.
+        """
+        return self._get_pools()
+
+    @na_utils.trace
+    def _get_pools(self):
+        """Retrieve list of pools available to this backend."""
 
         pools = []
         aggr_space = self._get_aggregate_space()
@@ -230,8 +249,7 @@ class NetAppCmodeFileStorageLibrary(object):
 
             pools.append(pool)
 
-        data['pools'] = pools
-        return data
+        return pools
 
     @na_utils.trace
     def _handle_ems_logging(self):
@@ -342,9 +360,6 @@ class NetAppCmodeFileStorageLibrary(object):
                   'provisioning options %(options)s',
                   {'share': share_name, 'pool': pool_name,
                    'options': provisioning_options})
-
-        LOG.debug('Creating share %(share)s on pool %(pool)s',
-                  {'share': share_name, 'pool': pool_name})
         vserver_client.create_volume(pool_name, share_name,
                                      share['size'],
                                      **provisioning_options)
@@ -376,6 +391,21 @@ class NetAppCmodeFileStorageLibrary(object):
     @na_utils.trace
     def _check_boolean_extra_specs_validity(self, share, specs,
                                             keys_of_interest):
+        # cDOT compression requires deduplication.
+        dedup = specs.get('netapp:dedup', None)
+        compression = specs.get('netapp:compression', None)
+        if dedup is not None and compression is not None:
+            if dedup.lower() == 'false' and compression.lower() == 'true':
+                spec = {'netapp:dedup': dedup,
+                        'netapp:compression': compression}
+                type_id = share['share_type_id']
+                share_id = share['id']
+                args = {'type_id': type_id, 'share_id': share_id, 'spec': spec}
+                msg = _('Invalid combination of extra_specs in share_type '
+                        '%(type_id)s for share %(share_id)s: %(spec)s: '
+                        'deduplication must be enabled in order for '
+                        'compression to be enabled.')
+                raise exception.Invalid(msg % args)
         """Check if the boolean_extra_specs have valid values."""
         # Extra spec values must be (ignoring case) 'true' or 'false'.
         for key in keys_of_interest:

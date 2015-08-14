@@ -113,6 +113,28 @@ ShareGroup = [
                 help="Defines whether to run manage/unmanage tests or not. "
                      "These test may leave orphaned resources, so be careful "
                      "enabling this opt."),
+    cfg.BoolOpt("run_extend_tests",
+                default=True,
+                help="Defines whether to run share extend tests or not. "
+                     "Disable this feature if used driver doesn't "
+                     "support it."),
+    cfg.BoolOpt("run_shrink_tests",
+                default=True,
+                help="Defines whether to run share shrink tests or not. "
+                     "Disable this feature if used driver doesn't "
+                     "support it."),
+    cfg.StrOpt("image_with_share_tools",
+               default="manila-service-image",
+               help="Image name for vm booting with nfs/smb clients tool."),
+    cfg.StrOpt("image_username",
+               default="manila",
+               help="Image username."),
+    cfg.StrOpt("image_password",
+               help="Image password. Should be used for "
+                    "'image_with_share_tools' without Nova Metadata support."),
+    cfg.StrOpt("client_vm_flavor_ref",
+               default="100",
+               help="Flavor used for client vm in scenario tests."),
 ]
 
 

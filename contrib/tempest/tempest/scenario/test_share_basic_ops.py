@@ -17,18 +17,16 @@ from oslo_log import log as logging  # noqa
 from tempest_lib.common.utils import data_utils  # noqa
 
 from tempest import config
+from tempest import exceptions
 from tempest.scenario import manager_share as manager
-from tempest.scenario import utils as test_utils
 from tempest import test
 
 CONF = config.CONF
 
 LOG = logging.getLogger(__name__)
 
-load_tests = test_utils.load_tests_input_scenario_utils
 
-
-class TestShareBasicOps(manager.ShareScenarioTest):
+class ShareBasicOpsBase(manager.ShareScenarioTest):
 
     """This smoke test case follows this basic set of operations:
 
@@ -37,27 +35,28 @@ class TestShareBasicOps(manager.ShareScenarioTest):
      * Launch an instance
      * Allow access
      * Perform ssh to instance
+     * Mount share
      * Terminate the instance
     """
-    protocol = "NFS"
+    protocol = None
 
     def setUp(self):
-        super(TestShareBasicOps, self).setUp()
+        super(ShareBasicOpsBase, self).setUp()
         # Setup image and flavor the test instance
         # Support both configured and injected values
-        if not hasattr(self, 'image_ref'):
-            self.image_ref = CONF.compute.image_ref
         if not hasattr(self, 'flavor_ref'):
-            self.flavor_ref = CONF.compute.flavor_ref
-        self.image_utils = test_utils.ImageUtils()
-        if not self.image_utils.is_flavor_enough(self.flavor_ref,
-                                                 self.image_ref):
-            raise self.skipException(
-                '{image} does not fit in {flavor}'.format(
-                    image=self.image_ref, flavor=self.flavor_ref
-                )
-            )
-        self.ssh_user = CONF.compute.image_ssh_user
+            self.flavor_ref = CONF.share.client_vm_flavor_ref
+        if CONF.share.image_with_share_tools:
+            images = self.images_client.list_images()
+            for img in images:
+                if img["name"] == CONF.share.image_with_share_tools:
+                    self.image_ref = img['id']
+                    break
+            if not self.image_ref:
+                msg = ("Image %s not found" %
+                       CONF.share.image_with_share_tools)
+                raise exceptions.InvalidConfiguration(message=msg)
+        self.ssh_user = CONF.share.image_username
         LOG.debug('Starting test for i:{image}, f:{flavor}. '
                   'user: {ssh_user}'.format(
                       image=self.image_ref, flavor=self.flavor_ref,
@@ -73,9 +72,12 @@ class TestShareBasicOps(manager.ShareScenarioTest):
             'key_name': self.keypair['name'],
             'security_groups': security_groups,
         }
-        self.instance = self.create_server(create_kwargs=create_kwargs)
+        instance = self.create_server(image=self.image_ref,
+                                      create_kwargs=create_kwargs,
+                                      flavor=self.flavor_ref)
+        return instance
 
-    def verify_ssh(self):
+    def init_ssh(self, instance, do_ping=False):
         # Obtain a floating IP
         floating_ip = self.floating_ips_client.create_floating_ip()
         self.addCleanup(self.delete_wrapper,
@@ -83,15 +85,35 @@ class TestShareBasicOps(manager.ShareScenarioTest):
                         floating_ip['id'])
         # Attach a floating IP
         self.floating_ips_client.associate_floating_ip_to_server(
-            floating_ip['ip'], self.instance['id'])
+            floating_ip['ip'], instance['id'])
         # Check ssh
         ssh_client = self.get_remote_client(
             server_or_ip=floating_ip['ip'],
             username=self.ssh_user,
             private_key=self.keypair['private_key'])
-        _, share = self.shares_client.get_share(self.share['id'])
-        server_ip = share['export_location'].split(":")[0]
-        ssh_client.exec_command("ping -c 1 %s" % server_ip)
+
+        # NOTE(u_glide): Workaround for bug #1465682
+        ssh_client = ssh_client.ssh_client
+
+        self.share = self.shares_client.get_share(self.share['id'])
+        if do_ping:
+            server_ip = self.share['export_location'].split(":")[0]
+            ssh_client.exec_command("ping -c 1 %s" % server_ip)
+        return ssh_client
+
+    def mount_share(self, location, ssh_client):
+        raise NotImplementedError
+
+    def umount_share(self, ssh_client):
+        ssh_client.exec_command("sudo umount /mnt")
+
+    def write_data(self, data, ssh_client):
+        ssh_client.exec_command("echo \"%s\" | sudo tee /mnt/t1 && sudo sync" %
+                                data)
+
+    def read_data(self, ssh_client):
+        data = ssh_client.exec_command("sudo cat /mnt/t1")
+        return data.rstrip()
 
     def create_share_network(self):
         self.net = self._create_network(namestart="manila-share")
@@ -124,11 +146,72 @@ class TestShareBasicOps(manager.ShareScenarioTest):
         self._allow_access(share_id, access_type='ip', access_to=ip)
 
     @test.services('compute', 'network')
-    def test_server_basicops(self):
+    def test_mount_share_one_vm(self):
         self.security_group = self._create_security_group()
         self.create_share_network()
         self.create_share(self.share_net['id'])
-        self.boot_instance(self.net)
-        self.allow_access_ip(self.share['id'], instance=self.instance)
-        self.verify_ssh()
-        self.servers_client.delete_server(self.instance['id'])
+        instance = self.boot_instance(self.net)
+        self.allow_access_ip(self.share['id'], instance=instance)
+        ssh_client = self.init_ssh(instance)
+        for location in self.share['export_locations']:
+            self.mount_share(location, ssh_client)
+            self.umount_share(ssh_client)
+        self.servers_client.delete_server(instance['id'])
+
+    @test.services('compute', 'network')
+    def test_read_write_two_vms(self):
+        """Boots two vms and writes/reads data on it."""
+        test_data = "Some test data to write"
+        self.security_group = self._create_security_group()
+        self.create_share_network()
+        self.create_share(self.share_net['id'])
+
+        # boot first VM and write data
+        instance1 = self.boot_instance(self.net)
+        self.allow_access_ip(self.share['id'], instance=instance1)
+        ssh_client_inst1 = self.init_ssh(instance1)
+        first_location = self.share['export_locations'][0]
+        self.mount_share(first_location, ssh_client_inst1)
+        self.addCleanup(self.umount_share,
+                        ssh_client_inst1)
+        self.write_data(test_data, ssh_client_inst1)
+
+        # boot second VM and read
+        instance2 = self.boot_instance(self.net)
+        self.allow_access_ip(self.share['id'], instance=instance2)
+        ssh_client_inst2 = self.init_ssh(instance2)
+        self.mount_share(first_location, ssh_client_inst2)
+        self.addCleanup(self.umount_share,
+                        ssh_client_inst2)
+        data = self.read_data(ssh_client_inst2)
+        self.assertEqual(test_data, data)
+
+
+class TestShareBasicOpsNFS(ShareBasicOpsBase):
+    protocol = "NFS"
+
+    def mount_share(self, location, ssh_client):
+        ssh_client.exec_command("sudo mount \"%s\" /mnt" % location)
+
+
+class TestShareBasicOpsCIFS(ShareBasicOpsBase):
+    protocol = "CIFS"
+
+    def mount_share(self, location, ssh_client):
+        location = location.replace("\\", "/")
+        ssh_client.exec_command(
+            "sudo mount.cifs \"%s\" /mnt -o guest" % location
+        )
+
+
+# NOTE(u_glide): this function is required to exclude ShareBasicOpsBase from
+# executed test cases.
+# See: https://docs.python.org/2/library/unittest.html#load-tests-protocol
+# for details.
+def load_tests(loader, tests, _):
+    result = []
+    for test_case in tests:
+        if type(test_case._tests[0]) is ShareBasicOpsBase:
+            continue
+        result.append(test_case)
+    return loader.suiteClass(result)

@@ -59,9 +59,7 @@ class SopShareDriverTestCase(test.TestCase):
         CONF.set_default('driver_handles_share_servers', False)
 
         self.fake_conf = config.Configuration(None)
-        self._db = mock.Mock()
-        self._driver = sop.SopShareDriver(
-            self._db, configuration=self.fake_conf)
+        self._driver = sop.SopShareDriver(configuration=self.fake_conf)
         self.share = fake_share.fake_share(share_proto='NFS')
         self._driver.share_backend_name = 'HDS_SOP'
 
@@ -469,6 +467,7 @@ class SopShareDriverTestCase(test.TestCase):
             'QoS_support': False,
             'total_capacity_gb': 1234,
             'free_capacity_gb': 2345,
+            'pools': None,
         }
         self.mock_object(self._driver, '_get_sop_filesystem_stats',
                          mock.Mock(return_value=(1234, 2345)))

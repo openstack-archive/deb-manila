@@ -50,7 +50,7 @@ class ShareDriverTestCase(test.TestCase):
         self.mock_object(self.utils, 'execute', fake_execute_with_raise)
         self.time = time
         self.mock_object(self.time, 'sleep', fake_sleep)
-        self.mock_object(driver.CONF, 'driver_handles_share_servers', True)
+        driver.CONF.set_default('driver_handles_share_servers', True)
 
     def test__try_execute(self):
         execute_mixin = ShareDriverWithExecuteMixin(
@@ -199,3 +199,23 @@ class ShareDriverTestCase(test.TestCase):
             self.assertTrue(callable(getattr(obj, attr)))
 
         assert_is_callable(share_driver, method)
+
+    @ddt.data(True, False)
+    def test_get_share_server_pools(self, value):
+        driver.CONF.set_default('driver_handles_share_servers', value)
+        share_driver = driver.ShareDriver(value)
+        self.assertEqual([],
+                         share_driver.get_share_server_pools('fake_server'))
+
+    @ddt.data(0.8, 1.0, 10.5, 20.0, None)
+    def test_check_for_setup_error(self, value):
+        driver.CONF.set_default('driver_handles_share_servers', False)
+        share_driver = driver.ShareDriver(False)
+        share_driver.configuration = configuration.Configuration(None)
+        self.mock_object(share_driver.configuration, 'safe_get',
+                         mock.Mock(return_value=value))
+        if value >= 1.0:
+            share_driver.check_for_setup_error()
+        else:
+            self.assertRaises(exception.InvalidParameterValue,
+                              share_driver.check_for_setup_error)

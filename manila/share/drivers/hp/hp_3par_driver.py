@@ -20,27 +20,21 @@ import logging
 import os
 
 from oslo_config import cfg
+from oslo_log import log
 import six
 
 from manila import exception
 from manila.i18n import _
 from manila.i18n import _LI
-from manila.openstack.common import log
 from manila.share import driver
 from manila.share.drivers.hp import hp_3par_mediator
+from manila.share import share_types
 
 HP3PAR_OPTS = [
     cfg.StrOpt('hp3par_api_url',
                default='',
                help="3PAR WSAPI Server Url like "
                     "https://<3par ip>:8080/api/v1"),
-    cfg.StrOpt('hp3par_username',
-               default='',
-               help="3PAR Super user username"),
-    cfg.StrOpt('hp3par_password',
-               default='',
-               help="3PAR Super user password",
-               secret=True),
     cfg.StrOpt('hp3par_san_ip',
                default='',
                help="IP address of SAN controller"),
@@ -80,6 +74,8 @@ class HP3ParShareDriver(driver.ShareDriver):
      Supports NFS and CIFS protocols on arrays with File Persona.
      """
 
+    VERSION = "1.0.00"
+
     def __init__(self, *args, **kwargs):
         super(HP3ParShareDriver, self).__init__(False, *args, **kwargs)
 
@@ -94,6 +90,10 @@ class HP3ParShareDriver(driver.ShareDriver):
     def do_setup(self, context):
         """Any initialization the share driver does while starting."""
 
+        LOG.info(_LI("Starting share driver %(driver_name)s (%(version)s)"),
+                 {'driver_name': self.__class__.__name__,
+                  'version': self.VERSION})
+
         self.share_ip_address = self.configuration.hp3par_share_ip_address
         if not self.share_ip_address:
             raise exception.HP3ParInvalid(
@@ -101,8 +101,6 @@ class HP3ParShareDriver(driver.ShareDriver):
                   "hp3par_share_ip_address is not set."))
 
         mediator = hp_3par_mediator.HP3ParMediator(
-            hp3par_username=self.configuration.hp3par_username,
-            hp3par_password=self.configuration.hp3par_password,
             hp3par_api_url=self.configuration.hp3par_api_url,
             hp3par_debug=self.configuration.hp3par_debug,
             hp3par_san_ip=self.configuration.hp3par_san_ip,
@@ -172,10 +170,13 @@ class HP3ParShareDriver(driver.ShareDriver):
         ip = self.share_ip_address
 
         protocol = share['share_proto']
+        extra_specs = share_types.get_extra_specs_from_share(share)
+
         path = self._hp3par.create_share(
             share['project_id'],
             share['id'],
             protocol,
+            extra_specs,
             self.fpg, self.vfs,
             size=share['size']
         )
@@ -189,9 +190,12 @@ class HP3ParShareDriver(driver.ShareDriver):
         ip = self.share_ip_address
 
         protocol = share['share_proto']
+        extra_specs = share_types.get_extra_specs_from_share(share)
+
         path = self._hp3par.create_share_from_snapshot(
             share['id'],
             protocol,
+            extra_specs,
             snapshot['share']['project_id'],
             snapshot['share']['id'],
             snapshot['share']['share_proto'],
@@ -281,7 +285,7 @@ class HP3ParShareDriver(driver.ShareDriver):
             'share_backend_name': backend_name,
             'driver_handles_share_servers': self.driver_handles_share_servers,
             'vendor_name': 'HP',
-            'driver_version': '1.0',
+            'driver_version': self.VERSION,
             'storage_protocol': 'NFS_CIFS',
             'total_capacity_gb': total_capacity_gb,
             'free_capacity_gb': free_capacity_gb,

@@ -48,14 +48,13 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                          'error',
                          mock.Mock(side_effect=mock_logger.error))
 
-        self.mock_db = mock.Mock()
         kwargs = {
             'configuration': fake.get_config_cmode(),
             'app_version': fake.APP_VERSION
         }
 
         self.library = lib_multi_svm.NetAppCmodeMultiSVMFileStorageLibrary(
-            self.mock_db, fake.DRIVER_NAME, **kwargs)
+            fake.DRIVER_NAME, **kwargs)
         self.library._client = mock.Mock()
         self.library._client.get_ontapi_version.return_value = (1, 21)
         self.client = self.library._client
@@ -66,14 +65,11 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         self.mock_object(self.library,
                          '_find_matching_aggregates',
                          mock.Mock(return_value=fake.AGGREGATES))
-        mock_check_data_ontap_version = self.mock_object(
-            self.library, '_check_data_ontap_version')
         mock_super = self.mock_object(lib_base.NetAppCmodeFileStorageLibrary,
                                       'check_for_setup_error')
 
         self.library.check_for_setup_error()
 
-        self.assertTrue(mock_check_data_ontap_version.called)
         self.assertTrue(self.library._find_matching_aggregates.called)
         mock_super.assert_called_once_with()
 
@@ -107,17 +103,6 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         self.assertRaises(exception.NetAppException,
                           self.library.check_for_setup_error)
         self.assertTrue(self.library._find_matching_aggregates.called)
-
-    @ddt.data((1, 20), (1, 21))
-    def test_check_data_ontap_version(self, version):
-        self.library._client.get_ontapi_version.return_value = version
-        self.assertIsNone(self.library._check_data_ontap_version())
-
-    @ddt.data((1, 30), (1, 31), (1, 40), (2, 0))
-    def test_check_data_ontap_version_too_new(self, version):
-        self.library._client.get_ontapi_version.return_value = version
-        self.assertRaises(exception.NetAppException,
-                          self.library._check_data_ontap_version)
 
     def test_get_vserver_no_share_server(self):
 
@@ -208,21 +193,54 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
     def test_setup_server(self):
 
+        mock_get_vserver_name = self.mock_object(
+            self.library,
+            '_get_vserver_name',
+            mock.Mock(return_value=fake.VSERVER1))
+
         mock_create_vserver = self.mock_object(
             self.library,
-            '_create_vserver_if_nonexistent',
-            mock.Mock(return_value=fake.VSERVER1))
+            '_create_vserver_if_nonexistent')
 
         mock_validate_network_type = self.mock_object(
             self.library,
-            '_validate_network_type',
-            mock.Mock())
+            '_validate_network_type')
 
         result = self.library.setup_server(fake.NETWORK_INFO)
 
         self.assertTrue(mock_validate_network_type.called)
+        self.assertTrue(mock_get_vserver_name.called)
         self.assertTrue(mock_create_vserver.called)
         self.assertDictEqual({'vserver_name': fake.VSERVER1}, result)
+
+    def test_setup_server_with_error(self):
+
+        mock_get_vserver_name = self.mock_object(
+            self.library,
+            '_get_vserver_name',
+            mock.Mock(return_value=fake.VSERVER1))
+
+        fake_exception = exception.ManilaException("fake")
+        mock_create_vserver = self.mock_object(
+            self.library,
+            '_create_vserver_if_nonexistent',
+            mock.Mock(side_effect=fake_exception))
+
+        mock_validate_network_type = self.mock_object(
+            self.library,
+            '_validate_network_type')
+
+        self.assertRaises(
+            exception.ManilaException,
+            self.library.setup_server,
+            fake.NETWORK_INFO)
+
+        self.assertTrue(mock_validate_network_type.called)
+        self.assertTrue(mock_get_vserver_name.called)
+        self.assertTrue(mock_create_vserver.called)
+        self.assertDictEqual(
+            {'server_details': {'vserver_name': fake.VSERVER1}},
+            fake_exception.detail_data)
 
     @ddt.data(
         {'network_info': {'network_type': 'vlan', 'segmentation_id': 1000}},
@@ -242,6 +260,14 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         self.assertRaises(exception.NetworkBadConfigurationException,
                           self.library._validate_network_type,
                           network_info)
+
+    def test_get_vserver_name(self):
+        vserver_id = fake.NETWORK_INFO['server_id']
+        vserver_name = fake.VSERVER_NAME_TEMPLATE % vserver_id
+
+        actual_result = self.library._get_vserver_name(vserver_id)
+
+        self.assertEqual(vserver_name, actual_result)
 
     def test_create_vserver_if_nonexistent(self):
 
@@ -263,14 +289,8 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                          mock.Mock(return_value=fake.AGGREGATES))
         self.mock_object(self.library, '_create_vserver_lifs')
 
-        result = self.library._create_vserver_if_nonexistent(
-            fake.NETWORK_INFO)
-
-        self.assertEqual(vserver_name, result)
-        self.library.db.share_server_backend_details_set.assert_called_with(
-            'fake_admin_context',
-            vserver_id,
-            {'vserver_name': vserver_name})
+        self.library._create_vserver_if_nonexistent(vserver_name,
+                                                    fake.NETWORK_INFO)
         self.library._get_api_client.assert_called_with(vserver=vserver_name)
         self.library._client.create_vserver.assert_called_with(
             vserver_name,
@@ -301,12 +321,8 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
         self.assertRaises(exception.NetAppException,
                           self.library._create_vserver_if_nonexistent,
+                          vserver_name,
                           fake.NETWORK_INFO)
-
-        self.library.db.share_server_backend_details_set.assert_called_with(
-            'fake_admin_context',
-            vserver_id,
-            {'vserver_name': vserver_name})
 
     @ddt.data(netapp_api.NaApiError, exception.NetAppException)
     def test_create_vserver_if_nonexistent_lif_creation_failure(self,
@@ -334,12 +350,9 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
         self.assertRaises(lif_exception,
                           self.library._create_vserver_if_nonexistent,
+                          vserver_name,
                           fake.NETWORK_INFO)
 
-        self.library.db.share_server_backend_details_set.assert_called_with(
-            'fake_admin_context',
-            vserver_id,
-            {'vserver_name': vserver_name})
         self.library._get_api_client.assert_called_with(vserver=vserver_name)
         self.assertTrue(self.library._client.create_vserver.called)
         self.library._create_vserver_lifs.assert_called_with(

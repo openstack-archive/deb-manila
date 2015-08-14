@@ -21,6 +21,7 @@ Includes decorator for re-raising Manila-type exceptions.
 SHOULD include dedicated exception logging.
 
 """
+import re
 
 from oslo_concurrency import processutils
 from oslo_config import cfg
@@ -103,6 +104,8 @@ class ManilaException(Exception):
         elif isinstance(message, Exception):
             message = six.text_type(message)
 
+        if re.match('.*[^\.]\.\.$', message):
+            message = message[:-1]
         self.msg = message
         super(ManilaException, self).__init__(message)
 
@@ -192,6 +195,10 @@ class ShareServerNotFoundByFilters(ShareServerNotFound):
 
 class ShareServerInUse(InUse):
     message = _("Share server %(share_server_id)s is in use.")
+
+
+class InvalidShareServer(Invalid):
+    message = _("Share server %(share_server_id)s is not valid.")
 
 
 class ShareServerNotCreated(ManilaException):
@@ -480,6 +487,21 @@ class ShareTypeCreateFailed(ManilaException):
 class ManageExistingShareTypeMismatch(ManilaException):
     message = _("Manage existing share failed due to share type mismatch: "
                 "%(reason)s")
+
+
+class ShareExtendingError(ManilaException):
+    message = _("Share %(share_id)s could not be extended due to error "
+                "in the driver: %(reason)s")
+
+
+class ShareShrinkingError(ManilaException):
+    message = _("Share %(share_id)s could not be shrunk due to error "
+                "in the driver: %(reason)s")
+
+
+class ShareShrinkingPossibleDataLoss(ManilaException):
+    message = _("Share %(share_id)s could not be shrunk due to "
+                "possible data loss")
 
 
 class InstanceNotFound(NotFound):

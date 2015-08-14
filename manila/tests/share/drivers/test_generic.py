@@ -17,6 +17,7 @@
 """Unit tests for the Generic driver module."""
 
 import os
+import time
 
 import ddt
 import mock
@@ -67,13 +68,18 @@ class GenericShareDriverTestCase(test.TestCase):
         self._helper_nfs = mock.Mock()
         CONF.set_default('driver_handles_share_servers', True)
         self.fake_conf = manila.share.configuration.Configuration(None)
-        self._db = mock.Mock()
+
+        self.fake_private_storage = mock.Mock()
+        self.mock_object(self.fake_private_storage, 'get',
+                         mock.Mock(return_value=None))
+
         with mock.patch.object(
                 generic.service_instance,
                 'ServiceInstanceManager',
                 fake_service_instance.FakeServiceInstanceManager):
             self._driver = generic.GenericShareDriver(
-                self._db, execute=self._execute, configuration=self.fake_conf)
+                private_storage=self.fake_private_storage,
+                execute=self._execute, configuration=self.fake_conf)
         self._driver.service_tenant_id = 'service tenant id'
         self._driver.service_network_id = 'service network id'
         self._driver.compute_api = fake_compute.API()
@@ -274,6 +280,41 @@ class GenericShareDriverTestCase(test.TestCase):
             ['sudo umount', mount_path, '&& sudo rmdir', mount_path],
         )
 
+    def test_unmount_device_retry_once(self):
+        self.counter = 0
+
+        def _side_effect(*args):
+            self.counter += 1
+            if self.counter < 2:
+                raise exception.ProcessExecutionError
+
+        mount_path = '/fake/mount/path'
+        self.mock_object(self._driver, '_is_device_mounted',
+                         mock.Mock(return_value=True))
+        self.mock_object(self._driver, '_sync_mount_temp_and_perm_files')
+        self.mock_object(self._driver, '_get_mount_path',
+                         mock.Mock(return_value=mount_path))
+        self.mock_object(self._driver, '_ssh_exec',
+                         mock.Mock(side_effect=_side_effect))
+        self.mock_object(time, 'sleep')
+
+        self._driver._unmount_device(self.share, self.server)
+
+        self.assertEqual(1, time.sleep.call_count)
+        self.assertEqual(self._driver._get_mount_path.mock_calls,
+                         [mock.call(self.share) for i in xrange(2)])
+        self.assertEqual(self._driver._is_device_mounted.mock_calls,
+                         [mock.call(mount_path,
+                                    self.server) for i in xrange(2)])
+        self._driver._sync_mount_temp_and_perm_files.assert_called_once_with(
+            self.server)
+        self.assertEqual(
+            self._driver._ssh_exec.mock_calls,
+            [mock.call(self.server, ['sudo umount', mount_path,
+                                     '&& sudo rmdir', mount_path])
+             for i in xrange(2)]
+        )
+
     def test_unmount_device_not_present(self):
         mount_path = '/fake/mount/path'
         self.mock_object(self._driver, '_is_device_mounted',
@@ -428,15 +469,39 @@ class GenericShareDriverTestCase(test.TestCase):
                           self._driver._attach_volume, self._context,
                           self.share, fake_server, attached_volume)
 
-    def test_attach_volume_failed_attach(self):
+    @ddt.data(exception.ManilaException, exception.Invalid)
+    def test_attach_volume_failed_attach(self, side_effect):
         fake_server = fake_compute.FakeServer()
         available_volume = fake_volume.FakeVolume()
         self.mock_object(self._driver.compute_api, 'instance_volume_attach',
-                         mock.Mock(side_effect=exception.ManilaException))
+                         mock.Mock(side_effect=side_effect))
         self.assertRaises(exception.ManilaException,
                           self._driver._attach_volume,
                           self._context, self.share, fake_server,
                           available_volume)
+        self.assertEqual(
+            3, self._driver.compute_api.instance_volume_attach.call_count)
+
+    def test_attach_volume_attached_retry_correct(self):
+        fake_server = fake_compute.FakeServer()
+        attached_volume = fake_volume.FakeVolume(status='available')
+        in_use_volume = fake_volume.FakeVolume(status='in-use')
+
+        side_effect = [exception.Invalid("Fake"), attached_volume]
+        attach_mock = mock.Mock(side_effect=side_effect)
+        self.mock_object(self._driver.compute_api, 'instance_volume_attach',
+                         attach_mock)
+        self.mock_object(self._driver.compute_api, 'instance_volumes_list',
+                         mock.Mock(return_value=[attached_volume]))
+        self.mock_object(self._driver.volume_api, 'get',
+                         mock.Mock(return_value=in_use_volume))
+
+        result = self._driver._attach_volume(self._context, self.share,
+                                             fake_server, attached_volume)
+
+        self.assertEqual(result, in_use_volume)
+        self.assertEqual(
+            2, self._driver.compute_api.instance_volume_attach.call_count)
 
     def test_attach_volume_error(self):
         fake_server = fake_compute.FakeServer()
@@ -459,6 +524,22 @@ class GenericShareDriverTestCase(test.TestCase):
         self.assertEqual(result, volume)
         self._driver.volume_api.get_all.assert_called_once_with(
             self._context, {'all_tenants': True, 'name': volume['name']})
+
+    def test_get_volume_with_private_data(self):
+        volume = fake_volume.FakeVolume()
+        self.mock_object(self._driver.volume_api, 'get',
+                         mock.Mock(return_value=volume))
+        self.mock_object(self.fake_private_storage, 'get',
+                         mock.Mock(return_value=volume['id']))
+
+        result = self._driver._get_volume(self._context, self.share['id'])
+
+        self.assertEqual(result, volume)
+        self._driver.volume_api.get.assert_called_once_with(
+            self._context, volume['id'])
+        self.fake_private_storage.get.assert_called_once_with(
+            self.share['id'], 'volume_id'
+        )
 
     def test_get_volume_none(self):
         vol_name = (
@@ -494,6 +575,21 @@ class GenericShareDriverTestCase(test.TestCase):
         self.assertEqual(result, volume_snapshot)
         self._driver.volume_api.get_all_snapshots.assert_called_once_with(
             self._context, {'name': volume_snapshot['name']})
+
+    def test_get_volume_snapshot_with_private_data(self):
+        volume_snapshot = fake_volume.FakeVolumeSnapshot()
+        self.mock_object(self._driver.volume_api, 'get_snapshot',
+                         mock.Mock(return_value=volume_snapshot))
+        self.mock_object(self.fake_private_storage, 'get',
+                         mock.Mock(return_value=volume_snapshot['id']))
+        result = self._driver._get_volume_snapshot(self._context,
+                                                   self.snapshot['id'])
+        self.assertEqual(result, volume_snapshot)
+        self._driver.volume_api.get_snapshot.assert_called_once_with(
+            self._context, volume_snapshot['id'])
+        self.fake_private_storage.get.assert_called_once_with(
+            self.snapshot['id'], 'volume_snapshot_id'
+        )
 
     def test_get_volume_snapshot_none(self):
         snap_name = (
@@ -605,6 +701,31 @@ class GenericShareDriverTestCase(test.TestCase):
                           self._driver._allocate_container,
                           self._context,
                           self.share)
+
+    def test_wait_for_available_volume(self):
+        fake_volume = {'status': 'creating', 'id': 'fake'}
+        fake_available_volume = {'status': 'available', 'id': 'fake'}
+        self.mock_object(self._driver.volume_api, 'get',
+                         mock.Mock(return_value=fake_available_volume))
+
+        actual_result = self._driver._wait_for_available_volume(
+            fake_volume, 5, "error", "timeout")
+
+        self.assertEqual(fake_available_volume, actual_result)
+        self._driver.volume_api.get.assert_called_once_with(
+            mock.ANY, fake_volume['id'])
+
+    @ddt.data(mock.Mock(return_value={'status': 'creating', 'id': 'fake'}),
+              mock.Mock(return_value={'status': 'error', 'id': 'fake'}))
+    def test_wait_for_available_volume_invalid(self, volume_get_mock):
+        fake_volume = {'status': 'creating', 'id': 'fake'}
+        self.mock_object(self._driver.volume_api, 'get', volume_get_mock)
+
+        self.assertRaises(
+            exception.ManilaException,
+            self._driver._wait_for_available_volume,
+            fake_volume, 1, "error", "timeout"
+        )
 
     def test_deallocate_container(self):
         fake_vol = fake_volume.FakeVolume()
@@ -1212,6 +1333,9 @@ class GenericShareDriverTestCase(test.TestCase):
         }
         self._driver.volume_api.update.assert_called_once_with(
             mock.ANY, volume['id'], expected_volume_update)
+        self.fake_private_storage.update.assert_called_once_with(
+            share['id'], {'volume_id': volume['id']}
+        )
 
     def test_get_mounted_share_size(self):
         output = ("Filesystem   blocks  Used Available Capacity Mounted on\n"
@@ -1229,6 +1353,232 @@ class GenericShareDriverTestCase(test.TestCase):
         self.assertRaises(exception.ManageInvalidShare,
                           self._driver._get_mounted_share_size,
                           '/fake/path', {})
+
+    def test_get_consumed_space(self):
+        mount_path = "fake_path"
+        server_details = {}
+        index = 2
+        valid_result = 1
+        self.mock_object(self._driver, '_get_mount_stats_by_index',
+                         mock.Mock(return_value=valid_result * 1024))
+
+        actual_result = self._driver._get_consumed_space(
+            mount_path, server_details)
+
+        self.assertEqual(valid_result, actual_result)
+        self._driver._get_mount_stats_by_index.assert_called_once_with(
+            mount_path, server_details, index, block_size='M'
+        )
+
+    def test_get_consumed_space_invalid(self):
+        self.mock_object(
+            self._driver,
+            '_get_mount_stats_by_index',
+            mock.Mock(side_effect=exception.ManilaException("fake"))
+        )
+
+        self.assertRaises(
+            exception.InvalidShare,
+            self._driver._get_consumed_space,
+            "fake", "fake"
+        )
+
+    def test_extend_share(self):
+        fake_volume = "fake"
+        fake_share = {
+            'id': 'fake',
+            'share_proto': 'NFS',
+            'name': 'test_share',
+        }
+        new_size = 123
+        srv_details = self.server['backend_details']
+        self.mock_object(
+            self._driver.service_instance_manager,
+            'get_common_server',
+            mock.Mock(return_value=self.server)
+        )
+        self.mock_object(self._driver, '_unmount_device')
+        self.mock_object(self._driver, '_detach_volume')
+        self.mock_object(self._driver, '_extend_volume')
+        self.mock_object(self._driver, '_attach_volume')
+        self.mock_object(self._driver, '_mount_device')
+        self.mock_object(self._driver, '_resize_filesystem')
+        self.mock_object(
+            self._driver, '_get_volume',
+            mock.Mock(return_value=fake_volume)
+        )
+        CONF.set_default('driver_handles_share_servers', False)
+
+        self._driver.extend_share(fake_share, new_size)
+
+        self.assertTrue(
+            self._driver.service_instance_manager.get_common_server.called)
+        self._driver._unmount_device.assert_called_once_with(
+            fake_share, srv_details)
+        self._driver._detach_volume.assert_called_once_with(
+            mock.ANY, fake_share, srv_details)
+        self._driver._get_volume.assert_called_once_with(
+            mock.ANY, fake_share['id'])
+        self._driver._extend_volume.assert_called_once_with(
+            mock.ANY, fake_volume, new_size)
+        self._driver._attach_volume.assert_called_once_with(
+            mock.ANY, fake_share, srv_details['instance_id'], mock.ANY)
+        self._helper_nfs.disable_access_for_maintenance.\
+            assert_called_once_with(srv_details, 'test_share')
+        self._helper_nfs.restore_access_after_maintenance.\
+            assert_called_once_with(srv_details, 'test_share')
+        self.assertTrue(self._driver._resize_filesystem.called)
+
+    def test_extend_volume(self):
+        fake_volume = {'id': 'fake'}
+        new_size = 123
+        self.mock_object(self._driver.volume_api, 'extend')
+        self.mock_object(self._driver, '_wait_for_available_volume')
+
+        self._driver._extend_volume(self._context, fake_volume, new_size)
+
+        self._driver.volume_api.extend.assert_called_once_with(
+            self._context, fake_volume['id'], new_size
+        )
+        self._driver._wait_for_available_volume.assert_called_once_with(
+            fake_volume, mock.ANY, msg_timeout=mock.ANY, msg_error=mock.ANY
+        )
+
+    def test_resize_filesystem(self):
+        fake_server_details = {'fake': 'fake'}
+        fake_volume = {'mountpoint': '/dev/fake'}
+        self.mock_object(self._driver, '_ssh_exec')
+
+        self._driver._resize_filesystem(
+            fake_server_details, fake_volume, new_size=123)
+
+        self._driver._ssh_exec.assert_any_call(
+            fake_server_details, ['sudo', 'fsck', '-pf', '/dev/fake'])
+        self._driver._ssh_exec.assert_any_call(
+            fake_server_details,
+            ['sudo', 'resize2fs', '/dev/fake', "%sG" % 123]
+        )
+        self.assertEqual(2, self._driver._ssh_exec.call_count)
+
+    @ddt.data(
+        {
+            'source': processutils.ProcessExecutionError(
+                stderr="resize2fs: New size smaller than minimum (123456)"),
+            'target': exception.Invalid
+        },
+        {
+            'source': processutils.ProcessExecutionError(stderr="fake_error"),
+            'target': exception.ManilaException
+        }
+    )
+    @ddt.unpack
+    def test_resize_filesystem_invalid_new_size(self, source, target):
+        fake_server_details = {'fake': 'fake'}
+        fake_volume = {'mountpoint': '/dev/fake'}
+        ssh_mock = mock.Mock(side_effect=["fake", source])
+        self.mock_object(self._driver, '_ssh_exec', ssh_mock)
+
+        self.assertRaises(
+            target,
+            self._driver._resize_filesystem,
+            fake_server_details, fake_volume, new_size=123
+        )
+
+    def test_shrink_share_invalid_size(self):
+        fake_share = {'id': 'fake', 'export_locations': [{'path': 'test'}]}
+        new_size = 123
+        self.mock_object(
+            self._driver.service_instance_manager,
+            'get_common_server',
+            mock.Mock(return_value=self.server)
+        )
+        self.mock_object(self._driver, '_get_helper')
+        self.mock_object(self._driver, '_get_consumed_space',
+                         mock.Mock(return_value=200))
+        CONF.set_default('driver_handles_share_servers', False)
+
+        self.assertRaises(
+            exception.ShareShrinkingPossibleDataLoss,
+            self._driver.shrink_share,
+            fake_share,
+            new_size
+        )
+
+        self._driver._get_helper.assert_called_once_with(fake_share)
+        self._driver._get_consumed_space.assert_called_once_with(
+            mock.ANY, self.server['backend_details'])
+
+    def _setup_shrink_mocks(self):
+        share = {'id': 'fake', 'export_locations': [{'path': 'test'}],
+                 'name': 'fake'}
+        volume = {'id': 'fake'}
+        new_size = 123
+        server_details = self.server['backend_details']
+        self.mock_object(
+            self._driver.service_instance_manager,
+            'get_common_server',
+            mock.Mock(return_value=self.server)
+        )
+        helper = mock.Mock()
+        self.mock_object(self._driver, '_get_helper',
+                         mock.Mock(return_value=helper))
+        self.mock_object(self._driver, '_get_consumed_space',
+                         mock.Mock(return_value=100))
+        self.mock_object(self._driver, '_get_volume',
+                         mock.Mock(return_value=volume))
+        self.mock_object(self._driver, '_unmount_device')
+        self.mock_object(self._driver, '_mount_device')
+        CONF.set_default('driver_handles_share_servers', False)
+
+        return share, volume, new_size, server_details, helper
+
+    @ddt.data({'source': exception.Invalid("fake"),
+               'target': exception.ShareShrinkingPossibleDataLoss},
+              {'source': exception.ManilaException("fake"),
+               'target': exception.Invalid})
+    @ddt.unpack
+    def test_shrink_share_error_on_resize_fs(self, source, target):
+        share, vol, size, server_details, _ = self._setup_shrink_mocks()
+        resize_mock = mock.Mock(side_effect=source)
+        self.mock_object(self._driver, '_resize_filesystem', resize_mock)
+
+        self.assertRaises(target, self._driver.shrink_share, share, size)
+
+        resize_mock.assert_called_once_with(server_details, vol,
+                                            new_size=size)
+
+    def test_shrink_share(self):
+        share, vol, size, server_details, helper = self._setup_shrink_mocks()
+        self.mock_object(self._driver, '_resize_filesystem')
+
+        self._driver.shrink_share(share, size)
+
+        self._driver._get_helper.assert_called_once_with(share)
+        self._driver._get_consumed_space.assert_called_once_with(
+            mock.ANY, server_details)
+        self._driver._get_volume.assert_called_once_with(mock.ANY, share['id'])
+        self._driver._unmount_device.assert_called_once_with(share,
+                                                             server_details)
+        self._driver._resize_filesystem(
+            server_details, vol, new_size=size)
+        self._driver._mount_device(share, server_details, vol)
+        self.assertTrue(helper.disable_access_for_maintenance.called)
+        self.assertTrue(helper.restore_access_after_maintenance.called)
+
+    @ddt.data({'share_servers': [], 'result': None},
+              {'share_servers': None, 'result': None},
+              {'share_servers': ['fake'], 'result': 'fake'},
+              {'share_servers': ['fake', 'test'], 'result': 'fake'})
+    @ddt.unpack
+    def tests_choose_share_server_compatible_with_share(self, share_servers,
+                                                        result):
+        fake_share = "fake"
+
+        actual_result = self._driver.choose_share_server_compatible_with_share(
+            self._context, share_servers, fake_share
+        )
+
+        self.assertEqual(result, actual_result)
 
 
 @generic.ensure_server
@@ -1384,6 +1734,49 @@ class NFSHelperTestCase(test.TestCase):
             dict(), export_location)
 
         self.assertEqual('/foo/bar', result)
+
+    def test_disable_access_for_maintenance(self):
+        fake_maintenance_path = "fake.path"
+        share_mount_path = os.path.join(
+            self._helper.configuration.share_mount_path, self.share_name)
+        self.mock_object(self._helper, '_ssh_exec')
+        self.mock_object(self._helper, '_sync_nfs_temp_and_perm_files')
+        self.mock_object(self._helper, '_get_maintenance_file_path',
+                         mock.Mock(return_value=fake_maintenance_path))
+
+        self._helper.disable_access_for_maintenance(
+            self.server, self.share_name)
+
+        self._helper._ssh_exec.assert_any_call(
+            self.server,
+            ['cat', const.NFS_EXPORTS_FILE,
+             '| grep', self.share_name,
+             '| sudo tee', fake_maintenance_path]
+        )
+        self._helper._ssh_exec.assert_any_call(
+            self.server,
+            ['sudo', 'exportfs', '-u', share_mount_path]
+        )
+        self._helper._sync_nfs_temp_and_perm_files.assert_called_once_with(
+            self.server
+        )
+
+    def test_restore_access_after_maintenance(self):
+        fake_maintenance_path = "fake.path"
+        self.mock_object(self._helper, '_get_maintenance_file_path',
+                         mock.Mock(return_value=fake_maintenance_path))
+        self.mock_object(self._helper, '_ssh_exec')
+
+        self._helper.restore_access_after_maintenance(
+            self.server, self.share_name)
+
+        self._helper._ssh_exec.assert_called_once_with(
+            self.server,
+            ['cat', fake_maintenance_path,
+             '| sudo tee -a', const.NFS_EXPORTS_FILE,
+             '&& sudo exportfs -r', '&& sudo rm -f',
+             fake_maintenance_path]
+        )
 
 
 @ddt.ddt
@@ -1693,3 +2086,41 @@ class CIFSHelperTestCase(test.TestCase):
             fake_server, ['sudo', 'net', 'conf', 'getparm', 'foo', 'path'])
         self._helper._get_share_group_name_from_export_location.\
             assert_called_once_with(export_location)
+
+    def test_disable_access_for_maintenance(self):
+        allowed_hosts = ['test', 'test2']
+        maintenance_path = os.path.join(
+            self._helper.configuration.share_mount_path,
+            "%s.maintenance" % self.share_name)
+        self.mock_object(self._helper, '_set_allow_hosts')
+        self.mock_object(self._helper, '_get_allow_hosts',
+                         mock.Mock(return_value=allowed_hosts))
+
+        self._helper.disable_access_for_maintenance(
+            self.server_details, self.share_name)
+
+        self._helper._get_allow_hosts.assert_called_once_with(
+            self.server_details, self.share_name)
+        self._helper._set_allow_hosts.assert_called_once_with(
+            self.server_details, [], self.share_name)
+        valid_cmd = ['echo', "'test test2'", '| sudo tee', maintenance_path]
+        self._helper._ssh_exec.assert_called_once_with(
+            self.server_details, valid_cmd)
+
+    def test_restore_access_after_maintenance(self):
+        fake_maintenance_path = "test.path"
+        self.mock_object(self._helper, '_set_allow_hosts')
+        self.mock_object(self._helper, '_get_maintenance_file_path',
+                         mock.Mock(return_value=fake_maintenance_path))
+        self.mock_object(self._helper, '_ssh_exec',
+                         mock.Mock(side_effect=[("fake fake2", 0), "fake"]))
+
+        self._helper.restore_access_after_maintenance(
+            self.server_details, self.share_name)
+
+        self._helper._set_allow_hosts.assert_called_once_with(
+            self.server_details, ['fake', 'fake2'], self.share_name)
+        self._helper._ssh_exec.assert_any_call(
+            self.server_details, ['cat', fake_maintenance_path])
+        self._helper._ssh_exec.assert_any_call(
+            self.server_details, ['sudo rm -f', fake_maintenance_path])

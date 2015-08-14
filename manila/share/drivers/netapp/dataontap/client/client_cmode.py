@@ -17,6 +17,7 @@
 
 import copy
 import hashlib
+import time
 
 from oslo_log import log
 from oslo_utils import strutils
@@ -31,6 +32,8 @@ from manila.share.drivers.netapp import utils as na_utils
 
 LOG = log.getLogger(__name__)
 DELETED_PREFIX = 'deleted_manila_'
+DEFAULT_IPSPACE = 'Default'
+DEFAULT_BROADCAST_DOMAIN = 'OpenStack'
 
 
 class NetAppCmodeClient(client_base.NetAppBaseClient):
@@ -44,6 +47,19 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         self.connection.set_api_version(1, 15)
         (major, minor) = self.get_ontapi_version(cached=False)
         self.connection.set_api_version(major, minor)
+
+        self._init_features()
+
+    def _init_features(self):
+        """Initialize cDOT feature support map."""
+        super(NetAppCmodeClient, self)._init_features()
+
+        ontapi_version = self.get_ontapi_version(cached=True)
+        ontapi_1_30 = ontapi_version >= (1, 30)
+
+        self.features.add_feature('BROADCAST_DOMAINS', supported=ontapi_1_30)
+        self.features.add_feature('IPSPACES', supported=ontapi_1_30)
+        self.features.add_feature('SUBNETS', supported=ontapi_1_30)
 
     def _invoke_vserver_api(self, na_element, vserver):
         server = copy.copy(self.connection)
@@ -264,7 +280,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 },
             },
             'desired-attributes': {
-                'node-details-info': {
+                'net-port-info': {
                     'port': None,
                     'node': None,
                     'operational-speed': None,
@@ -349,6 +365,9 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             self._create_vlan(node, port, vlan)
             home_port_name = '%(port)s-%(tag)s' % {'port': port, 'tag': vlan}
 
+        if self.features.BROADCAST_DOMAINS:
+            self._ensure_broadcast_domain_for_port(node, home_port_name)
+
         interface_name = (lif_name_template %
                           {'node': node, 'net_allocation_id': allocation_id})
 
@@ -390,6 +409,104 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 msg = _('Failed to create VLAN %(vlan)s on '
                         'port %(port)s. %(err_msg)s')
                 msg_args = {'vlan': vlan, 'port': port, 'err_msg': e.message}
+                raise exception.NetAppException(msg % msg_args)
+
+    @na_utils.trace
+    def _ensure_broadcast_domain_for_port(self, node, port,
+                                          domain=DEFAULT_BROADCAST_DOMAIN,
+                                          ipspace=DEFAULT_IPSPACE):
+        """Ensure a port is in a broadcast domain.  Create one if necessary."""
+
+        if self._get_broadcast_domain_for_port(node, port):
+            return
+
+        if not self._broadcast_domain_exists(domain, ipspace):
+            self._create_broadcast_domain(domain, ipspace)
+
+        self._add_port_to_broadcast_domain(node, port, domain, ipspace)
+
+    @na_utils.trace
+    def _get_broadcast_domain_for_port(self, node, port):
+        """Get broadcast domain for a specific port."""
+        api_args = {
+            'query': {
+                'net-port-info': {
+                    'node': node,
+                    'port': port,
+                },
+            },
+            'desired-attributes': {
+                'net-port-info': {
+                    'broadcast-domain': None,
+                },
+            },
+        }
+        result = self.send_request('net-port-get-iter', api_args)
+
+        net_port_info_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+        port_info = net_port_info_list.get_children()
+        if not port_info:
+            msg = _('Could not find port %(port)s on node %(node)s.')
+            msg_args = {'port': port, 'node': node}
+            raise exception.NetAppException(msg % msg_args)
+
+        return port_info[0].get_child_content('broadcast-domain')
+
+    @na_utils.trace
+    def _broadcast_domain_exists(self, domain, ipspace):
+        """Check if a broadcast domain exists."""
+        api_args = {
+            'query': {
+                'net-port-broadcast-domain-info': {
+                    'ipspace': ipspace,
+                    'broadcast-domain': domain,
+                },
+            },
+            'desired-attributes': {
+                'net-port-broadcast-domain-info': None,
+            },
+        }
+        result = self.send_request('net-port-broadcast-domain-get-iter',
+                                   api_args)
+        return self._has_records(result)
+
+    @na_utils.trace
+    def _create_broadcast_domain(self, domain, ipspace, mtu=1500):
+        """Create a broadcast domain."""
+        api_args = {
+            'ipspace': ipspace,
+            'broadcast-domain': domain,
+            'mtu': mtu,
+        }
+        self.send_request('net-port-broadcast-domain-create', api_args)
+
+    @na_utils.trace
+    def _add_port_to_broadcast_domain(self, node, port, domain, ipspace):
+
+        qualified_port_name = ':'.join([node, port])
+        try:
+            api_args = {
+                'ipspace': ipspace,
+                'broadcast-domain': domain,
+                'ports': {
+                    'net-qualified-port-name': qualified_port_name,
+                }
+            }
+            self.send_request('net-port-broadcast-domain-add-ports', api_args)
+        except netapp_api.NaApiError as e:
+            if e.code == (netapp_api.
+                          E_VIFMGR_PORT_ALREADY_ASSIGNED_TO_BROADCAST_DOMAIN):
+                LOG.debug('Port %(port)s already exists in broadcast domain '
+                          '%(domain)s', {'port': port, 'domain': domain})
+            else:
+                msg = _('Failed to add port %(port)s to broadcast domain '
+                        '%(domain)s. %(err_msg)s')
+                msg_args = {
+                    'port': qualified_port_name,
+                    'domain': domain,
+                    'err_msg': e.message,
+                }
                 raise exception.NetAppException(msg % msg_args)
 
     @na_utils.trace
@@ -594,12 +711,14 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
     def setup_security_services(self, security_services, vserver_client,
                                 vserver_name):
         api_args = {
-            'name-mapping-switch': {
-                'nmswitch': 'ldap,file',
-            },
-            'name-server-switch': {
-                'nsswitch': 'ldap,file',
-            },
+            'name-mapping-switch': [
+                {'nmswitch': 'ldap'},
+                {'nmswitch': 'file'}
+            ],
+            'name-server-switch': [
+                {'nsswitch': 'ldap'},
+                {'nsswitch': 'file'}
+            ],
             'vserver-name': vserver_name,
         }
         self.send_request('vserver-modify', api_args)
@@ -759,7 +878,9 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
     @na_utils.trace
     def create_volume(self, aggregate_name, volume_name, size_gb,
                       thin_provisioned=False, snapshot_policy=None,
-                      language=None, max_files=None):
+                      language=None, dedup_enabled=False,
+                      compression_enabled=False, max_files=None):
+
         """Creates a volume."""
         api_args = {
             'containing-aggr-name': aggregate_name,
@@ -775,8 +896,28 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             api_args['language-code'] = language
         self.send_request('volume-create', api_args)
 
+        # cDOT compression requires that deduplication be enabled.
+        if dedup_enabled or compression_enabled:
+            self.enable_dedup(volume_name)
+        if compression_enabled:
+            self.enable_compression(volume_name)
         if max_files is not None:
             self.set_volume_max_files(volume_name, max_files)
+
+    @na_utils.trace
+    def enable_dedup(self, volume_name):
+        """Enable deduplication on volume."""
+        api_args = {'path': '/vol/%s' % volume_name}
+        self.send_request('sis-enable', api_args)
+
+    @na_utils.trace
+    def enable_compression(self, volume_name):
+        """Enable compression on volume."""
+        api_args = {
+            'path': '/vol/%s' % volume_name,
+            'enable-compression': 'true'
+        }
+        self.send_request('sis-set-config', api_args)
 
     @na_utils.trace
     def set_volume_max_files(self, volume_name, max_files):
@@ -901,7 +1042,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             raise
 
     @na_utils.trace
-    def unmount_volume(self, volume_name, force=False):
+    def _unmount_volume(self, volume_name, force=False):
         """Unmounts a volume."""
         api_args = {
             'volume-name': volume_name,
@@ -913,6 +1054,44 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             if e.code == netapp_api.EVOL_NOT_MOUNTED:
                 return
             raise
+
+    @na_utils.trace
+    def unmount_volume(self, volume_name, force=False, wait_seconds=30):
+        """Unmounts a volume, retrying if a clone split is ongoing.
+
+        NOTE(cknight): While unlikely to happen in normal operation, any client
+        that tries to delete volumes immediately after creating volume clones
+        is likely to experience failures if cDOT isn't quite ready for the
+        delete.  The volume unmount is the first operation in the delete
+        path that fails in this case, and there is no proactive check we can
+        use to reliably predict the failure.  And there isn't a specific error
+        code from volume-unmount, so we have to check for a generic error code
+        plus certain language in the error code.  It's ugly, but it works, and
+        it's better than hard-coding a fixed delay.
+        """
+
+        # Do the unmount, handling split-related errors with retries.
+        retry_interval = 3  # seconds
+        for retry in range(wait_seconds / retry_interval):
+            try:
+                self._unmount_volume(volume_name, force=force)
+                LOG.debug('Volume %s unmounted.', volume_name)
+                return
+            except netapp_api.NaApiError as e:
+                if e.code == netapp_api.EAPIERROR and 'job ID' in e.message:
+                    msg = _LW('Could not unmount volume %(volume)s due to '
+                              'ongoing volume operation: %(exception)s')
+                    msg_args = {'volume': volume_name, 'exception': e}
+                    LOG.warning(msg, msg_args)
+                    time.sleep(retry_interval)
+                    continue
+                raise
+
+        msg = _('Failed to unmount volume %(volume)s after '
+                'waiting for %(wait_seconds)s seconds.')
+        msg_args = {'volume': volume_name, 'wait_seconds': wait_seconds}
+        LOG.error(msg, msg_args)
+        raise exception.NetAppException(msg % msg_args)
 
     @na_utils.trace
     def delete_volume(self, volume_name):

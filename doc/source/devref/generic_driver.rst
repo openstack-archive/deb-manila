@@ -83,6 +83,13 @@ Known restrictions
 - Juno version does not use security services data provided with share-network.
   These data will be just ignored.
 
+- Liberty version adds a share extend capability. Share access will be briefly
+  interrupted during an extend operation.
+
+- Liberty version adds a share shrink capability, but this capability is not
+  effective because generic driver shrinks only filesystem size and doesn't
+  shrink the size of Cinder volume.
+
 The :mod:`manila.share.drivers.generic` Module
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

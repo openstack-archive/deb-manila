@@ -21,10 +21,11 @@ import itertools
 
 import oslo_concurrency.opts
 import oslo_log._options
+import oslo_middleware.opts
+import oslo_policy.opts
 
 import manila.api.common
 import manila.api.middleware.auth
-import manila.api.middleware.sizelimit
 import manila.common.config
 import manila.compute
 import manila.compute.nova
@@ -37,9 +38,6 @@ import manila.network.neutron.api
 import manila.network.neutron.neutron_network_plugin
 import manila.network.nova_network_plugin
 import manila.network.standalone_network_plugin
-import manila.openstack.common.eventlet_backdoor
-import manila.openstack.common.log
-import manila.openstack.common.policy
 import manila.quota
 import manila.scheduler.driver
 import manila.scheduler.host_manager
@@ -65,6 +63,7 @@ import manila.share.drivers.netapp.options
 import manila.share.drivers.quobyte.quobyte
 import manila.share.drivers.service_instance
 import manila.share.drivers.zfssa.zfssashare
+import manila.share.drivers_private_data
 import manila.share.manager
 import manila.volume
 import manila.volume.cinder
@@ -77,7 +76,6 @@ _global_opt_lists = [
     # Keep list alphabetically sorted
     manila.api.common.api_common_opts,
     [manila.api.middleware.auth.use_forwarded_for_opt],
-    [manila.api.middleware.sizelimit.max_request_body_size_opt],
     manila.common.config.core_opts,
     manila.common.config.debug_opts,
     manila.common.config.global_opts,
@@ -93,27 +91,20 @@ _global_opt_lists = [
     neutron_single_network_plugin_opts,
     manila.network.nova_network_plugin.nova_single_network_plugin_opts,
     manila.network.standalone_network_plugin.standalone_network_plugin_opts,
-    manila.openstack.common.eventlet_backdoor.eventlet_backdoor_opts,
-    manila.openstack.common.log.common_cli_opts,
-    manila.openstack.common.log.generic_log_opts,
-    manila.openstack.common.log.log_opts,
-    manila.openstack.common.log.logging_cli_opts,
-    manila.openstack.common.policy.policy_opts,
     manila.quota.quota_opts,
     manila.scheduler.driver.scheduler_driver_opts,
-    manila.scheduler.host_manager.host_manager_opts,
     manila.scheduler.host_manager.host_manager_opts,
     [manila.scheduler.manager.scheduler_driver_opt],
     [manila.scheduler.scheduler_options.scheduler_json_config_location_opt],
     manila.scheduler.simple.simple_scheduler_opts,
-    manila.scheduler.simple.simple_scheduler_opts,
     manila.scheduler.weights.capacity.capacity_weight_opts,
-    manila.scheduler.weights.capacity.capacity_weight_opts,
+    manila.scheduler.weights.pool.pool_weight_opts,
     manila.service.service_opts,
     manila.share.api.share_api_opts,
     manila.share.driver.ganesha_opts,
     manila.share.driver.share_opts,
     manila.share.driver.ssh_opts,
+    manila.share.drivers_private_data.private_data_opts,
     manila.share.drivers.emc.driver.EMC_NAS_OPTS,
     manila.share.drivers.emc.plugins.isilon.isilon.ISILON_OPTS,
     manila.share.drivers.generic.share_opts,
@@ -147,6 +138,8 @@ _opts = [
 
 _opts.extend(oslo_concurrency.opts.list_opts())
 _opts.extend(oslo_log._options.list_opts())
+_opts.extend(oslo_middleware.opts.list_opts())
+_opts.extend(oslo_policy.opts.list_opts())
 
 
 def list_opts():

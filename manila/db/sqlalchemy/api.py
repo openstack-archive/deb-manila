@@ -18,10 +18,13 @@
 
 """Implementation of SQLAlchemy backend."""
 
+import copy
 import datetime
 import sys
-import uuid
 import warnings
+
+# NOTE(uglide): Required to override default oslo_db Query class
+import manila.db.sqlalchemy.query  # noqa
 
 from oslo_config import cfg
 from oslo_db import exception as db_exception
@@ -30,10 +33,10 @@ from oslo_db.sqlalchemy import session
 from oslo_db.sqlalchemy import utils as db_utils
 from oslo_log import log
 from oslo_utils import timeutils
+from oslo_utils import uuidutils
 import six
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
-from sqlalchemy.sql.expression import literal_column
 from sqlalchemy.sql.expression import true
 from sqlalchemy.sql import func
 
@@ -241,6 +244,12 @@ def exact_filter(query, model, filters, legal_keys):
         query = query.filter_by(**filter_dict)
 
     return query
+
+
+def ensure_model_dict_has_id(model_dict):
+    if not model_dict.get('id'):
+        model_dict['id'] = uuidutils.generate_uuid()
+    return model_dict
 
 
 def _sync_shares(context, project_id, user_id, session):
@@ -922,7 +931,7 @@ def quota_reserve(context, resources, project_quotas, user_quotas, deltas,
             reservations = []
             for res, delta in deltas.items():
                 reservation = _reservation_create(elevated,
-                                                  str(uuid.uuid4()),
+                                                  uuidutils.generate_uuid(),
                                                   user_usages[res],
                                                   project_id,
                                                   user_id,
@@ -988,10 +997,7 @@ def reservation_commit(context, reservations, project_id=None, user_id=None):
             if reservation.delta >= 0:
                 usage.reserved -= reservation.delta
             usage.in_use += reservation.delta
-        reservation_query.update({'deleted': 1,
-                                  'deleted_at': timeutils.utcnow(),
-                                  'updated_at': literal_column('updated_at')},
-                                 synchronize_session=False)
+        reservation_query.soft_delete(synchronize_session=False)
 
 
 @require_context
@@ -1005,10 +1011,7 @@ def reservation_rollback(context, reservations, project_id=None, user_id=None):
             usage = usages[reservation.resource]
             if reservation.delta >= 0:
                 usage.reserved -= reservation.delta
-        reservation_query.update({'deleted': 1,
-                                  'deleted_at': timeutils.utcnow(),
-                                  'updated_at': literal_column('updated_at')},
-                                 synchronize_session=False)
+        reservation_query.soft_delete(synchronize_session=False)
 
 
 @require_admin_context
@@ -1018,29 +1021,17 @@ def quota_destroy_all_by_project_and_user(context, project_id, user_id):
         model_query(context, models.ProjectUserQuota, session=session,
                     read_deleted="no").\
             filter_by(project_id=project_id).\
-            filter_by(user_id=user_id).\
-            update({'deleted': 1,
-                    'deleted_at': timeutils.utcnow(),
-                    'updated_at': literal_column('updated_at')},
-                   synchronize_session=False)
+            filter_by(user_id=user_id).soft_delete(synchronize_session=False)
 
         model_query(context, models.QuotaUsage,
                     session=session, read_deleted="no").\
             filter_by(project_id=project_id).\
-            filter_by(user_id=user_id).\
-            update({'deleted': 1,
-                    'deleted_at': timeutils.utcnow(),
-                    'updated_at': literal_column('updated_at')},
-                   synchronize_session=False)
+            filter_by(user_id=user_id).soft_delete(synchronize_session=False)
 
         model_query(context, models.Reservation,
                     session=session, read_deleted="no").\
             filter_by(project_id=project_id).\
-            filter_by(user_id=user_id).\
-            update({'deleted': 1,
-                    'deleted_at': timeutils.utcnow(),
-                    'updated_at': literal_column('updated_at')},
-                   synchronize_session=False)
+            filter_by(user_id=user_id).soft_delete(synchronize_session=False)
 
 
 @require_admin_context
@@ -1050,34 +1041,22 @@ def quota_destroy_all_by_project(context, project_id):
         model_query(context, models.Quota, session=session,
                     read_deleted="no").\
             filter_by(project_id=project_id).\
-            update({'deleted': 1,
-                    'deleted_at': timeutils.utcnow(),
-                    'updated_at': literal_column('updated_at')},
-                   synchronize_session=False)
+            soft_delete(synchronize_session=False)
 
         model_query(context, models.ProjectUserQuota, session=session,
                     read_deleted="no").\
             filter_by(project_id=project_id).\
-            update({'deleted': 1,
-                    'deleted_at': timeutils.utcnow(),
-                    'updated_at': literal_column('updated_at')},
-                   synchronize_session=False)
+            soft_delete(synchronize_session=False)
 
         model_query(context, models.QuotaUsage,
                     session=session, read_deleted="no").\
             filter_by(project_id=project_id).\
-            update({'deleted': 1,
-                    'deleted_at': timeutils.utcnow(),
-                    'updated_at': literal_column('updated_at')},
-                   synchronize_session=False)
+            soft_delete(synchronize_session=False)
 
         model_query(context, models.Reservation,
                     session=session, read_deleted="no").\
             filter_by(project_id=project_id).\
-            update({'deleted': 1,
-                    'deleted_at': timeutils.utcnow(),
-                    'updated_at': literal_column('updated_at')},
-                   synchronize_session=False)
+            soft_delete(synchronize_session=False)
 
 
 @require_admin_context
@@ -1094,10 +1073,7 @@ def reservation_expire(context):
                 reservation.usage.reserved -= reservation.delta
                 session.add(reservation.usage)
 
-        reservation_query.update({'deleted': 1,
-                                  'deleted_at': timeutils.utcnow(),
-                                  'updated_at': literal_column('updated_at')},
-                                 synchronize_session=False)
+        reservation_query.soft_delete(synchronize_session=False)
 
 
 ################
@@ -1126,17 +1102,16 @@ def _metadata_refs(metadata_dict, meta_class):
 
 @require_context
 def share_create(context, values):
+    values = ensure_model_dict_has_id(values)
     values['share_metadata'] = _metadata_refs(values.get('metadata'),
                                               models.ShareMetadata)
     share_ref = models.Share()
-    if not values.get('id'):
-        values['id'] = str(uuid.uuid4())
     share_ref.update(values)
     session = get_session()
     with session.begin():
         share_ref.save(session=session)
-
-    return share_ref
+        # NOTE(u_glide): Do so to prevent errors with relationships
+        return share_get(context, share_ref['id'], session=session)
 
 
 @require_admin_context
@@ -1307,15 +1282,9 @@ def share_get_all_by_share_server(context, share_server_id, filters=None,
 def share_delete(context, share_id):
     session = get_session()
     share_ref = share_get(context, share_id, session)
-    share_ref.update({'deleted': True,
-                      'deleted_at': timeutils.utcnow(),
-                      'updated_at': literal_column('updated_at'),
-                      'status': 'deleted'})
+    share_ref.soft_delete(session=session, update_status=True)
     session.query(models.ShareMetadata).\
-        filter_by(share_id=share_id).\
-        update({'deleted': 1,
-                'deleted_at': timeutils.utcnow(),
-                'updated_at': literal_column('updated_at')})
+        filter_by(share_id=share_id).soft_delete()
     session.query(models.ShareExportLocations).\
         filter_by(share_id=share_id).soft_delete()
 
@@ -1333,11 +1302,10 @@ def _share_access_get_query(context, session, values):
 
 @require_context
 def share_access_create(context, values):
+    values = ensure_model_dict_has_id(values)
     session = get_session()
     with session.begin():
         access_ref = models.ShareAccessMapping()
-        if not values.get('id'):
-            values['id'] = str(uuid.uuid4())
         access_ref.update(values)
         access_ref.save(session=session)
         return access_ref
@@ -1377,11 +1345,8 @@ def share_access_delete(context, access_id):
     session = get_session()
     with session.begin():
         session.query(models.ShareAccessMapping).\
-            filter_by(id=access_id).\
-            update({'deleted': access_id,
-                    'deleted_at': timeutils.utcnow(),
-                    'updated_at': literal_column('updated_at'),
-                    'state': models.ShareAccessMapping.STATE_DELETED})
+            filter_by(id=access_id).soft_delete(update_status=True,
+                                                status_field_name='state')
 
 
 @require_context
@@ -1400,11 +1365,10 @@ def share_access_update(context, access_id, values):
 
 @require_context
 def share_snapshot_create(context, values):
-    snapshot_ref = models.ShareSnapshot()
-    if not values.get('id'):
-        values['id'] = str(uuid.uuid4())
-    snapshot_ref.update(values)
+    values = ensure_model_dict_has_id(values)
 
+    snapshot_ref = models.ShareSnapshot()
+    snapshot_ref.update(values)
     session = get_session()
     with session.begin():
         snapshot_ref.save(session=session)
@@ -1434,11 +1398,7 @@ def share_snapshot_destroy(context, snapshot_id):
     session = get_session()
     with session.begin():
         session.query(models.ShareSnapshot).\
-            filter_by(id=snapshot_id).\
-            update({'status': 'deleted',
-                    'deleted': snapshot_id,
-                    'deleted_at': timeutils.utcnow(),
-                    'updated_at': literal_column('updated_at')})
+            filter_by(id=snapshot_id).soft_delete(update_status=True)
 
 
 @require_context
@@ -1574,10 +1534,7 @@ def share_metadata_get(context, share_id):
 @require_share_exists
 def share_metadata_delete(context, share_id, key):
     _share_metadata_get_query(context, share_id).\
-        filter_by(key=key).\
-        update({'deleted': 1,
-                'deleted_at': timeutils.utcnow(),
-                'updated_at': literal_column('updated_at')})
+        filter_by(key=key).soft_delete()
 
 
 @require_context
@@ -1621,8 +1578,7 @@ def _share_metadata_update(context, share_id, metadata, delete, session=None):
                     meta_ref = _share_metadata_get_item(context, share_id,
                                                         meta_key,
                                                         session=session)
-                    meta_ref.update({'deleted': 1})
-                    meta_ref.save(session=session)
+                    meta_ref.soft_delete(session=session)
 
         meta_ref = None
 
@@ -1751,8 +1707,7 @@ def share_export_locations_update(context, share_id, export_locations, delete):
 
 @require_context
 def security_service_create(context, values):
-    if not values.get('id'):
-        values['id'] = str(uuid.uuid4())
+    values = ensure_model_dict_has_id(values)
 
     security_service_ref = models.SecurityService()
     security_service_ref.update(values)
@@ -1827,8 +1782,7 @@ def _network_get_query(context, session=None):
 
 @require_context
 def share_network_create(context, values):
-    if not values.get('id'):
-        values['id'] = str(uuid.uuid4())
+    values = ensure_model_dict_has_id(values)
 
     network_ref = models.ShareNetwork()
     network_ref.update(values)
@@ -1959,14 +1913,15 @@ def _server_get_query(context, session=None):
 
 @require_context
 def share_server_create(context, values):
-    if not values.get('id'):
-        values['id'] = str(uuid.uuid4())
+    values = ensure_model_dict_has_id(values)
+
     server_ref = models.ShareServer()
     server_ref.update(values)
     session = get_session()
     with session.begin():
         server_ref.save(session=session)
-    return server_ref
+        # NOTE(u_glide): Do so to prevent errors with relationships
+        return share_server_get(context, server_ref['id'], session=session)
 
 
 @require_context
@@ -1975,10 +1930,7 @@ def share_server_delete(context, id):
     with session.begin():
         server_ref = share_server_get(context, id, session=session)
         share_server_backend_details_delete(context, id, session=session)
-        server_ref.update({'deleted': server_ref.id,
-                           'deleted_at': timeutils.utcnow(),
-                           'updated_at': literal_column('updated_at'),
-                           'status': constants.STATUS_DELETED})
+        server_ref.soft_delete(session=session, update_status=True)
 
 
 @require_context
@@ -1997,19 +1949,18 @@ def share_server_get(context, server_id, session=None):
         .first()
     if result is None:
         raise exception.ShareServerNotFound(share_server_id=server_id)
-    result['backend_details'] = share_server_backend_details_get(
-        context, server_id, session=session)
     return result
 
 
 @require_context
-def share_server_get_by_host_and_share_net_valid(context, host, share_net_id,
-                                                 session=None):
+def share_server_get_all_by_host_and_share_net_valid(context, host,
+                                                     share_net_id,
+                                                     session=None):
     result = _server_get_query(context, session).filter_by(host=host)\
         .filter_by(share_network_id=share_net_id)\
         .filter(models.ShareServer.status.in_(
-            (constants.STATUS_CREATING, constants.STATUS_ACTIVE))).first()
-    if result is None:
+            (constants.STATUS_CREATING, constants.STATUS_ACTIVE))).all()
+    if not result:
         filters_description = ('share_network_id is "%(share_net_id)s",'
                                ' host is "%(host)s" and status in'
                                ' "%(status_cr)s" or "%(status_act)s"') % {
@@ -2020,14 +1971,17 @@ def share_server_get_by_host_and_share_net_valid(context, host, share_net_id,
         }
         raise exception.ShareServerNotFoundByFilters(
             filters_description=filters_description)
-    result['backend_details'] = share_server_backend_details_get(
-        context, result['id'], session=session)
     return result
 
 
 @require_context
 def share_server_get_all(context):
     return _server_get_query(context).all()
+
+
+@require_context
+def share_server_get_all_by_host(context, host):
+    return _server_get_query(context).filter_by(host=host).all()
 
 
 @require_context
@@ -2075,15 +2029,95 @@ def share_server_backend_details_delete(context, share_server_id,
         item.soft_delete(session)
 
 
+###################
+
+def _driver_private_data_query(session, context, host, entity_id, key=None,
+                               read_deleted=False):
+    query = model_query(context, models.DriverPrivateData,
+                        session=session, read_deleted=read_deleted)\
+        .filter_by(host=host)\
+        .filter_by(entity_uuid=entity_id)
+
+    if isinstance(key, list):
+        return query.filter(models.DriverPrivateData.key.in_(key))
+    elif key is not None:
+        return query.filter_by(key=key)
+
+    return query
+
+
 @require_context
-def share_server_backend_details_get(context, share_server_id,
-                                     session=None):
+def driver_private_data_get(context, host, entity_id, key=None,
+                            default=None, session=None):
     if not session:
         session = get_session()
-    query = model_query(context, models.ShareServerBackendDetails,
-                        session=session)\
-        .filter_by(share_server_id=share_server_id).all()
-    return dict([(item.key, item.value) for item in query])
+
+    query = _driver_private_data_query(session, context, host, entity_id, key)
+
+    if key is None or isinstance(key, list):
+        return dict([(item.key, item.value) for item in query.all()])
+    else:
+        result = query.first()
+        return result["value"] if result is not None else default
+
+
+@require_context
+def driver_private_data_update(context, host, entity_id, details,
+                               delete_existing=False, session=None):
+    # NOTE(u_glide): following code modifies details dict, that's why we should
+    # copy it
+    new_details = copy.deepcopy(details)
+
+    if not session:
+        session = get_session()
+
+    with session.begin():
+        # Process existing data
+        # NOTE(u_glide): read_deleted=None means here 'read all'
+        original_data = _driver_private_data_query(
+            session, context, host, entity_id, read_deleted=None).all()
+
+        for data_ref in original_data:
+            in_new_details = data_ref['key'] in new_details
+
+            if in_new_details:
+                new_value = six.text_type(new_details.pop(data_ref['key']))
+                data_ref.update({
+                    "value": new_value,
+                    "deleted": 0,
+                    "deleted_at": None
+                })
+                data_ref.save(session=session)
+            elif delete_existing and data_ref['deleted'] != 1:
+                data_ref.update({
+                    "deleted": 1, "deleted_at": timeutils.utcnow()
+                })
+                data_ref.save(session=session)
+
+        # Add new data
+        for key, value in new_details.items():
+            data_ref = models.DriverPrivateData()
+            data_ref.update({
+                "host": host,
+                "entity_uuid": entity_id,
+                "key": key,
+                "value": six.text_type(value)
+            })
+            data_ref.save(session=session)
+
+        return details
+
+
+@require_context
+def driver_private_data_delete(context, host, entity_id, key=None,
+                               session=None):
+    if not session:
+        session = get_session()
+
+    with session.begin():
+        query = _driver_private_data_query(session, context, host,
+                                           entity_id, key)
+        query.update({"deleted": 1, "deleted_at": timeutils.utcnow()})
 
 
 ###################
@@ -2091,7 +2125,7 @@ def share_server_backend_details_get(context, share_server_id,
 
 @require_context
 def network_allocation_create(context, values):
-    values['id'] = values.get('id', six.text_type(uuid.uuid4()))
+    values = ensure_model_dict_has_id(values)
     alloc_ref = models.NetworkAllocation()
     alloc_ref.update(values)
     session = get_session()
@@ -2176,8 +2210,7 @@ def share_type_create(context, values, projects=None):
     'extra_specs' key/value pair:
     {'extra_specs' : {'k1': 'v1', 'k2': 'v2', ...}}
     """
-    if not values.get('id'):
-        values['id'] = str(uuid.uuid4())
+    values = ensure_model_dict_has_id(values)
 
     projects = projects or []
 
@@ -2335,15 +2368,9 @@ def share_type_destroy(context, id):
                       id)
             raise exception.ShareTypeInUse(share_type_id=id)
         model_query(context, models.ShareTypeExtraSpecs, session=session).\
-            filter_by(share_type_id=id).update(
-                {'deleted': 1,
-                 'deleted_at': timeutils.utcnow(),
-                 'updated_at': literal_column('updated_at')})
+            filter_by(share_type_id=id).soft_delete()
         model_query(context, models.ShareTypes, session=session).\
-            filter_by(id=id).update(
-                {'deleted': id,
-                 'deleted_at': timeutils.utcnow(),
-                 'updated_at': literal_column('updated_at')})
+            filter_by(id=id).soft_delete()
 
 
 def _share_type_access_query(context, session=None):
@@ -2435,10 +2462,7 @@ def share_type_extra_specs_delete(context, share_type_id, key):
     with session.begin():
         _share_type_extra_specs_get_item(context, share_type_id, key, session)
         _share_type_extra_specs_query(context, share_type_id, session).\
-            filter_by(key=key).\
-            update({'deleted': 1,
-                    'deleted_at': timeutils.utcnow(),
-                    'updated_at': literal_column('updated_at')})
+            filter_by(key=key).soft_delete()
 
 
 @require_context

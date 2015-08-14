@@ -27,6 +27,8 @@ stepping stone.
 import socket
 
 from oslo_config import cfg
+from oslo_log import log
+from oslo_utils import netutils
 import six
 
 from manila.common import constants
@@ -34,24 +36,7 @@ from manila import exception
 from manila.i18n import _
 
 CONF = cfg.CONF
-
-
-def _get_my_ip():
-    """Returns the actual ip of the local machine.
-
-    This code figures out what source address would be used if some traffic
-    were to be sent out to some well known address on the Internet. In this
-    case, a Google DNS server is used, but the specific address does not
-    matter much.  No traffic is actually sent.
-    """
-    try:
-        csock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        csock.connect(('8.8.8.8', 80))
-        (addr, port) = csock.getsockname()
-        csock.close()
-        return addr
-    except socket.error:
-        return "127.0.0.1"
+log.register_options(CONF)
 
 
 core_opts = [
@@ -70,7 +55,7 @@ CONF.register_cli_opts(debug_opts)
 
 global_opts = [
     cfg.StrOpt('my_ip',
-               default=_get_my_ip(),
+               default=netutils.get_my_ipv4(),
                help='IP address of this host.'),
     cfg.StrOpt('scheduler_topic',
                default='manila-scheduler',
@@ -178,20 +163,22 @@ def verify_share_protocols():
     """Perfom verification of 'enabled_share_protocols'."""
     msg = None
     supported_protocols = constants.SUPPORTED_SHARE_PROTOCOLS
-    data = dict(supported=six.text_type(supported_protocols))
+    data = dict(supported=', '.join(supported_protocols))
     if CONF.enabled_share_protocols:
         for share_proto in CONF.enabled_share_protocols:
-            if share_proto not in supported_protocols:
+            if share_proto.upper() not in supported_protocols:
                 data.update({'share_proto': share_proto})
-                msg = _("Unsupported share protocol '%(share_proto)s' "
-                        "is set as enabled. Available values are "
-                        "%(supported)s. ")
+                msg = ("Unsupported share protocol '%(share_proto)s' "
+                       "is set as enabled. Available values are "
+                       "%(supported)s. ")
                 break
     else:
-        msg = _("No share protocols were specified as enabled. "
-                "Available values are %(supported)s. ")
+        msg = ("No share protocols were specified as enabled. "
+               "Available values are %(supported)s. ")
     if msg:
-        msg += _("Please specify one or more protocols using "
-                 "configuration option 'enabled_share_protocols.")
-        msg = msg % data
+        msg += ("Please specify one or more protocols using "
+                "configuration option 'enabled_share_protocols'.")
+        # NOTE(vponomaryov): use translation to unicode explicitly,
+        # because of 'lazy' translations.
+        msg = six.text_type(_(msg) % data)  # noqa H701
         raise exception.ManilaException(message=msg)

@@ -26,6 +26,9 @@ from manila.tests.share.drivers.hp import test_hp_3par_constants as constants
 
 from oslo_utils import units
 
+CLIENT_VERSION_MIN_OK = hp3parmediator.MIN_CLIENT_VERSION
+TEST_WSAPI_VERSION_STR = '30201292'
+
 
 @ddt.ddt
 class HP3ParMediatorTestCase(test.TestCase):
@@ -38,6 +41,7 @@ class HP3ParMediatorTestCase(test.TestCase):
 
         # Take over the hp3parclient module and stub the constructor.
         hp3parclient = sys.modules['hp3parclient']
+        hp3parclient.version_tuple = CLIENT_VERSION_MIN_OK
 
         # Need a fake constructor to return the fake client.
         # This is also be used for constructor error tests.
@@ -49,8 +53,6 @@ class HP3ParMediatorTestCase(test.TestCase):
 
         # Set the mediator to use in tests.
         self.mediator = hp3parmediator.HP3ParMediator(
-            hp3par_username=constants.USERNAME,
-            hp3par_password=constants.PASSWORD,
             hp3par_api_url=constants.API_URL,
             hp3par_debug=constants.EXPECTED_HP_DEBUG,
             hp3par_san_ip=constants.EXPECTED_IP_1234,
@@ -58,6 +60,14 @@ class HP3ParMediatorTestCase(test.TestCase):
             hp3par_san_password=constants.SAN_PASSWORD,
             hp3par_san_ssh_port=constants.PORT,
             ssh_conn_timeout=constants.TIMEOUT)
+
+    def test_mediator_no_client(self):
+        """Test missing hp3parclient error."""
+
+        self.mock_object(hp3parmediator.HP3ParMediator, 'no_client', None)
+
+        self.assertRaises(exception.HP3ParInvalidClient,
+                          self.mediator.do_setup)
 
     def test_mediator_setup_client_init_error(self):
         """Any client init exceptions should result in a ManilaException."""
@@ -85,7 +95,7 @@ class HP3ParMediatorTestCase(test.TestCase):
     def test_mediator_vfs_exception(self):
         """Backend exception during get_vfs_name."""
 
-        self.mediator.do_setup()
+        self.init_mediator()
         self.mock_client.getvfs.side_effect = Exception('non-manila-except')
         self.assertRaises(exception.ManilaException,
                           self.mediator.get_vfs_name,
@@ -97,7 +107,7 @@ class HP3ParMediatorTestCase(test.TestCase):
 
     def test_mediator_vfs_not_found(self):
         """VFS not found."""
-        self.mediator.do_setup()
+        self.init_mediator()
         self.mock_client.getvfs.return_value = {'total': 0}
         self.assertRaises(exception.ManilaException,
                           self.mediator.get_vfs_name,
@@ -109,6 +119,10 @@ class HP3ParMediatorTestCase(test.TestCase):
 
     def init_mediator(self):
         """Basic mediator setup for re-use with tests that need one."""
+
+        self.mock_client.getWsApiVersion.return_value = {
+            'build': TEST_WSAPI_VERSION_STR,
+        }
 
         self.mock_client.getvfs.return_value = {
             'total': 1,
@@ -136,19 +150,86 @@ class HP3ParMediatorTestCase(test.TestCase):
                                     constants.SAN_PASSWORD,
                                     port=constants.PORT,
                                     conn_timeout=constants.TIMEOUT),
-            mock.call.ssh.set_debug_flag(constants.EXPECTED_HP_DEBUG)
+            mock.call.getWsApiVersion(),
+            mock.call.debug_rest(constants.EXPECTED_HP_DEBUG)
         ]
         self.mock_client.assert_has_calls(expected_calls)
 
+    def test_mediator_client_version_unsupported(self):
+        """Try a client with version less than minimum."""
+
+        self.hp3parclient = sys.modules['hp3parclient']
+        self.hp3parclient.version_tuple = (CLIENT_VERSION_MIN_OK[0],
+                                           CLIENT_VERSION_MIN_OK[1],
+                                           CLIENT_VERSION_MIN_OK[2] - 1)
+        self.assertRaises(exception.HP3ParInvalidClient,
+                          self.init_mediator)
+
+    def test_mediator_client_version_supported(self):
+        """Try a client with a version greater than the minimum."""
+
+        # The setup success already tests the min version.  Try version > min.
+        self.hp3parclient = sys.modules['hp3parclient']
+        self.hp3parclient.version_tuple = (CLIENT_VERSION_MIN_OK[0],
+                                           CLIENT_VERSION_MIN_OK[1],
+                                           CLIENT_VERSION_MIN_OK[2] + 1)
+        self.init_mediator()
+        expected_calls = [
+            mock.call.setSSHOptions(constants.EXPECTED_IP_1234,
+                                    constants.SAN_LOGIN,
+                                    constants.SAN_PASSWORD,
+                                    port=constants.PORT,
+                                    conn_timeout=constants.TIMEOUT),
+            mock.call.getWsApiVersion(),
+            mock.call.debug_rest(constants.EXPECTED_HP_DEBUG)
+        ]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_mediator_client_version_exception(self):
+        """Test the getWsApiVersion exception handling."""
+
+        self.mock_client.getWsApiVersion.side_effect = constants.FAKE_EXCEPTION
+        self.assertRaises(exception.ShareBackendException,
+                          self.init_mediator)
+
+    def test_mediator_client_version_bad_return_value(self):
+        """Test the getWsApiVersion exception handling with bad value."""
+
+        # Expecting a dict with 'build' in it.  This would fail badly.
+        self.mock_client.getWsApiVersion.return_value = 'bogus'
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.do_setup)
+
     def get_expected_calls_for_create_share(self,
+                                            client_version,
                                             expected_fpg,
                                             expected_vfsname,
                                             expected_protocol,
+                                            extra_specs,
                                             expected_project_id,
                                             expected_share_id):
         expected_sharedir = expected_share_id
 
+        createfshare_kwargs = dict(comment='OpenStack Manila fshare',
+                                   fpg=expected_fpg,
+                                   sharedir=expected_sharedir,
+                                   fstore=expected_project_id)
+
         if expected_protocol == constants.NFS_LOWER:
+
+            createfshare_kwargs['clientip'] = '127.0.0.1'
+
+            # Options from extra-specs.
+            opt_string = extra_specs.get('hp_3par:nfs_options', [])
+            opt_list = opt_string.split(',')
+            # Options that the mediator adds.
+            nfs_options = ['rw', 'no_root_squash', 'insecure']
+            nfs_options += opt_list
+            expected_options = ','.join(nfs_options)
+
+            createfshare_kwargs['options'] = OptionMatcher(
+                self.assertListEqual, expected_options)
+
             expected_calls = [
                 mock.call.createfstore(expected_vfsname, expected_project_id,
                                        comment='OpenStack Manila fstore',
@@ -163,16 +244,26 @@ class HP3ParMediatorTestCase(test.TestCase):
                                      fstore=expected_project_id),
                 mock.call.createfshare(expected_protocol, expected_vfsname,
                                        expected_share_id,
-                                       comment='OpenStack Manila fshare',
-                                       fpg=expected_fpg,
-                                       sharedir=expected_sharedir,
-                                       clientip='127.0.0.1',
-                                       options='rw,no_root_squash,insecure',
-                                       fstore=expected_project_id),
+                                       **createfshare_kwargs),
                 mock.call.getfshare(expected_protocol, expected_share_id,
                                     fpg=expected_fpg, vfs=expected_vfsname,
                                     fstore=expected_project_id)]
         else:
+            createfshare_kwargs['allowip'] = '127.0.0.1'
+
+            if client_version < hp3parmediator.MIN_SMB_CA_VERSION:
+                smb_opts = (hp3parmediator.ACCESS_BASED_ENUM,
+                            hp3parmediator.CACHE)
+            else:
+                smb_opts = (hp3parmediator.ACCESS_BASED_ENUM,
+                            hp3parmediator.CONTINUOUS_AVAIL,
+                            hp3parmediator.CACHE)
+
+            for smb_opt in smb_opts:
+                opt_value = extra_specs.get('hp_3par:smb_%s' % smb_opt)
+                if opt_value:
+                    createfshare_kwargs[smb_opt] = opt_value
+
             expected_calls = [
                 mock.call.createfstore(expected_vfsname, expected_project_id,
                                        comment='OpenStack Manila fstore',
@@ -187,17 +278,35 @@ class HP3ParMediatorTestCase(test.TestCase):
                                      fstore=expected_project_id),
                 mock.call.createfshare(expected_protocol, expected_vfsname,
                                        expected_share_id,
-                                       comment='OpenStack Manila fshare',
-                                       fpg=expected_fpg,
-                                       sharedir=expected_sharedir,
-                                       allowip='127.0.0.1',
-                                       fstore=expected_project_id),
+                                       **createfshare_kwargs),
                 mock.call.getfshare(expected_protocol, expected_share_id,
                                     fpg=expected_fpg, vfs=expected_vfsname,
                                     fstore=expected_project_id)]
         return expected_calls
 
-    def test_mediator_create_cifs_share(self):
+    @staticmethod
+    def _build_smb_extra_specs(**kwargs):
+        extra_specs = {'driver_handles_share_servers': False}
+        for k, v in kwargs.items():
+            extra_specs['hp_3par:smb_%s' % k] = v
+        return extra_specs
+
+    @ddt.data(((3, 2, 1), None, None, None),
+              ((3, 2, 1), 'true', None, None),
+              ((3, 2, 1), None, 'false', None),
+              ((3, 2, 1), None, 'false', None),
+              ((3, 2, 1), None, None, 'optimized'),
+              ((3, 2, 1), 'true', 'false', 'optimized'),
+              ((3, 2, 2), None, None, None),
+              ((3, 2, 2), 'true', None, None),
+              ((3, 2, 2), None, 'false', None),
+              ((3, 2, 2), None, 'false', None),
+              ((3, 2, 2), None, None, 'optimized'),
+              ((3, 2, 2), 'true', 'false', 'optimized'))
+    @ddt.unpack
+    def test_mediator_create_cifs_share(self, client_version, abe, ca, cache):
+        self.hp3parclient = sys.modules['hp3parclient']
+        self.hp3parclient.version_tuple = client_version
         self.init_mediator()
 
         self.mock_client.getfshare.return_value = {
@@ -206,15 +315,16 @@ class HP3ParMediatorTestCase(test.TestCase):
             'members': [{'shareName': constants.EXPECTED_SHARE_NAME}]
         }
 
-        self.mock_client.getfsquota.return_value = {
-            'message': None,
-            'total': 1,
-            'members': [{'hardBlock': '1024', 'softBlock': '1024'}]
-        }
+        self.mock_client.getfsquota.return_value = constants.GET_FSQUOTA
+
+        extra_specs = self._build_smb_extra_specs(access_based_enum=abe,
+                                                  continuous_avail=ca,
+                                                  cache=cache)
 
         location = self.mediator.create_share(constants.EXPECTED_PROJECT_ID,
                                               constants.EXPECTED_SHARE_ID,
                                               constants.CIFS,
+                                              extra_specs,
                                               constants.EXPECTED_FPG,
                                               constants.EXPECTED_VFS,
                                               size=constants.EXPECTED_SIZE_1)
@@ -222,15 +332,43 @@ class HP3ParMediatorTestCase(test.TestCase):
         self.assertEqual(constants.EXPECTED_SHARE_NAME, location)
 
         expected_calls = self.get_expected_calls_for_create_share(
+            client_version,
             constants.EXPECTED_FPG,
             constants.EXPECTED_VFS,
             constants.SMB_LOWER,
+            extra_specs,
             constants.EXPECTED_PROJECT_ID,
             constants.EXPECTED_SHARE_ID)
 
         self.mock_client.assert_has_calls(expected_calls)
 
-    def test_mediator_create_nfs_share(self):
+    @ddt.data('ro',
+              'rw',
+              'no_root_squash',
+              'root_squash',
+              'secure',
+              'insecure',
+              'hide,insecure,no_wdelay,ro,bogus,root_squash,test')
+    def test_mediator_create_nfs_share_bad_options(self, nfs_options):
+        self.init_mediator()
+
+        extra_specs = {'hp_3par:nfs_options': nfs_options}
+
+        self.assertRaises(exception.InvalidInput,
+                          self.mediator.create_share,
+                          constants.EXPECTED_PROJECT_ID,
+                          constants.EXPECTED_SHARE_ID,
+                          constants.NFS.lower(),
+                          extra_specs,
+                          constants.EXPECTED_FPG,
+                          constants.EXPECTED_VFS,
+                          size=constants.EXPECTED_SIZE_1)
+
+        self.assertFalse(self.mock_client.createfshare.called)
+
+    @ddt.data('sync',
+              'no_wdelay,sec=sys,hide,sync')
+    def test_mediator_create_nfs_share(self, nfs_options):
         self.init_mediator()
 
         self.mock_client.getfshare.return_value = {
@@ -239,15 +377,14 @@ class HP3ParMediatorTestCase(test.TestCase):
             'members': [{'sharePath': constants.EXPECTED_SHARE_PATH}]
         }
 
-        self.mock_client.getfsquota.return_value = {
-            'message': None,
-            'total': 1,
-            'members': [{'hardBlock': '1024', 'softBlock': '1024'}]
-        }
+        self.mock_client.getfsquota.return_value = constants.GET_FSQUOTA
+
+        extra_specs = {'hp_3par:nfs_options': nfs_options}
 
         location = self.mediator.create_share(constants.EXPECTED_PROJECT_ID,
                                               constants.EXPECTED_SHARE_ID,
                                               constants.NFS.lower(),
+                                              extra_specs,
                                               constants.EXPECTED_FPG,
                                               constants.EXPECTED_VFS,
                                               size=constants.EXPECTED_SIZE_1)
@@ -255,13 +392,48 @@ class HP3ParMediatorTestCase(test.TestCase):
         self.assertEqual(constants.EXPECTED_SHARE_PATH, location)
 
         expected_calls = self.get_expected_calls_for_create_share(
+            hp3parmediator.MIN_CLIENT_VERSION,
             constants.EXPECTED_FPG,
             constants.EXPECTED_VFS,
             constants.NFS.lower(),
+            extra_specs,
             constants.EXPECTED_PROJECT_ID,
             constants.EXPECTED_SHARE_ID)
 
         self.mock_client.assert_has_calls(expected_calls)
+
+    def test_mediator_create_nfs_share_get_exception(self):
+        self.init_mediator()
+
+        self.mock_client.getfshare.side_effect = constants.FAKE_EXCEPTION
+        self.mock_client.getfsquota.return_value = constants.GET_FSQUOTA
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.create_share,
+                          constants.EXPECTED_PROJECT_ID,
+                          constants.EXPECTED_SHARE_ID,
+                          constants.NFS.lower(),
+                          constants.EXPECTED_EXTRA_SPECS,
+                          constants.EXPECTED_FPG,
+                          constants.EXPECTED_VFS,
+                          size=constants.EXPECTED_SIZE_1)
+
+    @ddt.data(0, 2)
+    def test_mediator_create_nfs_share_get_fail(self, count):
+        self.init_mediator()
+
+        self.mock_client.getfshare.return_value = {'total': count}
+        self.mock_client.getfsquota.return_value = constants.GET_FSQUOTA
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.create_share,
+                          constants.EXPECTED_PROJECT_ID,
+                          constants.EXPECTED_SHARE_ID,
+                          constants.NFS.lower(),
+                          constants.EXPECTED_EXTRA_SPECS,
+                          constants.EXPECTED_FPG,
+                          constants.EXPECTED_VFS,
+                          size=constants.EXPECTED_SIZE_1)
 
     def test_mediator_create_cifs_share_from_snapshot(self):
         self.init_mediator()
@@ -276,6 +448,7 @@ class HP3ParMediatorTestCase(test.TestCase):
         location = self.mediator.create_share_from_snapshot(
             constants.EXPECTED_SHARE_ID,
             constants.CIFS,
+            constants.EXPECTED_EXTRA_SPECS,
             constants.EXPECTED_PROJECT_ID,
             constants.EXPECTED_SHARE_ID,
             constants.NFS,
@@ -322,6 +495,7 @@ class HP3ParMediatorTestCase(test.TestCase):
         location = self.mediator.create_share_from_snapshot(
             constants.EXPECTED_SHARE_ID,
             constants.NFS,
+            constants.EXPECTED_EXTRA_SPECS,
             constants.EXPECTED_PROJECT_ID,
             constants.EXPECTED_SHARE_ID,
             constants.NFS,
@@ -369,6 +543,7 @@ class HP3ParMediatorTestCase(test.TestCase):
                           self.mediator.create_share_from_snapshot,
                           constants.EXPECTED_SHARE_ID,
                           constants.NFS,
+                          constants.EXPECTED_EXTRA_SPECS,
                           constants.EXPECTED_PROJECT_ID,
                           constants.EXPECTED_SHARE_ID,
                           constants.NFS,
@@ -677,7 +852,8 @@ class HP3ParMediatorTestCase(test.TestCase):
                                       reclaimStrategy='maxspeed'),
         ]
         self.mock_client.assert_has_calls(expected_calls)
-        mock_log.assert_has_calls(mock.call.exception(mock.ANY))
+        self.assertTrue(mock_log.debug.called)
+        self.assertTrue(mock_log.exception.called)
 
     def test_mediator_get_capacity(self):
         """Mediator converts client stats to capacity result."""
@@ -1126,3 +1302,16 @@ class HP3ParMediatorTestCase(test.TestCase):
             fstore=constants.EXPECTED_PROJECT_ID)
 
         self.assertEqual(expected_result, result)
+
+
+class OptionMatcher(object):
+    """Options string order can vary. Compare as lists."""
+
+    def __init__(self, assert_func, expected_string):
+        self.assert_func = assert_func
+        self.expected = expected_string.split(',')
+
+    def __eq__(self, actual_string):
+        actual = actual_string.split(',')
+        self.assert_func(sorted(self.expected), sorted(actual))
+        return True

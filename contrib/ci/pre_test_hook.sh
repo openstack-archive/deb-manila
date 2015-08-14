@@ -37,6 +37,8 @@ driver_handles_share_servers=$(trueorfalse True driver_handles_share_servers)
 echo "MANILA_OPTGROUP_london_driver_handles_share_servers=$driver_handles_share_servers" >> $localrc_path
 echo "MANILA_OPTGROUP_paris_driver_handles_share_servers=$driver_handles_share_servers" >> $localrc_path
 
+echo "MANILA_USE_DOWNGRADE_MIGRATIONS=True" >> $localrc_path
+
 # JOB_NAME is defined in openstack-infra/config project
 # used by CI/CD, where this script is intended to be used.
 if [[ "$JOB_NAME" =~ "multibackend" ]]; then
@@ -45,9 +47,17 @@ else
     echo "MANILA_MULTI_BACKEND=False" >> $localrc_path
 fi
 
+# Enabling isolated metadata in Neutron is required because
+# Tempest creates isolated networks and created vm's in scenario tests don't
+# have access to Nova Metadata service. This leads to unavailability of
+# created vm's in scenario tests.
+echo '[[post-config|$Q_DHCP_CONF_FILE]]' >> $localrc_path
+echo '[DEFAULT]' >> $localrc_path
+echo "enable_isolated_metadata=True" >> $localrc_path
+
 # Go to Tempest dir and checkout stable commit to avoid possible
 # incompatibilities for plugin stored in Manila repo.
-TEMPEST_COMMIT="d8f38aba"  # 21 Mar, 2015
+TEMPEST_COMMIT="489f5e62"  # 15 June, 2015
 cd $BASE/new/tempest
 git checkout $TEMPEST_COMMIT
 

@@ -20,10 +20,16 @@ STATUS_ERROR = 'error'
 STATUS_NOT_FOUND = 'not_found'
 
 MSG_GENERAL_ERROR = "13690601492"
-MSG_INVALID_VMD_ID = "14227341325"
+MSG_INVALID_VDM_ID = "14227341325"
 MSG_FILESYSTEM_NOT_FOUND = "18522112101"
 MSG_JOIN_DOMAIN_FAILED = '17986748527'
 
 IP_ALLOCATIONS = 2
 
 CONTENT_TYPE_URLENCODE = {'Content-Type': 'application/x-www-form-urlencoded'}
+
+XML_HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+XML_NAMESPACE = 'http://www.emc.com/schemas/celerra/xml_api'
+
+CIFS_ACL_FULLCONTROL = 'fullcontrol'
+CIFS_ACL_READ = 'read'

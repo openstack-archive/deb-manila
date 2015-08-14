@@ -27,7 +27,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
     def test_pool_list(self):
 
         # List pools
-        resp, pool_response = self.shares_client.list_pools()
+        pool_response = self.shares_client.list_pools()
         pool_list = pool_response.get('pools')
         self.assertIsNotNone(pool_list, 'No pools returned from pools API')
         self.assertNotEmpty(pool_list)
@@ -40,7 +40,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
     def test_pool_list_with_filters(self):
 
         # List pools
-        resp, pool_response = self.shares_client.list_pools()
+        pool_response = self.shares_client.list_pools()
         pool_list = pool_response.get('pools')
 
         # Ensure we got at least one pool
@@ -54,13 +54,16 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
             'backend': pool.get('backend'),
             'pool': pool.get('pool'),
         }
-        resp, pool_response = self.shares_client.list_pools(
+        pool_response = self.shares_client.list_pools(
             search_opts=search_opts)
         filtered_pool_list = pool_response.get('pools')
 
         # Ensure we got exactly one pool matching the first one from above
         self.assertEqual(1, len(filtered_pool_list))
-        self.assertDictEqual(pool, filtered_pool_list[0])
+
+        # Match the key values, not the timestamp.
+        for k, v in search_opts.items():
+            self.assertEqual(v, filtered_pool_list[0][k])
 
     @test.attr(type=["gate", "smoke", ])
     def test_pool_list_with_filters_negative(self):
@@ -71,7 +74,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
             'backend': 'bar',
             'pool': 'shark',
         }
-        resp, pool_response = self.shares_client.list_pools(
+        pool_response = self.shares_client.list_pools(
             search_opts=search_opts)
         pool_list = pool_response.get('pools')
 
@@ -82,7 +85,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
     def test_pool_list_detail(self):
 
         # List pools
-        resp, pool_response = self.shares_client.list_pools(detail=True)
+        pool_response = self.shares_client.list_pools(detail=True)
         pool_list = pool_response.get('pools')
         self.assertIsNotNone(pool_list, 'No pools returned from pools API')
         self.assertNotEmpty(pool_list)
@@ -95,7 +98,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
     def test_pool_list_detail_with_filters(self):
 
         # List pools
-        resp, pool_response = self.shares_client.list_pools(detail=True)
+        pool_response = self.shares_client.list_pools(detail=True)
         pool_list = pool_response.get('pools')
 
         # Ensure we got at least one pool
@@ -109,13 +112,16 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
             'backend': pool.get('backend'),
             'pool': pool.get('pool'),
         }
-        resp, pool_response = self.shares_client.list_pools(
+        pool_response = self.shares_client.list_pools(
             detail=True, search_opts=search_opts)
         filtered_pool_list = pool_response.get('pools')
 
         # Ensure we got exactly one pool matching the first one from above
         self.assertEqual(1, len(filtered_pool_list))
-        self.assertDictEqual(pool, filtered_pool_list[0])
+
+        # Match the key values, not the timestamp.
+        for k, v in search_opts.items():
+            self.assertEqual(v, filtered_pool_list[0][k])
 
     @test.attr(type=["gate", "smoke", ])
     def test_pool_list_detail_with_filters_negative(self):
@@ -126,7 +132,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
             'backend': 'bar',
             'pool': 'shark',
         }
-        resp, pool_response = self.shares_client.list_pools(
+        pool_response = self.shares_client.list_pools(
             detail=True, search_opts=search_opts)
         pool_list = pool_response.get('pools')
 

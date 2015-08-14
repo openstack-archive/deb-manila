@@ -181,9 +181,8 @@ class ServiceInstanceManager(object):
                       provided=network_helper_type,
                       allowed=[NOVA_NAME, NEUTRON_NAME]))
 
-    def __init__(self, db, driver_config=None):
+    def __init__(self, driver_config=None):
         super(ServiceInstanceManager, self).__init__()
-        self.db = db
         self.driver_config = driver_config
 
         if self.driver_config:
@@ -257,10 +256,16 @@ class ServiceInstanceManager(object):
             'username': self.get_config_option('service_instance_user'),
             'password': self.get_config_option('service_instance_password'),
             'pk_path': self.path_to_private_key,
-            'ip': data['private_address'][0],  # for handling
-            'public_address': data['public_address'][0],  # for exports
             'instance_id': data['instance']['id'],
         }
+        for key in ('private_address', 'public_address'):
+            data[key + '_v4'] = None
+            for address in data[key]:
+                if netaddr.valid_ipv4(address):
+                    data[key + '_v4'] = address
+                    break
+        share_server['ip'] = data['private_address_v4']
+        share_server['public_address'] = data['public_address_v4']
         return {'backend_details': share_server}
 
     def _get_addresses_by_network_name(self, net_name, server):
@@ -396,6 +401,10 @@ class ServiceInstanceManager(object):
         }
         if server.get('router_id'):
             instance_details['router_id'] = server['router_id']
+        if server.get('service_port_id'):
+            instance_details['service_port_id'] = server['service_port_id']
+        if server.get('public_port_id'):
+            instance_details['public_port_id'] = server['public_port_id']
         for key in ('password', 'pk_path', 'subnet_id'):
             if not instance_details[key]:
                 instance_details.pop(key)
@@ -479,6 +488,12 @@ class ServiceInstanceManager(object):
         fail_safe_data = dict(
             router_id=network_data.get('router_id'),
             subnet_id=network_data.get('subnet_id'))
+        if network_data.get('service_port'):
+            fail_safe_data['service_port_id'] = (
+                network_data['service_port']['id'])
+        if network_data.get('public_port'):
+            fail_safe_data['public_port_id'] = (
+                network_data['public_port']['id'])
         try:
             service_instance = self.compute_api.server_create(
                 context,
@@ -546,6 +561,7 @@ class ServiceInstanceManager(object):
             e.detail_data = {'server_details': fail_safe_data}
             raise
 
+        service_instance.update(fail_safe_data)
         service_instance['pk_path'] = key_path
         for pair in [('router', 'router_id'), ('service_subnet', 'subnet_id')]:
             if pair[0] in network_data and 'id' in network_data[pair[0]]:
@@ -612,7 +628,15 @@ class NeutronNetworkHelper(BaseNetworkhelper):
         self.get_config_option = service_instance_manager.get_config_option
         self.vif_driver = importutils.import_class(
             self.get_config_option("interface_driver"))()
-        self.neutron_api = neutron.API()
+
+        if service_instance_manager.driver_config:
+            network_config_group = (
+                service_instance_manager.driver_config.network_config_group or
+                service_instance_manager.driver_config.config_group)
+        else:
+            network_config_group = None
+
+        self.neutron_api = neutron.API(config_group_name=network_config_group)
         self.service_network_id = self.get_service_network_id()
         self.connect_share_server_to_tenant_network = (
             self.get_config_option('connect_share_server_to_tenant_network'))
@@ -647,11 +671,46 @@ class NeutronNetworkHelper(BaseNetworkhelper):
         else:
             return networks[0]['id']
 
+    @utils.synchronized(
+        "service_instance_setup_and_teardown_network_for_instance",
+        external=True)
     def teardown_network(self, server_details):
         subnet_id = server_details.get("subnet_id")
         router_id = server_details.get("router_id")
+
+        service_port_id = server_details.get("service_port_id")
+        public_port_id = server_details.get("public_port_id")
+        for port_id in (service_port_id, public_port_id):
+            if port_id:
+                try:
+                    self.neutron_api.delete_port(port_id)
+                except exception.NetworkException as e:
+                    if e.kwargs.get('code') != 404:
+                        raise
+                    LOG.debug("Failed to delete port %(port_id)s with error: "
+                              "\n %(exc)s", {"port_id": port_id, "exc": e})
+
         if router_id and subnet_id:
+            ports = self.neutron_api.list_ports(
+                fields=['fixed_ips', 'device_id', 'device_owner'])
+            # NOTE(vponomaryov): iterate ports to get to know whether current
+            # subnet is used or not. We will not remove it from router if it
+            # is used.
+            for port in ports:
+                # NOTE(vponomaryov): if device_id is present, then we know that
+                # this port is used. Also, if device owner is 'compute:*', then
+                # we know that it is VM. We continue only if both are 'True'.
+                if (port['device_id'] and
+                        port['device_owner'].startswith('compute:')):
+                    for fixed_ip in port['fixed_ips']:
+                        if fixed_ip['subnet_id'] == subnet_id:
+                            # NOTE(vponomaryov): There are other share servers
+                            # exist that use this subnet. So, do not remove it
+                            # from router.
+                            return
             try:
+                # NOTE(vponomaryov): there is no other share servers or
+                # some VMs that use this subnet. So, remove it from router.
                 self.neutron_api.router_remove_interface(
                     router_id, subnet_id)
             except exception.NetworkException as e:
@@ -663,7 +722,8 @@ class NeutronNetworkHelper(BaseNetworkhelper):
             self.neutron_api.update_subnet(subnet_id, '')
 
     @utils.synchronized(
-        "service_instance_setup_network_for_instance", external=True)
+        "service_instance_setup_and_teardown_network_for_instance",
+        external=True)
     def setup_network(self, network_info):
         neutron_net_id = network_info['neutron_net_id']
         neutron_subnet_id = network_info['neutron_subnet_id']

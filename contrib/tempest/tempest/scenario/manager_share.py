@@ -13,10 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import six  # noqa
+
 from oslo_log import log  # noqa
 from tempest_lib.common.utils import data_utils  # noqa
 
 from tempest import clients_share
+from tempest.common.utils.linux import remote_client
 from tempest import config
 from tempest.scenario import manager
 
@@ -33,11 +36,8 @@ class ShareScenarioTest(manager.NetworkScenarioTest):
         cls.set_network_resources()
         super(ShareScenarioTest, cls).resource_setup()
 
-        os = clients_share.Manager(
-            credentials=cls.credentials()
-        )
         # Manila clients
-        cls.shares_client = os.shares_client
+        cls.shares_client = clients_share.Manager().shares_client
         cls.shares_admin_client = clients_share.AdminManager().shares_client
 
     def _create_share(self, share_protocol=None, size=1, name=None,
@@ -74,14 +74,13 @@ class ShareScenarioTest(manager.NetworkScenarioTest):
             'share_network_id': share_network_id,
             'share_type_id': share_type_id,
         }
-        resp, share = self.shares_client.create_share(**kwargs)
+        share = self.shares_client.create_share(**kwargs)
 
         self.addCleanup(client.wait_for_resource_deletion,
                         share_id=share['id'])
         self.addCleanup(client.delete_share,
                         share['id'])
 
-        self.assertEqual(resp['status'], '200')
         client.wait_for_share_status(share['id'], 'available')
         return share
 
@@ -92,12 +91,11 @@ class ShareScenarioTest(manager.NetworkScenarioTest):
         :param client: client object
         """
         client = client or self.shares_admin_client
-        resp, servers = client.list_share_servers(search_opts={
-                                                  "share_network": sn_id})
-        if resp['status'] == '200':
-            for server in servers:
-                client.delete_share_server(server['id'])
-                client.wait_for_resource_deletion(server_id=server['id'])
+        servers = client.list_share_servers(
+            search_opts={"share_network": sn_id})
+        for server in servers:
+            client.delete_share_server(server['id'])
+            client.wait_for_resource_deletion(server_id=server['id'])
 
     def _create_share_network(self, client=None, **kwargs):
         """Create a share network
@@ -107,7 +105,7 @@ class ShareScenarioTest(manager.NetworkScenarioTest):
         """
 
         client = client or self.shares_client
-        resp, sn = client.create_share_network(**kwargs)
+        sn = client.create_share_network(**kwargs)
 
         self.addCleanup(client.wait_for_resource_deletion,
                         sn_id=sn['id'])
@@ -115,7 +113,6 @@ class ShareScenarioTest(manager.NetworkScenarioTest):
                         sn['id'])
         self.addCleanup(self._wait_for_share_server_deletion,
                         sn['id'])
-        self.assertEqual(resp['status'], '200')
         return sn
 
     def _allow_access(self, share_id, client=None,
@@ -129,9 +126,7 @@ class ShareScenarioTest(manager.NetworkScenarioTest):
         :returns: access object
         """
         client = client or self.shares_client
-        resp, access = client.create_access_rule(share_id, access_type,
-                                                 access_to)
-        self.assertEqual(resp['status'], '200')
+        access = client.create_access_rule(share_id, access_type, access_to)
         client.wait_for_access_rule_status(share_id, access['id'], "active")
         self.addCleanup(client.delete_access_rule,
                         share_id, access['id'])
@@ -155,3 +150,35 @@ class ShareScenarioTest(manager.NetworkScenarioTest):
                                                    subnet_id)
         self.addCleanup(client.remove_router_interface_with_subnet_id,
                         router_id, subnet_id)
+
+    def get_remote_client(self, *args, **kwargs):
+        if not CONF.share.image_with_share_tools:
+            return super(ShareScenarioTest,
+                         self).get_remote_client(*args, **kwargs)
+        # NOTE(u_glide): We need custom implementation of this method until
+        # original implementation depends on CONF.compute.ssh_auth_method
+        # option.
+        server_or_ip = kwargs['server_or_ip']
+        if isinstance(server_or_ip, six.string_types):
+            ip = server_or_ip
+        else:
+            addr = server_or_ip['addresses'][CONF.compute.network_for_ssh][0]
+            ip = addr['addr']
+
+        # NOTE(u_glide): Both options (pkey and password) are required here to
+        # support service images without Nova metadata support
+        client_params = {
+            'username': kwargs['username'],
+            'password': CONF.share.image_password,
+            'pkey': kwargs.get('private_key'),
+        }
+
+        linux_client = remote_client.RemoteClient(ip, **client_params)
+        try:
+            linux_client.validate_authentication()
+        except Exception:
+            LOG.exception('Initializing SSH connection to %s failed' % ip)
+            self._log_console_output()
+            raise
+
+        return linux_client

@@ -26,27 +26,12 @@ class ShareTypesAdminNegativeTest(base.BaseSharesAdminTest):
     def _create_share_type(self):
         name = data_utils.rand_name("unique_st_name")
         extra_specs = self.add_required_extra_specs_to_dict({"key": "value"})
-        __, st = self.create_share_type(name, extra_specs=extra_specs)
-        return st
+        return self.create_share_type(name, extra_specs=extra_specs)
 
     @classmethod
     def resource_setup(cls):
         super(ShareTypesAdminNegativeTest, cls).resource_setup()
         cls.member_shares_client = clients.Manager().shares_client
-
-    @test.attr(type=["gate", "smoke", ])
-    def test_try_create_share_type_with_user(self):
-        self.assertRaises(lib_exc.Forbidden,
-                          self.create_share_type,
-                          data_utils.rand_name("used_user_creds"),
-                          client=self.member_shares_client)
-
-    @test.attr(type=["gate", "smoke", ])
-    def test_try_delete_share_type_with_user(self):
-        st = self._create_share_type()
-        self.assertRaises(lib_exc.Forbidden,
-                          self.member_shares_client.delete_share_type,
-                          st["share_type"]["id"])
 
     @test.attr(type=["gate", "smoke", ])
     def test_create_share_with_nonexistent_share_type(self):

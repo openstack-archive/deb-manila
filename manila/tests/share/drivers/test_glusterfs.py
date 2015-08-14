@@ -311,9 +311,8 @@ class GlusterfsShareDriverTestCase(test.TestCase):
         CONF.set_default('driver_handles_share_servers', False)
 
         self.fake_conf = config.Configuration(None)
-        self._db = mock.Mock()
         self._driver = glusterfs.GlusterfsShareDriver(
-            self._db, execute=self._execute,
+            execute=self._execute,
             configuration=self.fake_conf)
         self._driver.gluster_manager = mock.Mock(**fake_gluster_manager_attrs)
         self._helper_nfs = mock.Mock()
@@ -534,6 +533,7 @@ class GlusterfsShareDriverTestCase(test.TestCase):
             'QoS_support': False,
             'total_capacity_gb': 2,
             'free_capacity_gb': 2,
+            'pools': None,
         }
         test_statvfs = mock.Mock(f_frsize=4096, f_blocks=524288,
                                  f_bavail=524288)

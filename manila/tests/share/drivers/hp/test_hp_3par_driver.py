@@ -34,8 +34,6 @@ class HP3ParDriverTestCase(test.TestCase):
         self.conf = mock.Mock()
         self.conf.driver_handles_share_servers = False
         self.conf.hp3par_debug = constants.EXPECTED_HP_DEBUG
-        self.conf.hp3par_username = constants.USERNAME
-        self.conf.hp3par_password = constants.PASSWORD
         self.conf.hp3par_api_url = constants.API_URL
         self.conf.hp3par_san_login = constants.SAN_LOGIN
         self.conf.hp3par_san_password = constants.SAN_PASSWORD
@@ -72,11 +70,9 @@ class HP3ParDriverTestCase(test.TestCase):
         self.mock_mediator_constructor.assert_has_calls([
             mock.call(hp3par_san_ssh_port=conf.hp3par_san_ssh_port,
                       hp3par_san_password=conf.hp3par_san_password,
-                      hp3par_username=conf.hp3par_username,
                       hp3par_san_login=conf.hp3par_san_login,
                       hp3par_debug=conf.hp3par_debug,
                       hp3par_api_url=conf.hp3par_api_url,
-                      hp3par_password=conf.hp3par_password,
                       hp3par_san_ip=conf.hp3par_san_ip,
                       hp3par_fstore_per_share=conf.hp3par_fstore_per_share,
                       ssh_conn_timeout=conf.ssh_conn_timeout)])
@@ -100,11 +96,9 @@ class HP3ParDriverTestCase(test.TestCase):
         self.mock_mediator_constructor.assert_has_calls([
             mock.call(hp3par_san_ssh_port=conf.hp3par_san_ssh_port,
                       hp3par_san_password=conf.hp3par_san_password,
-                      hp3par_username=conf.hp3par_username,
                       hp3par_san_login=conf.hp3par_san_login,
                       hp3par_debug=conf.hp3par_debug,
                       hp3par_api_url=conf.hp3par_api_url,
-                      hp3par_password=conf.hp3par_password,
                       hp3par_san_ip=conf.hp3par_san_ip,
                       hp3par_fstore_per_share=conf.hp3par_fstore_per_share,
                       ssh_conn_timeout=conf.ssh_conn_timeout)])
@@ -124,11 +118,9 @@ class HP3ParDriverTestCase(test.TestCase):
         self.mock_mediator_constructor.assert_has_calls([
             mock.call(hp3par_san_ssh_port=conf.hp3par_san_ssh_port,
                       hp3par_san_password=conf.hp3par_san_password,
-                      hp3par_username=conf.hp3par_username,
                       hp3par_san_login=conf.hp3par_san_login,
                       hp3par_debug=conf.hp3par_debug,
                       hp3par_api_url=conf.hp3par_api_url,
-                      hp3par_password=conf.hp3par_password,
                       hp3par_san_ip=conf.hp3par_san_ip,
                       hp3par_fstore_per_share=conf.hp3par_fstore_per_share,
                       ssh_conn_timeout=conf.ssh_conn_timeout)])
@@ -144,9 +136,12 @@ class HP3ParDriverTestCase(test.TestCase):
         self.driver.vfs = constants.EXPECTED_VFS
         self.driver.fpg = constants.EXPECTED_FPG
         self.driver.share_ip_address = self.conf.hp3par_share_ip_address
+        self.mock_object(hp3pardriver, 'share_types')
+        get_extra_specs = hp3pardriver.share_types.get_extra_specs_from_share
+        get_extra_specs.return_value = constants.EXPECTED_EXTRA_SPECS
 
-    def do_create_share(self, protocol, expected_project_id, expected_share_id,
-                        expected_size):
+    def do_create_share(self, protocol, share_type_id, expected_project_id,
+                        expected_share_id, expected_size):
         """Re-usable code for create share."""
         context = None
         share_server = None
@@ -154,6 +149,7 @@ class HP3ParDriverTestCase(test.TestCase):
             'project_id': expected_project_id,
             'id': expected_share_id,
             'share_proto': protocol,
+            'share_type_id': share_type_id,
             'size': expected_size,
         }
         location = self.driver.create_share(context, share, share_server)
@@ -161,6 +157,7 @@ class HP3ParDriverTestCase(test.TestCase):
 
     def do_create_share_from_snapshot(self,
                                       protocol,
+                                      share_type_id,
                                       snapshot_id,
                                       expected_share_id,
                                       expected_size):
@@ -170,6 +167,7 @@ class HP3ParDriverTestCase(test.TestCase):
         share = {
             'id': expected_share_id,
             'share_proto': protocol,
+            'share_type_id': share_type_id,
             'size': expected_size,
         }
         location = self.driver.create_share_from_snapshot(context,
@@ -216,6 +214,7 @@ class HP3ParDriverTestCase(test.TestCase):
             constants.EXPECTED_SHARE_NAME)
 
         location = self.do_create_share(constants.CIFS,
+                                        constants.SHARE_TYPE_ID,
                                         constants.EXPECTED_PROJECT_ID,
                                         constants.EXPECTED_SHARE_ID,
                                         constants.EXPECTED_SIZE_2)
@@ -225,6 +224,7 @@ class HP3ParDriverTestCase(test.TestCase):
             constants.EXPECTED_PROJECT_ID,
             constants.EXPECTED_SHARE_ID,
             constants.CIFS,
+            constants.EXPECTED_EXTRA_SPECS,
             constants.EXPECTED_FPG,
             constants.EXPECTED_VFS,
             size=constants.EXPECTED_SIZE_2)]
@@ -240,6 +240,7 @@ class HP3ParDriverTestCase(test.TestCase):
             constants.EXPECTED_SHARE_PATH)
 
         location = self.do_create_share(constants.NFS,
+                                        constants.SHARE_TYPE_ID,
                                         constants.EXPECTED_PROJECT_ID,
                                         constants.EXPECTED_SHARE_ID,
                                         constants.EXPECTED_SIZE_1)
@@ -249,6 +250,7 @@ class HP3ParDriverTestCase(test.TestCase):
             mock.call.create_share(constants.EXPECTED_PROJECT_ID,
                                    constants.EXPECTED_SHARE_ID,
                                    constants.NFS,
+                                   constants.EXPECTED_EXTRA_SPECS,
                                    constants.EXPECTED_FPG,
                                    constants.EXPECTED_VFS,
                                    size=constants.EXPECTED_SIZE_1)]
@@ -266,20 +268,24 @@ class HP3ParDriverTestCase(test.TestCase):
 
         location = self.do_create_share_from_snapshot(
             constants.CIFS,
+            constants.SHARE_TYPE_ID,
             constants.SNAPSHOT_INFO,
             constants.EXPECTED_SHARE_ID,
             constants.EXPECTED_SIZE_2)
 
         self.assertEqual(expected_location, location)
         expected_calls = [
-            mock.call.create_share_from_snapshot(constants.EXPECTED_SHARE_ID,
-                                                 constants.CIFS,
-                                                 constants.EXPECTED_FSTORE,
-                                                 constants.EXPECTED_SHARE_ID,
-                                                 constants.NFS,
-                                                 constants.EXPECTED_SNAP_ID,
-                                                 constants.EXPECTED_FPG,
-                                                 constants.EXPECTED_VFS)]
+            mock.call.create_share_from_snapshot(
+                constants.EXPECTED_SHARE_ID,
+                constants.CIFS,
+                constants.EXPECTED_EXTRA_SPECS,
+                constants.EXPECTED_FSTORE,
+                constants.EXPECTED_SHARE_ID,
+                constants.NFS,
+                constants.EXPECTED_SNAP_ID,
+                constants.EXPECTED_FPG,
+                constants.EXPECTED_VFS),
+        ]
         self.mock_mediator.assert_has_calls(expected_calls)
 
     def test_driver_create_nfs_share_from_snapshot(self):
@@ -293,20 +299,24 @@ class HP3ParDriverTestCase(test.TestCase):
 
         location = self.do_create_share_from_snapshot(
             constants.NFS,
+            constants.SHARE_TYPE_ID,
             constants.SNAPSHOT_INFO,
             constants.EXPECTED_SHARE_ID,
             constants.EXPECTED_SIZE_1)
 
         self.assertEqual(expected_location, location)
         expected_calls = [
-            mock.call.create_share_from_snapshot(constants.EXPECTED_SHARE_ID,
-                                                 constants.NFS,
-                                                 constants.EXPECTED_PROJECT_ID,
-                                                 constants.EXPECTED_SHARE_ID,
-                                                 constants.NFS,
-                                                 constants.EXPECTED_SNAP_ID,
-                                                 constants.EXPECTED_FPG,
-                                                 constants.EXPECTED_VFS)]
+            mock.call.create_share_from_snapshot(
+                constants.EXPECTED_SHARE_ID,
+                constants.NFS,
+                constants.EXPECTED_EXTRA_SPECS,
+                constants.EXPECTED_PROJECT_ID,
+                constants.EXPECTED_SHARE_ID,
+                constants.NFS,
+                constants.EXPECTED_SNAP_ID,
+                constants.EXPECTED_FPG,
+                constants.EXPECTED_VFS)
+        ]
 
         self.mock_mediator.assert_has_calls(expected_calls)
 
@@ -425,6 +435,7 @@ class HP3ParDriverTestCase(test.TestCase):
         self.init_driver()
         expected_free = constants.EXPECTED_SIZE_1
         expected_capacity = constants.EXPECTED_SIZE_2
+        expected_version = self.driver.VERSION
 
         self.mock_mediator.get_capacity.return_value = {
             'free_capacity_gb': expected_free,
@@ -434,13 +445,14 @@ class HP3ParDriverTestCase(test.TestCase):
         expected_result = {
             'driver_handles_share_servers': False,
             'QoS_support': False,
-            'driver_version': '1.0',
+            'driver_version': expected_version,
             'free_capacity_gb': expected_free,
             'reserved_percentage': 0,
             'share_backend_name': 'HP_3PAR',
             'storage_protocol': 'NFS_CIFS',
             'total_capacity_gb': expected_capacity,
             'vendor_name': 'HP',
+            'pools': None,
         }
 
         result = self.driver.get_share_stats(refresh=True)

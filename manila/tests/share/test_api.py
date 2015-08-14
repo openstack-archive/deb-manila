@@ -20,10 +20,6 @@ import uuid
 
 import ddt
 import mock
-# NOTE(vponomaryov): import from oslo.utils.timeutils is workaround for
-# mocking same object but from different namespaces. Remove it when all
-# oslo libs use same namespace for same things.
-from oslo.utils import timeutils as timeutils_old  # noqa
 from oslo_config import cfg
 from oslo_utils import timeutils
 
@@ -113,25 +109,25 @@ def fake_access(id, **kwargs):
 _FAKE_LIST_OF_ALL_SHARES = [
     {
         'name': 'foo',
-        'status': 'active',
+        'status': constants.STATUS_AVAILABLE,
         'project_id': 'fake_pid_1',
         'share_server_id': 'fake_server_1',
     },
     {
         'name': 'bar',
-        'status': 'error',
+        'status': constants.STATUS_ERROR,
         'project_id': 'fake_pid_2',
         'share_server_id': 'fake_server_2',
     },
     {
         'name': 'foo',
-        'status': 'active',
+        'status': constants.STATUS_AVAILABLE,
         'project_id': 'fake_pid_2',
         'share_server_id': 'fake_server_3',
     },
     {
         'name': 'bar',
-        'status': 'error',
+        'status': constants.STATUS_ERROR,
         'project_id': 'fake_pid_2',
         'share_server_id': 'fake_server_3',
     },
@@ -141,25 +137,25 @@ _FAKE_LIST_OF_ALL_SHARES = [
 _FAKE_LIST_OF_ALL_SNAPSHOTS = [
     {
         'name': 'foo',
-        'status': 'available',
+        'status': constants.STATUS_AVAILABLE,
         'project_id': 'fake_pid_1',
         'share_id': 'fake_server_1',
     },
     {
         'name': 'bar',
-        'status': 'error',
+        'status': constants.STATUS_ERROR,
         'project_id': 'fake_pid_2',
         'share_id': 'fake_server_2',
     },
     {
         'name': 'foo',
-        'status': 'available',
+        'status': constants.STATUS_AVAILABLE,
         'project_id': 'fake_pid_2',
         'share_id': 'fake_share_id_3',
     },
     {
         'name': 'bar',
-        'status': 'error',
+        'status': constants.STATUS_ERROR,
         'project_id': 'fake_pid_2',
         'share_id': 'fake_share_id_3',
     },
@@ -182,8 +178,6 @@ class ShareAPITestCase(test.TestCase):
 
         dt_utc = datetime.datetime.utcnow()
         self.mock_object(timeutils, 'utcnow', mock.Mock(return_value=dt_utc))
-        self.mock_object(timeutils_old, 'utcnow',
-                         mock.Mock(return_value=dt_utc))
         self.mock_object(share_api.policy, 'check_policy')
 
     def test_get_all_admin_no_filters(self):
@@ -282,7 +276,7 @@ class ShareAPITestCase(test.TestCase):
         ctx = context.RequestContext('fake_uid', 'fake_pid_2', is_admin=True)
         self.mock_object(db_driver, 'share_get_all_by_project',
                          mock.Mock(return_value=_FAKE_LIST_OF_ALL_SHARES[1:]))
-        shares = self.api.get_all(ctx, {'status': 'active'})
+        shares = self.api.get_all(ctx, {'status': constants.STATUS_AVAILABLE})
         share_api.policy.check_policy.assert_has_calls([
             mock.call(ctx, 'share', 'get_all'),
         ])
@@ -296,7 +290,8 @@ class ShareAPITestCase(test.TestCase):
         ctx = context.RequestContext('fake_uid', 'fake_pid_2', is_admin=True)
         self.mock_object(db_driver, 'share_get_all',
                          mock.Mock(return_value=_FAKE_LIST_OF_ALL_SHARES))
-        shares = self.api.get_all(ctx, {'status': 'error', 'all_tenants': 1})
+        shares = self.api.get_all(
+            ctx, {'status': constants.STATUS_ERROR, 'all_tenants': 1})
         share_api.policy.check_policy.assert_has_calls([
             mock.call(ctx, 'share', 'get_all'),
         ])
@@ -323,7 +318,8 @@ class ShareAPITestCase(test.TestCase):
         ctx = context.RequestContext('fake_uid', 'fake_pid_2', is_admin=False)
         self.mock_object(db_driver, 'share_get_all_by_project',
                          mock.Mock(return_value=_FAKE_LIST_OF_ALL_SHARES[1:]))
-        shares = self.api.get_all(ctx, {'name': 'bar', 'status': 'error'})
+        shares = self.api.get_all(
+            ctx, {'name': 'bar', 'status': constants.STATUS_ERROR})
         share_api.policy.check_policy.assert_has_calls([
             mock.call(ctx, 'share', 'get_all'),
         ])
@@ -336,7 +332,8 @@ class ShareAPITestCase(test.TestCase):
         self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[1::2])
 
         # one item expected, two filtered
-        shares = self.api.get_all(ctx, {'name': 'foo', 'status': 'active'})
+        shares = self.api.get_all(
+            ctx, {'name': 'foo', 'status': constants.STATUS_AVAILABLE})
         self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[2::4])
         share_api.policy.check_policy.assert_has_calls([
             mock.call(ctx, 'share', 'get_all'),
@@ -472,7 +469,8 @@ class ShareAPITestCase(test.TestCase):
         share = fake_share('fakeid',
                            user_id=self.context.user_id,
                            project_id=self.context.project_id,
-                           status='creating', is_public=is_public)
+                           status=constants.STATUS_CREATING,
+                           is_public=is_public)
         options = share.copy()
         for name in ('id', 'export_location', 'host', 'launched_at',
                      'terminated_at'):
@@ -497,7 +495,7 @@ class ShareAPITestCase(test.TestCase):
         share = fake_share('fakeid',
                            user_id=self.context.user_id,
                            project_id=self.context.project_id,
-                           status='creating')
+                           status=constants.STATUS_CREATING)
         options = share.copy()
         for name in ('id', 'export_location', 'host', 'launched_at',
                      'terminated_at'):
@@ -521,8 +519,10 @@ class ShareAPITestCase(test.TestCase):
         None, '', 'fake', 'nfsfake', 'cifsfake', 'glusterfsfake', 'hdfsfake')
     def test_create_share_invalid_protocol(self, proto):
         options = fake_share(
-            'fakeid', user_id=self.context.user_id,
-            project_id=self.context.project_id, status='creating')
+            'fakeid',
+            user_id=self.context.user_id,
+            project_id=self.context.project_id,
+            status=constants.STATUS_CREATING)
         for name in ('id', 'export_location', 'host', 'launched_at',
                      'terminated_at'):
             options.pop(name, None)
@@ -548,7 +548,7 @@ class ShareAPITestCase(test.TestCase):
         share = fake_share('fakeid',
                            user_id=self.context.user_id,
                            project_id=self.context.project_id,
-                           status='creating')
+                           status=constants.STATUS_CREATING)
         self.mock_object(db_driver, 'share_create',
                          mock.Mock(return_value=share))
         self.mock_object(db_driver, 'share_export_locations_update')
@@ -625,7 +625,7 @@ class ShareAPITestCase(test.TestCase):
             'id': 'fakeid',
             'host': 'fake',
             'size': '1',
-            'status': 'available',
+            'status': constants.STATUS_AVAILABLE,
             'user_id': self.context.user_id,
             'project_id': self.context.project_id,
         }
@@ -644,17 +644,17 @@ class ShareAPITestCase(test.TestCase):
     def test_create_snapshot(self):
         date = datetime.datetime(1, 1, 1, 1, 1, 1)
         timeutils.utcnow.return_value = date
-        share = fake_share('fakeid', status='available')
+        share = fake_share('fakeid', status=constants.STATUS_AVAILABLE)
         snapshot = fake_snapshot('fakesnapshotid',
                                  share_id=share['id'],
-                                 status='creating')
+                                 status=constants.STATUS_CREATING)
         fake_name = 'fakename'
         fake_desc = 'fakedesc'
         options = {
             'share_id': share['id'],
             'user_id': self.context.user_id,
             'project_id': self.context.project_id,
-            'status': "creating",
+            'status': constants.STATUS_CREATING,
             'progress': '0%',
             'share_size': share['size'],
             'size': 1,
@@ -708,7 +708,7 @@ class ShareAPITestCase(test.TestCase):
         share = fake_share('fakeid')
         snapshot = fake_snapshot('fakesnapshotid',
                                  share_id=share['id'],
-                                 status='available')
+                                 status=constants.STATUS_AVAILABLE)
         with mock.patch.object(db_driver, 'share_get',
                                mock.Mock(return_value=share)):
             self.api.delete_snapshot(self.context, snapshot)
@@ -717,14 +717,16 @@ class ShareAPITestCase(test.TestCase):
             share_api.policy.check_policy.assert_called_once_with(
                 self.context, 'share', 'delete_snapshot', snapshot)
             db_driver.share_snapshot_update.assert_called_once_with(
-                self.context, snapshot['id'], {'status': 'deleting'})
+                self.context,
+                snapshot['id'],
+                {'status': constants.STATUS_DELETING})
             db_driver.share_get.assert_called_once_with(
                 self.context, snapshot['share_id'])
 
     def test_delete_snapshot_wrong_status(self):
         snapshot = fake_snapshot('fakesnapshotid',
                                  share_id='fakeshareid',
-                                 status='creating')
+                                 status=constants.STATUS_CREATING)
         self.assertRaises(exception.InvalidShareSnapshot,
                           self.api.delete_snapshot,
                           self.context,
@@ -733,7 +735,7 @@ class ShareAPITestCase(test.TestCase):
             self.context, 'share', 'delete_snapshot', snapshot)
 
     def test_create_snapshot_if_share_not_available(self):
-        share = fake_share('fakeid', status='error')
+        share = fake_share('fakeid', status=constants.STATUS_ERROR)
         self.assertRaises(exception.InvalidShare,
                           self.api.create_snapshot,
                           self.context,
@@ -753,15 +755,15 @@ class ShareAPITestCase(test.TestCase):
         original_share = fake_share('fake_original_id',
                                     user_id=self.context.user_id,
                                     project_id=self.context.project_id,
-                                    status='available')
+                                    status=constants.STATUS_AVAILABLE)
         snapshot = fake_snapshot('fakesnapshotid',
                                  share_id=original_share['id'],
-                                 status='available')
+                                 status=constants.STATUS_AVAILABLE)
         share = fake_share('fakeid',
                            user_id=self.context.user_id,
                            project_id=self.context.project_id,
                            snapshot_id=snapshot['id'],
-                           status='creating')
+                           status=constants.STATUS_CREATING)
         options = share.copy()
         for name in ('id', 'export_location', 'host', 'launched_at',
                      'terminated_at'):
@@ -810,15 +812,15 @@ class ShareAPITestCase(test.TestCase):
         original_share = fake_share('fake_original_id',
                                     user_id=self.context.user_id,
                                     project_id=self.context.project_id,
-                                    status='available')
+                                    status=constants.STATUS_AVAILABLE)
         snapshot = fake_snapshot('fakesnapshotid',
                                  share_id=original_share['id'],
-                                 status='available')
+                                 status=constants.STATUS_AVAILABLE)
         share = fake_share('fakeid',
                            user_id=self.context.user_id,
                            project_id=self.context.project_id,
                            snapshot_id=snapshot['id'],
-                           status='creating')
+                           status=constants.STATUS_CREATING)
         options = share.copy()
         for name in ('id', 'export_location', 'host', 'launched_at',
                      'terminated_at'):
@@ -868,11 +870,12 @@ class ShareAPITestCase(test.TestCase):
         share_id = 'fake_share_id'
         snapshot = fake_snapshot('fakesnapshotid',
                                  share_id=share_id,
-                                 status='available')
+                                 status=constants.STATUS_AVAILABLE)
         share_type = {'id': 'fake_share_type'}
         share = fake_share(share_id, user_id=self.context.user_id,
                            project_id=self.context.project_id,
-                           snapshot_id=snapshot['id'], status='creating',
+                           snapshot_id=snapshot['id'],
+                           status=constants.STATUS_CREATING,
                            share_type_id=share_type['id'])
         options = share.copy()
         for name in ('id', 'export_location', 'host', 'launched_at',
@@ -925,11 +928,12 @@ class ShareAPITestCase(test.TestCase):
         share_id = 'fake_share_id'
         snapshot = fake_snapshot('fakesnapshotid',
                                  share_id=share_id,
-                                 status='available')
+                                 status=constants.STATUS_AVAILABLE)
         share_type = {'id': 'fake_share_type'}
         share = fake_share(share_id, user_id=self.context.user_id,
                            project_id=self.context.project_id,
-                           snapshot_id=snapshot['id'], status='creating',
+                           snapshot_id=snapshot['id'],
+                           status=constants.STATUS_CREATING,
                            share_type_id=share_type['id'][1:])
         options = share.copy()
         for name in ('id', 'export_location', 'host', 'launched_at',
@@ -969,14 +973,15 @@ class ShareAPITestCase(test.TestCase):
                                     user_id=self.context.user_id,
                                     project_id=self.context.project_id,
                                     share_type_id='fake_share_type_id',
-                                    status='available')
+                                    status=constants.STATUS_AVAILABLE)
         share_id = 'fake_share_id'
         snapshot = fake_snapshot('fakesnapshotid',
                                  share_id=original_share['id'],
-                                 status='available')
+                                 status=constants.STATUS_AVAILABLE)
         share = fake_share(share_id, user_id=self.context.user_id,
                            project_id=self.context.project_id,
-                           snapshot_id=snapshot['id'], status='creating',
+                           snapshot_id=snapshot['id'],
+                           status=constants.STATUS_CREATING,
                            share_type_id=original_share['share_type_id'])
         options = share.copy()
         for name in ('id', 'export_location', 'host', 'launched_at',
@@ -1036,14 +1041,15 @@ class ShareAPITestCase(test.TestCase):
     def test_create_from_snapshot_not_available(self):
         snapshot = fake_snapshot('fakesnapshotid',
                                  share_id='fakeshare_id',
-                                 status='error')
+                                 status=constants.STATUS_ERROR)
         self.assertRaises(exception.InvalidShareSnapshot, self.api.create,
                           self.context, 'nfs', '1', 'fakename',
                           'fakedesc', snapshot=snapshot,
                           availability_zone='fakeaz')
 
     def test_create_from_snapshot_larger_size(self):
-        snapshot = fake_snapshot(1, size=100, status='available')
+        snapshot = fake_snapshot(
+            1, size=100, status=constants.STATUS_AVAILABLE)
         self.assertRaises(exception.InvalidInput, self.api.create,
                           self.context, 'nfs', 1, 'fakename', 'fakedesc',
                           availability_zone='fakeaz', snapshot=snapshot)
@@ -1063,7 +1069,7 @@ class ShareAPITestCase(test.TestCase):
         timeutils.utcnow.return_value = date
         share = fake_share('fakeid', status=status,
                            share_server_id=share_server_id)
-        options = {'status': 'deleting', 'terminated_at': date}
+        options = {'status': constants.STATUS_DELETING, 'terminated_at': date}
         deleting_share = share.copy()
         deleting_share.update(options)
         self.mock_object(db_driver, 'share_update',
@@ -1072,7 +1078,7 @@ class ShareAPITestCase(test.TestCase):
 
         return share, deleting_share, options
 
-    @ddt.data('available', 'error')
+    @ddt.data(constants.STATUS_AVAILABLE, constants.STATUS_ERROR)
     def test_delete(self, status):
         share_server_id = 'fake-ss-id'
         share, deleting_share, options = self._setup_delete_mocks(
@@ -1089,7 +1095,7 @@ class ShareAPITestCase(test.TestCase):
 
     def test_delete_share_without_share_server(self):
         share, deleting_share, options = self._setup_delete_mocks(
-            'available', share_server_id=None)
+            constants.STATUS_AVAILABLE, share_server_id=None)
 
         self.api.delete(self.context, share)
 
@@ -1213,7 +1219,7 @@ class ShareAPITestCase(test.TestCase):
 
     @ddt.data(None, 'rw', 'ro')
     def test_allow_access(self, level):
-        share = fake_share('fakeid', status='available')
+        share = fake_share('fakeid', status=constants.STATUS_AVAILABLE)
         values = {
             'share_id': share['id'],
             'access_type': 'fakeacctype',
@@ -1234,13 +1240,13 @@ class ShareAPITestCase(test.TestCase):
             self.context, 'share', 'allow_access')
 
     def test_allow_access_invalid_access_level(self):
-        share = fake_share('fakeid', status='available')
+        share = fake_share('fakeid', status=constants.STATUS_AVAILABLE)
         self.assertRaises(exception.InvalidShareAccess, self.api.allow_access,
                           self.context, share, 'fakeacctype', 'fakeaccto',
                           'ab')
 
     def test_allow_access_status_not_available(self):
-        share = fake_share('fakeid', status='error')
+        share = fake_share('fakeid', status=constants.STATUS_ERROR)
         self.assertRaises(exception.InvalidShare, self.api.allow_access,
                           self.context, share, 'fakeacctype', 'fakeaccto')
 
@@ -1251,7 +1257,7 @@ class ShareAPITestCase(test.TestCase):
 
     @mock.patch.object(db_driver, 'share_access_delete', mock.Mock())
     def test_deny_access_error(self):
-        share = fake_share('fakeid', status='available')
+        share = fake_share('fakeid', status=constants.STATUS_AVAILABLE)
         access = fake_access('fakaccid', state='fakeerror')
         self.api.deny_access(self.context, share, access)
         share_api.policy.check_policy.assert_called_once_with(
@@ -1261,7 +1267,7 @@ class ShareAPITestCase(test.TestCase):
 
     @mock.patch.object(db_driver, 'share_access_update', mock.Mock())
     def test_deny_access_active(self):
-        share = fake_share('fakeid', status='available')
+        share = fake_share('fakeid', status=constants.STATUS_AVAILABLE)
         access = fake_access('fakaccid', state='fakeactive')
         self.api.deny_access(self.context, share, access)
         db_driver.share_access_update.assert_called_once_with(
@@ -1272,7 +1278,7 @@ class ShareAPITestCase(test.TestCase):
             self.context, share, access)
 
     def test_deny_access_not_active_not_error(self):
-        share = fake_share('fakeid', status='available')
+        share = fake_share('fakeid', status=constants.STATUS_AVAILABLE)
         access = fake_access('fakaccid', state='fakenew')
         self.assertRaises(exception.InvalidShareAccess, self.api.deny_access,
                           self.context, share, access)
@@ -1280,7 +1286,7 @@ class ShareAPITestCase(test.TestCase):
             self.context, 'share', 'deny_access')
 
     def test_deny_access_status_not_available(self):
-        share = fake_share('fakeid', status='error')
+        share = fake_share('fakeid', status=constants.STATUS_ERROR)
         self.assertRaises(exception.InvalidShare, self.api.deny_access,
                           self.context, share, 'fakeacc')
         share_api.policy.check_policy.assert_called_once_with(
@@ -1365,6 +1371,76 @@ class ShareAPITestCase(test.TestCase):
                                         metadata2, True)
         self.assertEqual(should_be,
                          db_driver.share_metadata_get(self.context, share_id))
+
+    def test_extend_invalid_status(self):
+        invalid_status = 'fake'
+        share = fake_share('fake', status=invalid_status)
+        new_size = 123
+
+        self.assertRaises(exception.InvalidShare,
+                          self.api.extend, self.context, share, new_size)
+
+    def test_extend_invalid_size(self):
+        share = fake_share('fake', status=constants.STATUS_AVAILABLE, size=200)
+        new_size = 123
+
+        self.assertRaises(exception.InvalidInput,
+                          self.api.extend, self.context, share, new_size)
+
+    def test_extend_quota_error(self):
+        share = fake_share('fake', status=constants.STATUS_AVAILABLE, size=100)
+        new_size = 123
+        usages = {'gigabytes': {'reserved': 'fake', 'in_use': 'fake'}}
+        quotas = {'gigabytes': 'fake'}
+        exc = exception.OverQuota(usages=usages, quotas=quotas)
+        self.mock_object(quota.QUOTAS, 'reserve', mock.Mock(side_effect=exc))
+
+        self.assertRaises(exception.ShareSizeExceedsAvailableQuota,
+                          self.api.extend, self.context, share, new_size)
+
+    def test_extend_valid(self):
+        share = fake_share('fake', status=constants.STATUS_AVAILABLE, size=100)
+        new_size = 123
+        self.mock_object(self.api, 'update')
+        self.mock_object(self.api.share_rpcapi, 'extend_share')
+
+        self.api.extend(self.context, share, new_size)
+
+        self.api.update.assert_called_once_with(
+            self.context, share, {'status': constants.STATUS_EXTENDING})
+        self.api.share_rpcapi.extend_share.assert_called_once_with(
+            self.context, share, new_size, mock.ANY
+        )
+
+    def test_shrink_invalid_status(self):
+        invalid_status = 'fake'
+        share = fake_share('fake', status=invalid_status)
+
+        self.assertRaises(exception.InvalidShare,
+                          self.api.shrink, self.context, share, 123)
+
+    @ddt.data(300, 0, -1)
+    def test_shrink_invalid_size(self, new_size):
+        share = fake_share('fake', status=constants.STATUS_AVAILABLE, size=200)
+
+        self.assertRaises(exception.InvalidInput,
+                          self.api.shrink, self.context, share, new_size)
+
+    @ddt.data(constants.STATUS_AVAILABLE,
+              constants.STATUS_SHRINKING_POSSIBLE_DATA_LOSS_ERROR)
+    def test_shrink_valid(self, share_status):
+        share = fake_share('fake', status=share_status, size=100)
+        new_size = 50
+        self.mock_object(self.api, 'update')
+        self.mock_object(self.api.share_rpcapi, 'shrink_share')
+
+        self.api.shrink(self.context, share, new_size)
+
+        self.api.update.assert_called_once_with(
+            self.context, share, {'status': constants.STATUS_SHRINKING})
+        self.api.share_rpcapi.shrink_share.assert_called_once_with(
+            self.context, share, new_size
+        )
 
 
 class OtherTenantsShareActionsTestCase(test.TestCase):

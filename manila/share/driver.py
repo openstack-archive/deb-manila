@@ -61,6 +61,17 @@ share_opts = [
              "is able to handle share servers and it is desired mode else set "
              "False. It is set to None by default to make this choice "
              "intentional."),
+    cfg.FloatOpt(
+        'max_over_subscription_ratio',
+        default=20.0,
+        help='Float representation of the over subscription ratio '
+             'when thin provisioning is involved. Default ratio is '
+             '20.0, meaning provisioned capacity can be 20 times '
+             'the total physical capacity. If the ratio is 10.5, it '
+             'means provisioned capacity can be 10.5 times the '
+             'total physical capacity. A ratio of 1.0 means '
+             'provisioned capacity cannot exceed the total physical '
+             'capacity. A ratio lower than 1.0 is invalid.'),
 ]
 
 ssh_opts = [
@@ -176,7 +187,7 @@ class ShareDriver(object):
         self.configuration = kwargs.get('configuration', None)
         self._stats = {}
 
-        self.pools = {}
+        self.pools = []
         if self.configuration:
             self.configuration.append_config_values(share_opts)
             network_config_group = (self.configuration.network_config_group or
@@ -237,7 +248,13 @@ class ShareDriver(object):
         raise NotImplementedError()
 
     def create_snapshot(self, context, snapshot, share_server=None):
-        """Is called to create snapshot."""
+        """Is called to create snapshot.
+
+        :param context: Current context
+        :param snapshot: Snapshot model. Share model could be
+            retrieved through snapshot['share'].
+        :param share_server: Share server model or None.
+        """
         raise NotImplementedError()
 
     def delete_share(self, context, share, share_server=None):
@@ -245,7 +262,13 @@ class ShareDriver(object):
         raise NotImplementedError()
 
     def delete_snapshot(self, context, snapshot, share_server=None):
-        """Is called to remove snapshot."""
+        """Is called to remove snapshot.
+
+        :param context: Current context
+        :param snapshot: Snapshot model. Share model could be
+            retrieved through snapshot['share'].
+        :param share_server: Share server model or None.
+        """
         raise NotImplementedError()
 
     def get_pool(self, share):
@@ -275,6 +298,11 @@ class ShareDriver(object):
 
     def check_for_setup_error(self):
         """Check for setup error."""
+        max_ratio = self.configuration.safe_get('max_over_subscription_ratio')
+        if max_ratio < 1.0:
+            msg = (_("Invalid max_over_subscription_ratio '%s'. "
+                     "Valid value should be >= 1.0.") % max_ratio)
+            raise exception.InvalidParameterValue(err=msg)
 
     def do_setup(self, context):
         """Any initialization the share driver does while starting."""
@@ -314,6 +342,20 @@ class ShareDriver(object):
         """Deallocate network resources for the given share server."""
         if self.get_network_allocations_number():
             self.network_api.deallocate_network(context, share_server_id)
+
+    def choose_share_server_compatible_with_share(self, context, share_servers,
+                                                  share, snapshot=None):
+        """Method that allows driver to choose share server for provided share.
+
+        If compatible share-server is not found, method should return None.
+
+        :param context: Current context
+        :param share_servers: list with share-server models
+        :param share:  share model
+        :param snapshot: snapshot model
+        :returns: share-server or None
+        """
+        return share_servers[0] if share_servers else None
 
     def setup_server(self, *args, **kwargs):
         if self.driver_handles_share_servers:
@@ -363,6 +405,30 @@ class ShareDriver(object):
         UnmanageInvalidShare exception, specifying a reason for the failure.
         """
 
+    def extend_share(self, share, new_size, share_server=None):
+        """Extends size of existing share.
+
+        :param share: Share model
+        :param new_size: New size of share (new_size > share['size'])
+        :param share_server: Optional -- Share server model
+        """
+        raise NotImplementedError()
+
+    def shrink_share(self, share, new_size, share_server=None):
+        """Shrinks size of existing share.
+
+        If consumed space on share larger than new_size driver should raise
+        ShareShrinkingPossibleDataLoss exception:
+        raise ShareShrinkingPossibleDataLoss(share_id=share['id'])
+
+        :param share: Share model
+        :param new_size: New size of share (new_size < share['size'])
+        :param share_server: Optional -- Share server model
+
+        :raises ShareShrinkingPossibleDataLoss, NotImplementedError
+        """
+        raise NotImplementedError()
+
     def teardown_server(self, *args, **kwargs):
         if self.driver_handles_share_servers:
             return self._teardown_server(*args, **kwargs)
@@ -401,7 +467,16 @@ class ShareDriver(object):
             total_capacity_gb='infinite',
             free_capacity_gb='infinite',
             reserved_percentage=0,
-            QoS_support=False)
+            QoS_support=False,
+            pools=self.pools or None,
+        )
         if isinstance(data, dict):
             common.update(data)
         self._stats = common
+
+    def get_share_server_pools(self, share_server):
+        """Return list of pools related to a particular share server.
+
+        :param share_server: ShareServer class instance.
+        """
+        return []

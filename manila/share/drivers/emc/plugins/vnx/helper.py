@@ -17,11 +17,14 @@ import random
 import re
 
 from eventlet import greenthread
+from lxml import builder
+from lxml import etree as ET
 from oslo_log import log
 import six
 from six.moves.urllib import error as url_error  # pylint: disable=E0611
 from six.moves.urllib import request as url_request  # pylint: disable=E0611
 
+from manila.common import constants as const
 import manila.exception
 from manila.i18n import _
 from manila.i18n import _LE
@@ -30,7 +33,6 @@ from manila.i18n import _LW
 from manila.share.drivers.emc.plugins.vnx import constants
 from manila.share.drivers.emc.plugins.vnx import utils as vnx_utils
 from manila.share.drivers.emc.plugins.vnx import xml_api_parser as parser
-from manila.share.drivers.emc.plugins.vnx import xml_api_schema as schema
 from manila import utils
 
 LOG = log.getLogger(__name__)
@@ -46,13 +48,14 @@ class XMLAPIConnector(object):
         self.auth_url = 'https://' + self.storage_ip + '/Login'
         self._url = ('https://' + self.storage_ip
                      + '/servlets/CelerraManagementServices')
-        https_hander = url_request.HTTPSHandler()
+        https_handler = url_request.HTTPSHandler()
         cookie_jar = cookielib.CookieJar()
-        cookie_hander = url_request.HTTPCookieProcessor(cookie_jar)
-        self.url_opener = url_request.build_opener(https_hander, cookie_hander)
-        self.do_setup()
+        cookie_handler = url_request.HTTPCookieProcessor(cookie_jar)
+        self.url_opener = url_request.build_opener(https_handler,
+                                                   cookie_handler)
+        self._do_setup()
 
-    def do_setup(self):
+    def _do_setup(self):
         credential = ('user=' + self.user_name
                       + '&password=' + self.pass_word
                       + '&Login=Login')
@@ -74,7 +77,7 @@ class XMLAPIConnector(object):
             string_parts.append(header)
 
         if req.data:
-            string_parts.append(" -d '%s'" % (req.data))
+            string_parts.append(" -d '%s'" % req.data)
         string_parts.append(' ' + req.get_full_url())
         LOG.debug("\nREQ: %s\n", "".join(string_parts))
 
@@ -141,7 +144,7 @@ class XMLAPIConnector(object):
         except manila.exception.NotAuthorized:
             LOG.debug("Login again because client certification "
                       "may be expired.")
-            self.do_setup()
+            self._do_setup()
             resp_body = self._request(req_body, method, header)
 
         return resp_body
@@ -153,11 +156,9 @@ class XMLAPIHelper(object):
     def __init__(self, configuration):
         super(XMLAPIHelper, self).__init__()
         self._conn = XMLAPIConnector(configuration)
-        self._xml_header = (
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
 
-    def setup_connector(self):
-        self._conn.do_setup()
+        self.elt_maker = builder.ElementMaker(
+            nsmap={None: constants.XML_NAMESPACE})
 
     def _translate_response(self, status, info):
         """Translate different status to ok/error status."""
@@ -185,17 +186,16 @@ class XMLAPIHelper(object):
         status = constants.STATUS_OK
 
         for child in response:
-            if (child[0] == 'Fault'
-                    or child[0] == 'QueryStatus'
-                    or child[0] == 'TaskResponse'):
+            if (child[0] == 'Fault' or
+                    child[0] == 'QueryStatus' or child[0] == 'TaskResponse'):
 
                 if 'maxSeverity' in child[1].keys():
                     status = child[1]['maxSeverity']
 
                 if 'taskId' in child[1].keys():
-                    taskId = child[1]['taskId']
+                    task_id = child[1]['taskId']
                 else:
-                    taskId = None
+                    task_id = None
 
                 # It indicate that there is a problem in this operation
                 if len(child) > 2 and len(child[2]) > 0:
@@ -204,7 +204,7 @@ class XMLAPIHelper(object):
                     for item in problems:
                         if item[0] == 'Problem':
                             info = {
-                                'taskId': taskId,
+                                'taskId': task_id,
                                 'message': None,
                                 'messageCode': None,
                                 'description': None,
@@ -226,7 +226,7 @@ class XMLAPIHelper(object):
                 if len(data['info']) == 0:
                     data['info'].append(
                         {
-                            'taskId': taskId,
+                            'taskId': task_id,
                             'message': None,
                             'messageCode': None,
                             'description': None,
@@ -237,41 +237,53 @@ class XMLAPIHelper(object):
             status = self._translate_response(status, data['info'])
         return status, data
 
-    def get_message_codes(self, data):
+    def _get_message_codes(self, data):
         if 'info' not in data:
             return []
         return map(lambda info: info['messageCode'], data['info'])
 
+    def _build_query_package(self, body):
+        return self.elt_maker.RequestPacket(
+            self.elt_maker.Request(
+                self.elt_maker.Query(body)
+            )
+        )
+
+    def _build_task_package(self, body):
+        return self.elt_maker.RequestPacket(
+            self.elt_maker.Request(
+                self.elt_maker.StartTask(body, timeout='300')
+            )
+        )
+
     def create_file_system(self, fs_name, fs_size, pool_id, mover_id,
                            is_vdm=True):
         if is_vdm:
-            mover_ref = schema.VdmRef(vdm=six.text_type(mover_id))
+            mover = self.elt_maker.Vdm(vdm=mover_id)
         else:
-            mover_ref = schema.MoverRef(mover=six.text_type(mover_id))
+            mover = self.elt_maker.Mover(mover=mover_id)
 
-        new_fs = schema.NewFileSystem(
-            name=six.text_type(fs_name),
-            mover=mover_ref,
-            destination=schema.StoragePool(
-                pool=six.text_type(pool_id),
-                size=six.text_type(fs_size),
-                may_contain_slices="true"
+        request = self._build_task_package(
+            self.elt_maker.NewFileSystem(
+                mover,
+                self.elt_maker.StoragePool(
+                    pool=pool_id,
+                    size=six.text_type(fs_size),
+                    mayContainSlices='true'
+                ),
+                name=fs_name
             )
         )
 
-        request = schema.build_task_package(new_fs)
-
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
         return status, msg
 
     def delete_file_system(self, fs_id):
-        request = schema.build_task_package(
-            schema.DeleteFileSystem(
-                filesystem=six.text_type(fs_id)
-            )
+        request = self._build_task_package(
+            self.elt_maker.DeleteFileSystem(fileSystem=fs_id)
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
         return status, msg
 
     def get_file_system_by_name(self, fs_name, need_capacity=True):
@@ -288,18 +300,18 @@ class XMLAPIHelper(object):
             'cwormState': '',
         }
 
-        request = schema.build_query_package(
-            schema.FileSystemQueryParams(
-                aspect_selection=schema.AspectSelectionFileSystem(
-                    file_systems='true',
-                    file_system_capacity_info='true' if
-                    need_capacity else 'false'),
-                sub_element=schema.FileSystemAlias(
-                    name=six.text_type(fs_name))
+        request = self._build_query_package(
+            self.elt_maker.FileSystemQueryParams(
+                self.elt_maker.AspectSelection(
+                    fileSystems='true',
+                    fileSystemCapacityInfos='true' if
+                    need_capacity else 'false'
+                ),
+                self.elt_maker.Alias(name=fs_name)
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         if constants.STATUS_OK != status:
             return status, msg
@@ -326,88 +338,42 @@ class XMLAPIHelper(object):
 
         return status, data
 
-    def rename_file_system(self, filesystem, new_name):
-
-        data = {
-            'name': '',
-            'id': '',
-            'type': '',
-            'size': '',
-            'volume_id': '',
-            'pool_id': '',
-            'dataServicePolicies': '',
-            'containsSlices': '',
-            'cwormState': '',
-        }
-
-        request = schema.build_task_package(
-            schema.ModifyFileSystem(
-                file_system=six.text_type(filesystem['id']),
-                new_name=six.text_type(new_name)
-            )
-        )
-
-        status, msg, result = self.send_request(request)
-
-        if constants.STATUS_OK != status:
-            return status, msg
-
-        for item in result:
-            if item[0] == 'FileSystem':
-                list_properties = [
-                    'name',
-                    'type',
-                    'cwormState'
-                    'dataServicePolicies',
-                    'containsSlices',
-                ]
-                self._copy_properties(item[1], data, list_properties)
-                data['id'] = item[1].get('fileSystem', '')
-                data['volume_id'] = item[1].get('volume', '')
-                data['pool_id'] = item[1].get('storagePools', '')
-            elif item[0] == 'FileSystemCapacityInfo':
-                data['size'] = item[1].get('volumeSize', '')
-
-        return status, data
-
     def create_mount_point(self, fs_id, mount_path, mover_id):
-        request = schema.build_task_package(
-            schema.NewMount(
-                sub_element=schema.MoverOrVdmRef(
-                    mover=six.text_type(mover_id)),
-                file_system=six.text_type(fs_id),
-                path=six.text_type(mount_path)
+        request = self._build_task_package(
+            self.elt_maker.NewMount(
+                self.elt_maker.MoverOrVdm(mover=mover_id),
+                fileSystem=fs_id,
+                path=mount_path
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
     def delete_mount_point(self, mover_id, mount_path, is_vdm):
-        request = schema.build_task_package(
-            schema.DeleteMount(
-                mover=six.text_type(mover_id),
-                path=six.text_type(mount_path),
-                is_vdm=six.text_type(is_vdm)
+        request = self._build_task_package(
+            self.elt_maker.DeleteMount(
+                mover=mover_id,
+                moverIdIsVdm=is_vdm,
+                path=mount_path
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
     def get_mount_point(self, mover_id):
 
         mount_points = []
-        request = schema.build_query_package(
-            schema.MountQueryParams(
-                mover_or_vdm=schema.MoverOrVdmRef(
-                    mover=six.text_type(mover_id))
+        request = self._build_query_package(
+            self.elt_maker.MountQueryParams(
+                self.elt_maker.MoverOrVdm(mover=mover_id)
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         if constants.STATUS_OK != status:
             return status, msg
@@ -441,47 +407,43 @@ class XMLAPIHelper(object):
 
         return status, mount_points
 
-    def create_cifs_share(self, share_name, netbiosname, mover_id,
+    def create_cifs_share(self, share_name, netbios_name, mover_id,
                           is_vdm=True):
 
         share_path = '/' + share_name
 
-        request = schema.build_task_package(
-            schema.NewCifsShare(
-                mover_or_vdm=schema.MoverOrVdmRef(
-                    mover=six.text_type(mover_id),
-                    is_vdm='false' if not is_vdm else 'true'),
-                cifs_servers=schema.CifsServers(
-                    schema.Li(
-                        sub_element=schema.NetBiosName(
-                            net_bios_name=six.text_type(netbiosname))
-                    )),
-                name=six.text_type(share_name),
-                path=six.text_type(share_path)
+        request = self._build_task_package(
+            self.elt_maker.NewCifsShare(
+                self.elt_maker.MoverOrVdm(
+                    mover=mover_id,
+                    moverIdIsVdm='true' if is_vdm else 'false'
+                ),
+                self.elt_maker.CifsServers(self.elt_maker.li(netbios_name)),
+                name=share_name,
+                path=share_path
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
-    def delete_cifs_share(self, share_name, mover_id, netbiosnames,
+    def delete_cifs_share(self, share_name, mover_id, netbios_names,
                           is_vdm='true'):
-        if not isinstance(netbiosnames, list):
-            netbiosnames = [netbiosnames]
-        request = schema.build_task_package(
-            schema.DeleteCifsShare(
-                cifs_servers=schema.CifsServers(
-                    map(lambda a: schema.Li(
-                        schema.NetBiosName(net_bios_name=six.text_type(a))),
-                        netbiosnames)),
-                mover=six.text_type(mover_id),
-                name=six.text_type(share_name),
-                is_vdm=six.text_type(is_vdm)
+        if not isinstance(netbios_names, list):
+            netbios_names = [netbios_names]
+
+        request = self._build_task_package(
+            self.elt_maker.DeleteCifsShare(
+                self.elt_maker.CifsServers(*map(lambda a: self.elt_maker.li(a),
+                                                netbios_names)),
+                mover=mover_id,
+                moverIdIsVdm=is_vdm,
+                name=share_name
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
@@ -496,13 +458,11 @@ class XMLAPIHelper(object):
             'mover': '',
         }
 
-        request = schema.build_query_package(
-            schema.CifsShareQueryParams(
-                name=six.text_type(name)
-            )
+        request = self._build_query_package(
+            self.elt_maker.CifsShareQueryParams(name=name)
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         if constants.STATUS_OK != status:
             return status, msg
@@ -517,14 +477,14 @@ class XMLAPIHelper(object):
 
         return status, data
 
-    def _copy_properties(self, source, dist, properties):
+    def _copy_properties(self, source, dest, properties):
         for key in properties:
             if key in source:
-                dist[key] = source[key]
-        return dist
+                dest[key] = source[key]
+        return dest
 
-    def send_request(self, req):
-        req_xml = self._xml_header + req.toxml()
+    def _send_request(self, req):
+        req_xml = constants.XML_HEADER + ET.tostring(req)
         rsp_xml = self._conn.request(req_xml)
 
         result = parser.parse_xml_api(
@@ -535,73 +495,52 @@ class XMLAPIHelper(object):
         return status, msg_info, result
 
     def _is_not_internal_device(self, device):
-        internal_types = ['mge', 'fxg', 'tks', 'fsn']
-        for device_type in internal_types:
+        for device_type in ('mge', 'fxg', 'tks', 'fsn'):
             if device.find(device_type) == 0:
                 return False
         return True
 
-    def _is_mount_point_unexist_error(self, out):
-        if 'info' in out.keys():
-            for problem in out['info']:
-                if ((problem['messageCode'] == constants.MSG_GENERAL_ERROR
-                        and problem['message'].find("No such path or invalid "
-                                                    "operation") != -1)
-                        or (problem['messageCode'] ==
-                            constants.MSG_INVALID_VMD_ID)):
-                    return True
-
-        return False
-
-    def _is_filesystem_unexist_error(self, out):
-        if 'info' in out.keys():
-            for problem in out['info']:
-                if (problem['messageCode'] ==
-                        constants.MSG_FILESYSTEM_NOT_FOUND):
-                    return True
+    def is_mount_point_nonexistent(self, out):
+        for problem in out.get('info', []):
+            if ((problem['messageCode'] == constants.MSG_GENERAL_ERROR and
+                    problem['message'].find("No such path or invalid "
+                                            "operation") != -1) or
+                    (problem['messageCode'] == constants.MSG_INVALID_VDM_ID)):
+                return True
 
         return False
 
     def create_check_point(self, src_fs, ckpt_name, pool_id, ckpt_size=None):
 
         if ckpt_size:
-            new_ckpt = schema.NewCheckpoint(
-                sub_element=schema.SpaceAllocationMethod(
-                    schema.StoragePool(
-                        pool=six.text_type(pool_id),
-                        size=six.text_type(ckpt_size)
-                    )
-                ),
-                checkpoint_of=six.text_type(src_fs),
-                name=six.text_type(ckpt_name)
+            elt_pool = self.elt_maker.StoragePool(
+                pool=pool_id,
+                size=six.text_type(ckpt_size)
             )
-
         else:
-            new_ckpt = schema.NewCheckpoint(
-                sub_element=schema.SpaceAllocationMethod(
-                    schema.StoragePool(
-                        pool=six.text_type(pool_id)
-                    )
-                ),
-                checkpoint_of=six.text_type(src_fs),
-                name=six.text_type(ckpt_name)
-            )
+            elt_pool = self.elt_maker.StoragePool(pool=pool_id)
 
-        request = schema.build_task_package(new_ckpt)
+        new_ckpt = self.elt_maker.NewCheckpoint(
+            self.elt_maker.SpaceAllocationMethod(
+                elt_pool
+            ),
+            checkpointOf=src_fs,
+            name=ckpt_name
+        )
 
-        status, msg, result = self.send_request(request)
+        request = self._build_task_package(new_ckpt)
+
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
     def delete_check_point(self, ckpt_id):
 
-        request = schema.build_task_package(
-            schema.DeleteCheckpoint(
-                checkpoint=six.text_type(ckpt_id)
-            )
+        request = self._build_task_package(
+            self.elt_maker.DeleteCheckpoint(checkpoint=ckpt_id)
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
@@ -619,15 +558,13 @@ class XMLAPIHelper(object):
             'readOnly': None,
         }
 
-        request = schema.build_query_package(
-            schema.CheckpointQueryParams(
-                sub_element=schema.FileSystemAlias(
-                    name=six.text_type(ckpt_name)
-                )
+        request = self._build_query_package(
+            self.elt_maker.CheckpointQueryParams(
+                self.elt_maker.Alias(name=ckpt_name)
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         if constants.STATUS_OK != status:
             return status, msg
@@ -657,11 +594,11 @@ class XMLAPIHelper(object):
     def list_storage_pool(self):
         pools = []
 
-        request = schema.build_query_package(
-            schema.StoragePoolQueryParams()
+        request = self._build_query_package(
+            self.elt_maker.StoragePoolQueryParams()
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         if constants.STATUS_OK != status:
             return status, msg
@@ -677,7 +614,6 @@ class XMLAPIHelper(object):
                     'movers_id': [],
                     'virtualProvisioning': '',
                     'dataServicePolicies': '',
-                    'autoSize': '',
                     'greedy': '',
                     'isBackendPool': '',
                 }
@@ -687,7 +623,6 @@ class XMLAPIHelper(object):
                     'diskType',
                     'virtualProvisioning',
                     'dataServicePolicies',
-                    'autoSize',
                     'greedy',
                     'isBackendPool',
                 ]
@@ -695,7 +630,7 @@ class XMLAPIHelper(object):
 
                 pool['id'] = item[1].get('pool', '')
                 pool['used_size'] = item[1].get('usedSize', '')
-                pool['total_size'] = item[1].get('size', '')
+                pool['total_size'] = item[1].get('autoSize', '')
                 if 'movers' in item[1].keys():
                     pool['movers_id'] = item[1]['movers'].split()
 
@@ -713,13 +648,13 @@ class XMLAPIHelper(object):
             'id': '',
         }
 
-        request = schema.build_query_package(
-            schema.MoverQueryParams(
-                aspect_selection=schema.AspectSelectionMover()
+        request = self._build_query_package(
+            self.elt_maker.MoverQueryParams(
+                self.elt_maker.AspectSelection(movers='true')
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
         if constants.STATUS_ERROR == status:
             return status, msg
 
@@ -747,23 +682,23 @@ class XMLAPIHelper(object):
             'dns_domain': [],
         }
 
-        request = schema.build_query_package(
-            schema.MoverQueryParams(
-                mover=six.text_type(mover_id),
-                aspect_selection=schema.AspectSelectionMover(
-                    mover_deduplication_settings='true',
-                    mover_dns_domains='true',
-                    mover_interfaces="true",
-                    mover_network_devices="true",
-                    mover_nis_domains="true",
-                    mover_routes="true",
-                    movers="true",
-                    mover_statuses="true"
-                )
+        request = self._build_query_package(
+            self.elt_maker.MoverQueryParams(
+                self.elt_maker.AspectSelection(
+                    moverDeduplicationSettings='true',
+                    moverDnsDomains='true',
+                    moverInterfaces='true',
+                    moverNetworkDevices='true',
+                    moverNisDomains='true',
+                    moverRoutes='true',
+                    movers='true',
+                    moverStatuses='true'
+                ),
+                mover=mover_id
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
         if constants.STATUS_OK != status:
             return status, msg
 
@@ -831,44 +766,39 @@ class XMLAPIHelper(object):
 
         return status, mover
 
-    def extend_file_system(self, fs_id, pool_id, newsize):
+    def extend_file_system(self, fs_id, pool_id, new_size):
 
-        request = schema.build_task_package(
-            schema.ExtendFileSystem(
-                filesystem=six.text_type(fs_id),
-                destination=schema.StoragePool(
-                    pool=six.text_type(pool_id),
-                    size=six.text_type(newsize)
-                )
+        request = self._build_task_package(
+            self.elt_maker.ExtendFileSystem(
+                self.elt_maker.StoragePool(
+                    pool=pool_id,
+                    size=six.text_type(new_size)
+                ),
+                fileSystem=fs_id,
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
     def create_vdm(self, name, host_mover_id):
 
-        request = schema.build_task_package(
-            schema.NewVdm(
-                mover=six.text_type(host_mover_id),
-                name=six.text_type(name)
-            )
+        request = self._build_task_package(
+            self.elt_maker.NewVdm(mover=host_mover_id, name=name)
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
     def delete_vdm(self, vdm_id):
 
-        request = schema.build_task_package(
-            schema.DeleteVdm(
-                vdm=six.text_type(vdm_id)
-            )
+        request = self._build_task_package(
+            self.elt_maker.DeleteVdm(vdm=vdm_id)
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
@@ -881,9 +811,9 @@ class XMLAPIHelper(object):
             'interfaces': [],
         }
 
-        request = schema.build_query_package(schema.VdmQueryParams())
+        request = self._build_query_package(self.elt_maker.VdmQueryParams())
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
         if constants.STATUS_OK != status:
             return status, msg
 
@@ -913,18 +843,18 @@ class XMLAPIHelper(object):
             'vlan_id': vlan_id,
         }
 
-        request = schema.build_task_package(
-            schema.NewMoverInterface(
-                device=six.text_type(device_name),
-                ip_address=six.text_type(ip_addr),
-                mover=six.text_type(mover_id),
-                net_mask=six.text_type(net_mask),
-                vlan_id=six.text_type(vlan_id),
-                name=six.text_type(name)
+        request = self._build_task_package(
+            self.elt_maker.NewMoverInterface(
+                device=device_name,
+                ipAddress=six.text_type(ip_addr),
+                mover=mover_id,
+                name=name,
+                netMask=net_mask,
+                vlanid=six.text_type(vlan_id)
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         if constants.STATUS_OK != status:
             return status, msg
@@ -933,20 +863,20 @@ class XMLAPIHelper(object):
 
     def delete_mover_interface(self, ip_addr, mover_id):
 
-        request = schema.build_task_package(
-            schema.DeleteMoverInterface(
-                ip_address=six.text_type(ip_addr),
-                mover=six.text_type(mover_id),
+        request = self._build_task_package(
+            self.elt_maker.DeleteMoverInterface(
+                ipAddress=six.text_type(ip_addr),
+                mover=mover_id
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
     def create_cifs_server(self, args):
 
-        compName = args['compName']
+        computer_name = args['compName']
         netbios_name = args['netbios']
         mover_id = args['mover_id']
         domain_name = args['domain']
@@ -955,38 +885,31 @@ class XMLAPIHelper(object):
         user_name = args['admin_username']
         password = args['admin_password']
 
-        alias_name_list = []
+        alias_name_list = [self.elt_maker.li(alias) for alias in alias_names]
 
-        for alias in alias_names:
-            alias_name_list.append(
-                schema.Li(schema.NameList(six.text_type(alias)))
-            )
-
-        request = schema.build_task_package(
-            schema.NewW2KCifsServer(
-                name=six.text_type(netbios_name),
-                comp_name=six.text_type(compName),
-                domain=six.text_type(domain_name),
-                interfaces=six.text_type(interfaces),
-                mover_or_vdm=schema.MoverOrVdmRef(
-                    mover=six.text_type(mover_id), is_vdm='true'),
-                aliases=schema.Aliases(alias_name_list),
-                join_domain=schema.JoinDomain(
-                    user_name=six.text_type(user_name),
-                    password=six.text_type(password))
+        request = self._build_task_package(
+            self.elt_maker.NewW2KCifsServer(
+                self.elt_maker.MoverOrVdm(mover=mover_id, moverIdIsVdm='true'),
+                self.elt_maker.Aliases(*alias_name_list),
+                self.elt_maker.JoinDomain(userName=user_name,
+                                          password=password),
+                compName=computer_name,
+                domain=domain_name,
+                interfaces=interfaces,
+                name=netbios_name
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         if constants.STATUS_OK == status:
             if (constants.MSG_JOIN_DOMAIN_FAILED
-                    in self.get_message_codes(msg)):
+                    in self._get_message_codes(msg)):
                 # Domain Join Failed
                 return constants.STATUS_ERROR, msg
             else:
                 cifs_server = {
-                    'compName': compName,
+                    'compName': computer_name,
                     'netbios_name': netbios_name,
                     'mover_id': mover_id,
                     'domain_name': domain_name,
@@ -1008,47 +931,49 @@ class XMLAPIHelper(object):
 
         is_vdm = args['is_vdm'] if 'is_vdm' in args.keys() else 'true'
 
-        request = schema.build_task_package(
-            schema.ModifyW2KCifsServer(
-                mover=six.text_type(mover_id),
-                name=six.text_type(name),
-                is_vdm=six.text_type(is_vdm),
-                sub_element=schema.DomainSetting(
-                    join_domain=six.text_type(join_domain),
-                    user_name=six.text_type(user_name),
-                    password=six.text_type(password), )
+        request = self._build_task_package(
+            self.elt_maker.ModifyW2KCifsServer(
+                self.elt_maker.DomainSetting(
+                    joinDomain=join_domain,
+                    password=password,
+                    userName=user_name,
+                ),
+                mover=mover_id,
+                moverIdIsVdm=is_vdm,
+                name=name
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
     def delete_cifs_server(self, server_name, mover_id, is_vdm='true'):
-        request = schema.build_task_package(
-            schema.DeleteCifsServer(
-                mover=six.text_type(mover_id),
-                name=six.text_type(server_name),
-                is_vdm=six.text_type(is_vdm)
+        request = self._build_task_package(
+            self.elt_maker.DeleteCifsServer(
+                mover=mover_id,
+                moverIdIsVdm=is_vdm,
+                name=server_name
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
     def get_cifs_servers(self, mover_id, is_vdm=True):
         cifs_servers = []
 
-        request = schema.build_query_package(
-            schema.CifsServerQueryParams(
-                mover_or_vdm=schema.MoverOrVdmRef(
-                    mover=six.text_type(mover_id),
-                    is_vdm='false' if not is_vdm else 'true')
+        request = self._build_query_package(
+            self.elt_maker.CifsServerQueryParams(
+                self.elt_maker.MoverOrVdm(
+                    mover=mover_id,
+                    moverIdIsVdm='true' if is_vdm else 'false'
+                )
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         if constants.STATUS_OK != status:
             return status, msg
@@ -1090,29 +1015,29 @@ class XMLAPIHelper(object):
 
     def create_dns_domain(self, mover_id, name, servers, protocol='udp'):
 
-        request = schema.build_task_package(
-            schema.NewMoverDnsDomain(
-                mover=six.text_type(mover_id),
-                name=six.text_type(name),
-                servers=six.text_type(servers),
-                protocol=six.text_type(protocol)
+        request = self._build_task_package(
+            self.elt_maker.NewMoverDnsDomain(
+                mover=mover_id,
+                name=name,
+                servers=servers,
+                protocol=protocol
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
     def delete_dns_domain(self, mover_id, name):
 
-        request = schema.build_task_package(
-            schema.DeleteMoverDnsDomain(
-                mover=six.text_type(mover_id),
-                name=six.text_type(name)
+        request = self._build_task_package(
+            self.elt_maker.DeleteMoverDnsDomain(
+                mover=mover_id,
+                name=name
             )
         )
 
-        status, msg, result = self.send_request(request)
+        status, msg, result = self._send_request(request)
 
         return status, msg
 
@@ -1333,7 +1258,7 @@ class NASCommandHelper(object):
         share_path = '/' + share_name
         create_nfs_share_cmd = [
             'env', 'NAS_DB=/nas', '/nas/bin/server_export', mover_name,
-            '-option', 'rw=-*.*.*.*,root=-*.*.*.*,access=-*.*.*.*',
+            '-option', 'access=-0.0.0.0/0.0.0.0',
             share_path,
         ]
 
@@ -1405,11 +1330,12 @@ class NASCommandHelper(object):
                                                           'err': err}
         return status, data
 
-    def allow_nfs_share_access(self, path, host_ip, mover_name):
+    def allow_nfs_share_access(self, path, host_ip, mover_name,
+                               access_level=const.ACCESS_LEVEL_RW):
         sharename = path.strip('/')
 
         @utils.synchronized('emc-shareaccess-' + sharename)
-        def do_allow_access(path, host_ip, mover_name):
+        def do_allow_access(path, host_ip, mover_name, access_level):
             ok = (constants.STATUS_OK, '')
             status, share = self.get_nfs_share_by_path(path, mover_name)
             if constants.STATUS_OK != status:
@@ -1420,9 +1346,22 @@ class NASCommandHelper(object):
             mover_name = share['mover_name']
             changed = False
             rwhosts = share['RwHosts']
-            if host_ip not in rwhosts:
-                rwhosts.append(host_ip)
-                changed = True
+            rohosts = share['RoHosts']
+            if access_level == const.ACCESS_LEVEL_RW:
+                if host_ip not in rwhosts:
+                    rwhosts.append(host_ip)
+                    changed = True
+                if host_ip in rohosts:
+                    rohosts.remove(host_ip)
+                    changed = True
+            if access_level == const.ACCESS_LEVEL_RO:
+                if host_ip not in rohosts:
+                    rohosts.append(host_ip)
+                    changed = True
+                if host_ip in rwhosts:
+                    rwhosts.remove(host_ip)
+                    changed = True
+
             roothosts = share['RootHosts']
             if host_ip not in roothosts:
                 roothosts.append(host_ip)
@@ -1440,10 +1379,11 @@ class NASCommandHelper(object):
                 return self.set_nfs_share_access(path,
                                                  mover_name,
                                                  rwhosts,
+                                                 rohosts,
                                                  roothosts,
                                                  accesshosts)
 
-        return do_allow_access(path, host_ip, mover_name)
+        return do_allow_access(path, host_ip, mover_name, access_level)
 
     def deny_nfs_share_access(self, path, host_ip, mover_name):
         sharename = path.strip('/')
@@ -1471,14 +1411,19 @@ class NASCommandHelper(object):
             if host_ip in accesshosts:
                 accesshosts.remove(host_ip)
                 changed = True
-
+            rohosts = set(share['RoHosts'])
+            if host_ip in rohosts:
+                rohosts.remove(host_ip)
+                changed = True
             if not changed:
                 LOG.debug("%(host)s already in access list of share %(path)s",
                           {'host': host_ip, 'path': path})
                 return ok
             else:
-                return self.set_nfs_share_access(path, mover_name,
+                return self.set_nfs_share_access(path,
+                                                 mover_name,
                                                  rwhosts,
+                                                 rohosts,
                                                  roothosts,
                                                  accesshosts)
 
@@ -1486,14 +1431,19 @@ class NASCommandHelper(object):
 
     def set_nfs_share_access(self, path, mover_name,
                              rw_hosts,
+                             ro_hosts,
                              root_hosts,
                              access_hosts):
         ok = (constants.STATUS_OK, '')
-        access_str = ('rw=%(rw)s,root=%(root)s,access=%(access)s'
-                      % {'rw': ':'.join(rw_hosts),
-                         'root': ':'.join(root_hosts),
-                         'access': ':'.join(access_hosts)})
 
+        access_str = ('access=%(access)s'
+                      % {'access': ':'.join(access_hosts)})
+        if root_hosts:
+            access_str += (',root=%(root)s' % {'root': ':'.join(root_hosts)})
+        if rw_hosts:
+            access_str += ',rw=%(rw)s' % {'rw': ':'.join(rw_hosts)}
+        if ro_hosts:
+            access_str += ',ro=%(ro)s' % {'ro': ':'.join(ro_hosts)}
         create_nfs_share_cmd = [
             'env', 'NAS_DB=/nas', '/nas/bin/server_export', mover_name,
             '-ignore',
@@ -1522,7 +1472,7 @@ class NASCommandHelper(object):
             return constants.STATUS_ERROR, out
 
     def allow_cifs_access(self, mover_name, share_name, user_name, domain,
-                          access='fullcontrol'):
+                          access=constants.CIFS_ACL_FULLCONTROL):
         account = user_name + "@" + domain
         allow_str = ('sharesd %(share_name)s grant %(account)s=%(access)s'
                      % {'share_name': share_name,
@@ -1545,7 +1495,7 @@ class NASCommandHelper(object):
             return constants.STATUS_ERROR, out
 
     def deny_cifs_access(self, mover_name, share_name, user_name, domain,
-                         access='fullcontrol'):
+                         access=constants.CIFS_ACL_FULLCONTROL):
         account = user_name + "@" + domain
         allow_str = ('sharesd %(share_name)s revoke %(account)s=%(access)s'
                      % {'share_name': share_name,

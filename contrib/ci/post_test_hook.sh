@@ -89,11 +89,17 @@ set +o errexit
 cd $BASE/new/tempest
 
 export MANILA_TEMPEST_CONCURRENCY=${MANILA_TEMPEST_CONCURRENCY:-12}
-export MANILA_TESTS='tempest.api.share*'
+export MANILA_TESTS=${MANILA_TESTS:-'tempest.api.share*'}
 
 if [[ "$JOB_NAME" =~ "scenario" ]]; then
     echo "Set test set to scenario only"
     MANILA_TESTS='tempest.scenario.*share*'
+elif [[ "$JOB_NAME" =~ "no-share-servers"  ]]; then
+    # Using approach without handling of share servers we have bigger load for
+    # volume creation in Cinder using Generic driver. So, reduce amount of
+    # threads to avoid errors for Cinder volume creations that appear
+    # because of lack of free space.
+    MANILA_TEMPEST_CONCURRENCY=8
 fi
 
 echo "Running tempest manila test suites"
