@@ -170,6 +170,20 @@ class InvalidDriverMode(Invalid):
     message = _("Invalid driver mode: %(driver_mode)s.")
 
 
+class InvalidAPIVersionString(Invalid):
+    message = _("API Version String %(version)s is of invalid format. Must "
+                "be of format MajorNum.MinorNum.")
+
+
+class VersionNotFoundForAPIMethod(Invalid):
+    message = _("API version %(version)s is not supported on this method.")
+
+
+class InvalidGlobalAPIVersion(Invalid):
+    message = _("Version %(req_ver)s is not supported by the API. Minimum "
+                "is %(min_ver)s and maximum is %(max_ver)s.")
+
+
 class NotFound(ManilaException):
     message = _("Resource could not be found.")
     code = 404
@@ -178,6 +192,10 @@ class NotFound(ManilaException):
 
 class InUse(ManilaException):
     message = _("Resource is in use.")
+
+
+class AvailabilityZoneNotFound(NotFound):
+    message = _("Availability zone %(id)s could not be found.")
 
 
 class ShareNetworkNotFound(NotFound):
@@ -234,46 +252,46 @@ class InvalidReservationExpiration(Invalid):
 
 
 class InvalidQuotaValue(Invalid):
-    msg_fmt = _("Change would make usage less than 0 for the following "
+    message = _("Change would make usage less than 0 for the following "
                 "resources: %(unders)s.")
 
 
 class QuotaNotFound(NotFound):
-    msg_fmt = _("Quota could not be found.")
+    message = _("Quota could not be found.")
 
 
 class QuotaExists(ManilaException):
-    msg_fmt = _("Quota exists for project %(project_id)s, "
+    message = _("Quota exists for project %(project_id)s, "
                 "resource %(resource)s.")
 
 
 class QuotaResourceUnknown(QuotaNotFound):
-    msg_fmt = _("Unknown quota resources %(unknown)s.")
+    message = _("Unknown quota resources %(unknown)s.")
 
 
 class ProjectUserQuotaNotFound(QuotaNotFound):
-    msg_fmt = _("Quota for user %(user_id)s in project %(project_id)s "
+    message = _("Quota for user %(user_id)s in project %(project_id)s "
                 "could not be found.")
 
 
 class ProjectQuotaNotFound(QuotaNotFound):
-    msg_fmt = _("Quota for project %(project_id)s could not be found.")
+    message = _("Quota for project %(project_id)s could not be found.")
 
 
 class QuotaClassNotFound(QuotaNotFound):
-    msg_fmt = _("Quota class %(class_name)s could not be found.")
+    message = _("Quota class %(class_name)s could not be found.")
 
 
 class QuotaUsageNotFound(QuotaNotFound):
-    msg_fmt = _("Quota usage for project %(project_id)s could not be found.")
+    message = _("Quota usage for project %(project_id)s could not be found.")
 
 
 class ReservationNotFound(QuotaNotFound):
-    msg_fmt = _("Quota reservation %(uuid)s could not be found.")
+    message = _("Quota reservation %(uuid)s could not be found.")
 
 
 class OverQuota(ManilaException):
-    msg_fmt = _("Quota exceeded for resources: %(overs)s.")
+    message = _("Quota exceeded for resources: %(overs)s.")
 
 
 class MigrationNotFound(NotFound):
@@ -347,6 +365,10 @@ class GlusterfsException(ManilaException):
 
 class InvalidShare(Invalid):
     message = _("Invalid share: %(reason)s.")
+
+
+class InvalidShareInstance(Invalid):
+    message = _("Invalid share instance: %(reason)s.")
 
 
 class ManageInvalidShare(InvalidShare):
@@ -552,6 +574,10 @@ class EMCVnxXMLAPIError(Invalid):
     message = _("%(err)s")
 
 
+class EMCVnxLockRequiredException(ManilaException):
+    message = _("Unable to acquire lock(s).")
+
+
 class HP3ParInvalidClient(Invalid):
     message = _("%(err)s")
 
@@ -606,3 +632,11 @@ class QBRpcException(ManilaException):
     message = _("Quobyte JsonRpc call to backend raised "
                 "an exception: %(result)s, Quobyte error"
                 " code %(qbcode)s")
+
+
+class SSHInjectionThreat(ManilaException):
+    message = _("SSH command injection detected: %(command)s")
+
+
+class HNASBackendException(ManilaException):
+    message = _("HNAS Backend Exception: %(msg)s")

@@ -38,7 +38,7 @@ Background Concepts for Manila
 
    architecture
    threading
-   il8n
+   i18n
    rpc
    pool-aware-manila-scheduler
 
@@ -57,6 +57,9 @@ API Reference
    :maxdepth: 3
 
    api
+   api_microversion_dev
+   api_microversion_history
+   experimental_apis
 
 Module Reference
 ----------------
@@ -73,6 +76,20 @@ Module Reference
    fakes
    manila
    ganesha
+
+Capabilities and Extra-Specs
+----------------------------
+.. toctree::
+   :maxdepth: 3
+
+   capabilities_and_extra_specs
+
+Share backends feature support mapping
+--------------------------------------
+.. toctree::
+   :maxdepth: 3
+
+   share_back_ends_feature_support_mapping
 
 Share backends
 --------------

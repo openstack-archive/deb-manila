@@ -16,6 +16,7 @@
 import time
 
 from oslo_log import log
+from oslo_utils import strutils
 from oslo_utils import units
 
 from manila.common import constants as common_constants
@@ -23,8 +24,12 @@ from manila import exception
 from manila.i18n import _, _LI, _LW
 from manila.share.drivers.huawei import base as driver
 from manila.share.drivers.huawei import constants
+from manila.share.drivers.huawei import huawei_utils
 from manila.share.drivers.huawei.v3 import helper
+from manila.share.drivers.huawei.v3 import smartx
+from manila.share import share_types
 from manila.share import utils as share_utils
+
 
 LOG = log.getLogger(__name__)
 
@@ -98,10 +103,8 @@ class V3StorageConnection(driver.HuaweiBase):
             if fs_id is not None:
                 self.helper._delete_fs(fs_id)
             raise exception.InvalidShare(
-                reason=(_('Failed to create share %(name)s.'
-                          'Reason: %(err)s.')
-                        % {'name': share_name,
-                           'err': err}))
+                reason=(_('Failed to create share %(name)s. Reason: %(err)s.')
+                        % {'name': share_name, 'err': err}))
 
         location = self._get_location_path(share_name, share_proto)
         return location
@@ -122,6 +125,17 @@ class V3StorageConnection(driver.HuaweiBase):
             raise exception.InvalidShareAccess(reason=err_msg)
 
         fsid = share['FSID']
+        fs_info = self.helper._get_fs_info_by_id(fsid)
+
+        current_size = int(fs_info['CAPACITY']) / units.Mi / 2
+        if current_size > new_size:
+            err_msg = (_("New size for extend must be equal or bigger than "
+                         "current size on array. (current: %(size)s, "
+                         "new: %(new_size)s).")
+                       % {'size': current_size, 'new_size': new_size})
+
+            LOG.error(err_msg)
+            raise exception.InvalidInput(reason=err_msg)
         self.helper._change_share_size(fsid, size)
 
     def shrink_share(self, share, new_size, share_server):
@@ -176,9 +190,10 @@ class V3StorageConnection(driver.HuaweiBase):
     def create_snapshot(self, snapshot, share_server=None):
         """Create a snapshot."""
         snap_name = snapshot['id']
-        share_proto = snapshot['share_proto']
+        share_proto = snapshot['share']['share_proto']
 
-        share_name = self.helper._get_share_name_by_id(snapshot['share_id'])
+        share_name = self.helper._get_share_name_by_id(
+            snapshot['share']['share_id'])
         share_url_type = self.helper._get_share_url_type(share_proto)
         share = self.helper._get_share_by_name(share_name, share_url_type)
 
@@ -199,7 +214,8 @@ class V3StorageConnection(driver.HuaweiBase):
         LOG.debug("Delete a snapshot.")
         snap_name = snapshot['id']
 
-        share_name = self.helper._get_share_name_by_id(snapshot['share_id'])
+        share_name = self.helper._get_share_name_by_id(
+            snapshot['share']['share_id'])
         sharefsid = self.helper._get_fsid_by_name(share_name)
 
         if sharefsid is None:
@@ -232,15 +248,31 @@ class V3StorageConnection(driver.HuaweiBase):
             pool_name = pool_name.strip().strip('\n')
             capacity = self._get_capacity(pool_name, result)
             if capacity:
-                pool = dict(
+                pool_thin = dict(
                     pool_name=pool_name,
                     total_capacity_gb=capacity['TOTALCAPACITY'],
                     free_capacity_gb=capacity['CAPACITY'],
+                    provisioned_capacity_gb=capacity['PROVISIONEDCAPACITYGB'],
+                    max_over_subscription_ratio=self.configuration.safe_get(
+                        'max_over_subscription_ratio'),
                     allocated_capacity_gb=capacity['CONSUMEDCAPACITY'],
                     QoS_support=False,
                     reserved_percentage=0,
+                    thin_provisioning=True,
+                    dedupe=True,
+                    compression=True,
+                    huawei_smartcache=True,
+                    huawei_smartpartition=True,
                 )
-                stats_dict["pools"].append(pool)
+
+                stats_dict["pools"].append(pool_thin)
+
+                # One pool can support both thin and thick
+                pool_thick = pool_thin.copy()
+                pool_thick["thin_provisioning"] = False
+                pool_thick["dedupe"] = False
+                pool_thick["compression"] = False
+                stats_dict["pools"].append(pool_thick)
 
     def delete_share(self, share, share_server=None):
         """Delete share."""
@@ -278,16 +310,18 @@ class V3StorageConnection(driver.HuaweiBase):
         poolinfo = self.helper._find_pool_info(pool_name, result)
 
         if poolinfo:
-            total = int(poolinfo['TOTALCAPACITY']) / units.Mi / 2
-            free = int(poolinfo['CAPACITY']) / units.Mi / 2
-            consumed = int(poolinfo['CONSUMEDCAPACITY']) / units.Mi / 2
+            total = float(poolinfo['TOTALCAPACITY']) / units.Mi / 2
+            free = float(poolinfo['CAPACITY']) / units.Mi / 2
+            consumed = float(poolinfo['CONSUMEDCAPACITY']) / units.Mi / 2
             poolinfo['TOTALCAPACITY'] = total
             poolinfo['CAPACITY'] = free
             poolinfo['CONSUMEDCAPACITY'] = consumed
+            poolinfo['PROVISIONEDCAPACITYGB'] = round(
+                float(total) - float(free), 2)
 
         return poolinfo
 
-    def _init_filesys_para(self, share, poolinfo):
+    def _init_filesys_para(self, share, poolinfo, extra_specs):
         """Init basic filesystem parameters."""
         name = share['name']
         size = share['size'] * units.Mi * 2
@@ -306,8 +340,8 @@ class V3StorageConnection(driver.HuaweiBase):
             "RECYCLEHOLDTIME": 15,
             "RECYCLETHRESHOLD": 0,
             "RECYCLEAUTOCLEANSWITCH": 0,
-            "ENABLEDEDUP": False,
-            "ENABLECOMPRESSION": False,
+            "ENABLEDEDUP": extra_specs['dedupe'],
+            "ENABLECOMPRESSION": extra_specs['compression'],
         }
 
         root = self.helper._read_xml()
@@ -325,6 +359,18 @@ class V3StorageConnection(driver.HuaweiBase):
                     {'fetchtype': fstype})
                 LOG.error(err_msg)
                 raise exception.InvalidShare(reason=err_msg)
+
+        if 'LUNType' in extra_specs:
+            fileparam['ALLOCTYPE'] = extra_specs['LUNType']
+
+        if fileparam['ALLOCTYPE'] == 0:
+            if (extra_specs['dedupe'] or
+                    extra_specs['compression']):
+                err_msg = _(
+                    'The filesystem type is "Thick",'
+                    ' so dedupe or compression cannot be set.')
+                LOG.error(err_msg)
+                raise exception.InvalidInput(reason=err_msg)
 
         return fileparam
 
@@ -420,9 +466,83 @@ class V3StorageConnection(driver.HuaweiBase):
 
     def allocate_container(self, share, poolinfo):
         """Creates filesystem associated to share by name."""
-        fileParam = self._init_filesys_para(share, poolinfo)
+        opts = huawei_utils.get_share_extra_specs_params(
+            share['share_type_id'])
+
+        smartx_opts = constants.OPTS_CAPABILITIES
+        if opts is not None:
+            smart = smartx.SmartX()
+            smartx_opts = smart.get_smartx_extra_specs_opts(opts)
+
+        fileParam = self._init_filesys_para(share, poolinfo, smartx_opts)
         fsid = self.helper._create_filesystem(fileParam)
+
+        try:
+            smartpartition = smartx.SmartPartition(self.helper)
+            smartpartition.add(opts, fsid)
+
+            smartcache = smartx.SmartCache(self.helper)
+            smartcache.add(opts, fsid)
+        except Exception as err:
+            if fsid is not None:
+                self.helper._delete_fs(fsid)
+            message = (_('Failed to add smartx. Reason: %(err)s.')
+                       % {'err': err})
+            raise exception.InvalidShare(reason=message)
         return fsid
+
+    def manage_existing(self, share, driver_options):
+        """Manage existing share."""
+        driver_mode = share_types.get_share_type_extra_specs(
+            share['share_type_id'],
+            common_constants.ExtraSpecs.DRIVER_HANDLES_SHARE_SERVERS)
+
+        if strutils.bool_from_string(driver_mode):
+            msg = _("%(mode)s != False") % {
+                'mode':
+                common_constants.ExtraSpecs.DRIVER_HANDLES_SHARE_SERVERS
+            }
+            raise exception.ManageExistingShareTypeMismatch(reason=msg)
+
+        share_proto = share['share_proto']
+        share_name = share['name']
+        old_export_location = share['export_locations'][0]['path']
+        pool_name = share_utils.extract_host(share['host'], level='pool')
+        share_url_type = self.helper._get_share_url_type(share_proto)
+
+        old_share_name = self.helper._get_share_name_by_export_location(
+            old_export_location, share_proto)
+
+        share = self.helper._get_share_by_name(old_share_name,
+                                               share_url_type)
+        if not share:
+            err_msg = (_("Can not get share ID by share %s.")
+                       % old_export_location)
+            LOG.error(err_msg)
+            raise exception.InvalidShare(reason=err_msg)
+
+        fs_id = share['FSID']
+        fs = self.helper._get_fs_info_by_id(fs_id)
+        if not self.check_fs_status(fs['HEALTHSTATUS'],
+                                    fs['RUNNINGSTATUS']):
+            raise exception.InvalidShare(
+                reason=(_('Invalid status of filesystem: %(health)s '
+                          '%(running)s.')
+                        % {'health': fs['HEALTHSTATUS'],
+                           'running': fs['RUNNINGSTATUS']}))
+
+        if pool_name and pool_name != fs['POOLNAME']:
+            raise exception.InvalidHost(
+                reason=(_('The current pool(%(fs_pool)s) of filesystem '
+                          'does not match the input pool(%(host_pool)s).')
+                        % {'fs_pool': fs['POOLNAME'],
+                           'host_pool': pool_name}))
+
+        self.helper._change_fs_name(fs_id, share_name)
+        share_size = int(fs['CAPACITY']) / units.Mi / 2
+
+        location = self._get_location_path(share_name, share_proto)
+        return (share_size, [location])
 
     def _get_location_path(self, share_name, share_proto):
         root = self.helper._read_xml()

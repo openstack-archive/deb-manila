@@ -13,6 +13,7 @@
 #   under the License.
 
 from oslo_log import log
+import six
 import webob
 from webob import exc
 
@@ -81,7 +82,7 @@ class AdminController(wsgi.Controller):
         try:
             self._update(context, id, update)
         except exception.NotFound as e:
-            raise exc.HTTPNotFound(e)
+            raise exc.HTTPNotFound(six.text_type(e))
         return webob.Response(status_int=202)
 
     @wsgi.action('os-force_delete')
@@ -92,7 +93,7 @@ class AdminController(wsgi.Controller):
         try:
             resource = self._get(context, id)
         except exception.NotFound as e:
-            raise exc.HTTPNotFound(e)
+            raise exc.HTTPNotFound(six.text_type(e))
         self._delete(context, resource, force=True)
         return webob.Response(status_int=202)
 
@@ -110,6 +111,21 @@ class ShareAdminController(AdminController):
 
     def _delete(self, *args, **kwargs):
         return self.share_api.delete(*args, **kwargs)
+
+
+class ShareInstancesAdminController(AdminController):
+    """AdminController for Share instances."""
+
+    collection = 'share_instances'
+
+    def _get(self, *args, **kwargs):
+        return db.share_instance_get(*args, **kwargs)
+
+    def _update(self, *args, **kwargs):
+        db.share_instance_update(*args, **kwargs)
+
+    def _delete(self, *args, **kwargs):
+        return self.share_api.delete_instance(*args, **kwargs)
 
 
 class SnapshotAdminController(AdminController):
@@ -132,11 +148,13 @@ class Admin_actions(extensions.ExtensionDescriptor):
 
     name = "AdminActions"
     alias = "os-admin-actions"
-    updated = "2012-08-25T00:00:00+00:00"
+    updated = "2015-08-03T00:00:00+00:00"
 
     def get_controller_extensions(self):
         exts = []
-        for class_ in (ShareAdminController, SnapshotAdminController):
+        controllers = (ShareAdminController, SnapshotAdminController,
+                       ShareInstancesAdminController)
+        for class_ in controllers:
             controller = class_()
             extension = extensions.ControllerExtension(
                 self, class_.collection, controller)

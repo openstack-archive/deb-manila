@@ -26,6 +26,7 @@ from webob import exc
 from manila.api import common
 from manila.api.openstack import wsgi
 from manila.api.views import shares as share_views
+from manila import db
 from manila import exception
 from manila.i18n import _
 from manila.i18n import _LI
@@ -161,7 +162,17 @@ class ShareController(wsgi.Controller):
         share.update(update_dict)
         return self._view_builder.detail(req, share)
 
+    @wsgi.Controller.api_version("1.3")
     def create(self, req, body):
+        return self._create(req, body)
+
+    @wsgi.Controller.api_version("1.0", "1.2")  # noqa
+    def create(self, req, body):
+        share = self._create(req, body)
+        share.pop('snapshot_support', None)
+        return share
+
+    def _create(self, req, body):
         """Creates a new share."""
         context = req.environ['manila.context']
 
@@ -188,8 +199,16 @@ class ShareController(wsgi.Controller):
                {'share_proto': share_proto, 'size': size})
         LOG.info(msg, context=context)
 
+        availability_zone = share.get('availability_zone')
+
+        if availability_zone:
+            try:
+                db.availability_zone_get(context, availability_zone)
+            except exception.AvailabilityZoneNotFound as e:
+                raise exc.HTTPNotFound(explanation=six.text_type(e))
+
         kwargs = {
-            'availability_zone': share.get('availability_zone'),
+            'availability_zone': availability_zone,
             'metadata': share.get('metadata'),
             'is_public': share.get('is_public', False),
         }

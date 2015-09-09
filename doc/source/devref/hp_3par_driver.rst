@@ -88,6 +88,8 @@ file for the HP 3PAR driver:
 - `hp3par_share_ip_address` = <IP address to use for share export location>
 - `hp3par_san_ip` = <IP address for SSH access to the SAN controller>
 - `hp3par_api_url` = <3PAR WS API Server URL>
+- `hp3par_username` = <3PAR username with the 'edit' role>
+- `hp3par_password` = <3PAR password for the user specified in hp3par_username>
 - `hp3par_san_login` = <Username for SSH access to the SAN controller>
 - `hp3par_san_password` = <Password for SSH access to the SAN controller>
 - `hp3par_debug` = <False or True for extra debug logging>
@@ -131,15 +133,36 @@ Another common Manila extra-spec used to determine where a share is created
 is `share_backend_name`. When this extra-spec is defined in the share type,
 the share will be created on a backend with a matching share_backend_name.
 
+The HP 3PAR driver automatically reports capabilities based on the FPG used
+for each backend. Share types with extra specs can be created by an
+administrator to control which share types are allowed to use FPGs with or
+without specific capabilities. The following extra-specs are used with
+the capabilities filter and the HP 3PAR driver:
+
+- `hp3par_flash_cache` = '<is> True' or '<is> False'
+- `thin_provisioning` = '<is> True' or '<is> False'
+- `dedupe` = '<is> True' or '<is> False'
+
+`hp3par_flash_cache` will be reported as True for backends that have
+3PAR's Adaptive Flash Cache enabled.
+
+`thin_provisioning` will be reported as True for backends that use thin
+provisioned volumes. FPGs that use fully provisioned volumes will report
+False. Backends that use thin provisioning also support Manila's
+over-subscription feature.
+
+`dedupe` will be reported as True for backends that use deduplication
+technology.
+
 Scoped extra-specs are used to influence vendor-specific implementation
 details. Scoped extra-specs use a prefix followed by a colon.  For HP 3PAR
-these extra-specs have a prefix of `hp_3par`.
+these extra-specs have a prefix of `hpe3par`.
 
 The following HP 3PAR extra-specs are used when creating CIFS (SMB) shares:
 
-- `hp3_par:smb_access_based_enum` = true or false
-- `hp3_par:smb_continuous_avail` = true or false
-- `hp3_par:smb_cache` = off, manual, optimized or auto
+- `hpe3par:smb_access_based_enum` = true or false
+- `hpe3par:smb_continuous_avail` = true or false
+- `hpe3par:smb_cache` = off, manual, optimized or auto
 
 `smb_access_based_enum` (Access Based Enumeration) specifies if users can see
 only the files and directories to which they have been allowed access on the
@@ -167,7 +190,7 @@ or earlier.
 
 The following HP 3PAR extra-specs are used when creating NFS shares:
 
-- `hp3_par:nfs_options` = Comma separated list of NFS export options
+- `hpe3par:nfs_options` = Comma separated list of NFS export options
 
 The NFS export options have the following limitations:
 

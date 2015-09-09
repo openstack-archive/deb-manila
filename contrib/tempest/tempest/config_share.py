@@ -31,6 +31,14 @@ ServiceAvailableGroup = [
 share_group = cfg.OptGroup(name="share", title="Share Service Options")
 
 ShareGroup = [
+    cfg.StrOpt("min_api_microversion",
+               default="1.0",
+               help="The minimum api microversion is configured to be the "
+                    "value of the minimum microversion supported by Manila."),
+    cfg.StrOpt("max_api_microversion",
+               default="1.4",
+               help="The maximum api microversion is configured to be the "
+                    "value of the latest microversion supported by Manila."),
     cfg.StrOpt("region",
                default="",
                help="The share region name to use. If empty, the value "
@@ -62,6 +70,9 @@ ShareGroup = [
                 default=[],
                 help="Selection of protocols, that should "
                      "be covered with user rule tests"),
+    cfg.ListOpt("enable_cert_rules_for_protocols",
+                default=["glusterfs", ],
+                help="Protocols that should be covered with cert rule tests."),
     cfg.StrOpt("username_for_user_rules",
                default="Administrator",
                help="Username, that will be used in user tests."),
@@ -122,6 +133,11 @@ ShareGroup = [
                 default=True,
                 help="Defines whether to run share shrink tests or not. "
                      "Disable this feature if used driver doesn't "
+                     "support it."),
+    cfg.BoolOpt("run_snapshot_tests",
+                default=True,
+                help="Defines whether to run tests that use share snapshots "
+                     "or not. Disable this feature if used driver doesn't "
                      "support it."),
     cfg.StrOpt("image_with_share_tools",
                default="manila-service-image",

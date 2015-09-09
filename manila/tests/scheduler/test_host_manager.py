@@ -156,7 +156,7 @@ class HostManagerTestCase(test.TestCase):
 
             self.assertEqual(4, len(host_state_map))
             # Check that service is up
-            for i in xrange(4):
+            for i in moves.range(4):
                 share_node = fakes.SHARE_SERVICES_WITH_POOLS[i]
                 host = share_node['host']
                 self.assertEqual(share_node, host_state_map[host].service)
@@ -190,11 +190,11 @@ class HostManagerTestCase(test.TestCase):
                         'reserved_percentage': 0,
                         'provisioned_capacity_gb': 312,
                         'max_over_subscription_ratio': 1.0,
-                        'thin_provisioning_support': False,
-                        'thick_provisioning_support': True,
+                        'thin_provisioning': False,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                     },
                 }, {
                     'name': 'host2@back1#BBB',
@@ -210,11 +210,11 @@ class HostManagerTestCase(test.TestCase):
                         'reserved_percentage': 0,
                         'provisioned_capacity_gb': 400,
                         'max_over_subscription_ratio': 2.0,
-                        'thin_provisioning_support': True,
-                        'thick_provisioning_support': False,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                     },
                 }, {
                     'name': 'host2@back2#CCC',
@@ -230,16 +230,18 @@ class HostManagerTestCase(test.TestCase):
                         'reserved_percentage': 0,
                         'provisioned_capacity_gb': 50000,
                         'max_over_subscription_ratio': 20.0,
-                        'thin_provisioning_support': True,
-                        'thick_provisioning_support': True,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                     },
                 },
             ]
+            self.assertTrue(isinstance(res, list))
             self.assertEqual(len(expected), len(res))
-            self.assertEqual(sorted(expected), sorted(res))
+            for pool in expected:
+                self.assertIn(pool, res)
 
     def test_get_pools(self):
         context = 'fake_context'
@@ -270,11 +272,11 @@ class HostManagerTestCase(test.TestCase):
                         'reserved_percentage': 0,
                         'provisioned_capacity_gb': 10,
                         'max_over_subscription_ratio': 1.0,
-                        'thin_provisioning_support': False,
-                        'thick_provisioning_support': True,
+                        'thin_provisioning': False,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                     },
                 }, {
                     'name': 'host2@BBB#pool2',
@@ -291,11 +293,11 @@ class HostManagerTestCase(test.TestCase):
                         'reserved_percentage': 0,
                         'provisioned_capacity_gb': 60,
                         'max_over_subscription_ratio': 2.0,
-                        'thin_provisioning_support': True,
-                        'thick_provisioning_support': False,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                     },
                 }, {
                     'name': 'host3@CCC#pool3',
@@ -312,11 +314,11 @@ class HostManagerTestCase(test.TestCase):
                         'reserved_percentage': 0,
                         'provisioned_capacity_gb': 100,
                         'max_over_subscription_ratio': 20.0,
-                        'thin_provisioning_support': True,
-                        'thick_provisioning_support': True,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                     },
                 }, {
                     'name': 'host4@DDD#pool4a',
@@ -333,11 +335,11 @@ class HostManagerTestCase(test.TestCase):
                         'reserved_percentage': 0,
                         'provisioned_capacity_gb': 800,
                         'max_over_subscription_ratio': 2.0,
-                        'thin_provisioning_support': True,
-                        'thick_provisioning_support': False,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                     },
                 }, {
                     'name': 'host4@DDD#pool4b',
@@ -354,17 +356,19 @@ class HostManagerTestCase(test.TestCase):
                         'reserved_percentage': 0,
                         'provisioned_capacity_gb': 2000,
                         'max_over_subscription_ratio': 10.0,
-                        'thin_provisioning_support': True,
-                        'thick_provisioning_support': False,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                     },
                 },
             ]
-
+            self.assertTrue(isinstance(res, list))
+            self.assertTrue(isinstance(self.host_manager.host_state_map, dict))
             self.assertEqual(len(expected), len(res))
-            self.assertEqual(sorted(expected), sorted(res))
+            for pool in expected:
+                self.assertIn(pool, res)
 
     def test_get_pools_host_down(self):
         context = 'fake_context'
@@ -400,6 +404,7 @@ class HostManagerTestCase(test.TestCase):
                     'capabilities': {
                         'timestamp': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                         'share_backend_name': 'AAA',
                         'free_capacity_gb': 200,
                         'driver_version': None,
@@ -409,8 +414,7 @@ class HostManagerTestCase(test.TestCase):
                         'storage_protocol': None,
                         'provisioned_capacity_gb': 312,
                         'max_over_subscription_ratio': 1.0,
-                        'thin_provisioning_support': False,
-                        'thick_provisioning_support': True,
+                        'thin_provisioning': False,
                     },
                 }, {
                     'name': 'host2@back1#BBB',
@@ -420,6 +424,7 @@ class HostManagerTestCase(test.TestCase):
                     'capabilities': {
                         'timestamp': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                         'share_backend_name': 'BBB',
                         'free_capacity_gb': 100,
                         'driver_version': None,
@@ -429,15 +434,17 @@ class HostManagerTestCase(test.TestCase):
                         'storage_protocol': None,
                         'provisioned_capacity_gb': 400,
                         'max_over_subscription_ratio': 2.0,
-                        'thin_provisioning_support': True,
-                        'thick_provisioning_support': False,
+                        'thin_provisioning': True,
                     },
                 },
             ]
+            self.assertTrue(isinstance(res, list))
+            self.assertTrue(isinstance(self.host_manager.host_state_map, dict))
+            self.assertEqual(len(expected), len(res))
             self.assertEqual(len(expected),
                              len(self.host_manager.host_state_map))
-            self.assertEqual(len(expected), len(res))
-            self.assertEqual(sorted(expected), sorted(res))
+            for pool in expected:
+                self.assertIn(pool, res)
 
     def test_get_pools_with_filters(self):
         context = 'fake_context'
@@ -463,6 +470,7 @@ class HostManagerTestCase(test.TestCase):
                         'pool_name': 'pool2',
                         'timestamp': None,
                         'driver_handles_share_servers': False,
+                        'snapshot_support': True,
                         'share_backend_name': 'BBB',
                         'free_capacity_gb': 42,
                         'driver_version': None,
@@ -470,8 +478,7 @@ class HostManagerTestCase(test.TestCase):
                         'reserved_percentage': 0,
                         'provisioned_capacity_gb': 60,
                         'max_over_subscription_ratio': 2.0,
-                        'thin_provisioning_support': True,
-                        'thick_provisioning_support': False,
+                        'thin_provisioning': True,
                         'vendor_name': None,
                         'storage_protocol': None
                     },

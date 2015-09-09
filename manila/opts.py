@@ -46,6 +46,7 @@ import manila.scheduler.scheduler_options
 import manila.scheduler.simple
 import manila.scheduler.weights
 import manila.scheduler.weights.capacity
+import manila.scheduler.weights.pool
 import manila.service
 import manila.share.api
 import manila.share.driver
@@ -56,12 +57,14 @@ import manila.share.drivers.glusterfs
 import manila.share.drivers.glusterfs_native
 import manila.share.drivers.hdfs.hdfs_native
 import manila.share.drivers.hds.sop
+import manila.share.drivers.hitachi.hds_hnas
 import manila.share.drivers.hp.hp_3par_driver
 import manila.share.drivers.huawei.huawei_nas
 import manila.share.drivers.ibm.gpfs
 import manila.share.drivers.netapp.options
 import manila.share.drivers.quobyte.quobyte
 import manila.share.drivers.service_instance
+import manila.share.drivers.windows.winrm_helper
 import manila.share.drivers.zfssa.zfssashare
 import manila.share.drivers_private_data
 import manila.share.manager
@@ -106,12 +109,12 @@ _global_opt_lists = [
     manila.share.driver.ssh_opts,
     manila.share.drivers_private_data.private_data_opts,
     manila.share.drivers.emc.driver.EMC_NAS_OPTS,
-    manila.share.drivers.emc.plugins.isilon.isilon.ISILON_OPTS,
     manila.share.drivers.generic.share_opts,
     manila.share.drivers.glusterfs.GlusterfsManilaShare_opts,
     manila.share.drivers.glusterfs_native.glusterfs_native_manila_share_opts,
     manila.share.drivers.hdfs.hdfs_native.hdfs_native_share_opts,
     manila.share.drivers.hds.sop.hdssop_share_opts,
+    manila.share.drivers.hitachi.hds_hnas.hds_hnas_opts,
     manila.share.drivers.hp.hp_3par_driver.HP3PAR_OPTS,
     manila.share.drivers.huawei.huawei_nas.huawei_opts,
     manila.share.drivers.ibm.gpfs.gpfs_share_opts,
@@ -124,6 +127,7 @@ _global_opt_lists = [
     manila.share.drivers.service_instance.common_opts,
     manila.share.drivers.service_instance.no_share_servers_handling_mode_opts,
     manila.share.drivers.service_instance.share_servers_handling_mode_opts,
+    manila.share.drivers.windows.winrm_helper.winrm_opts,
     manila.share.drivers.zfssa.zfssashare.ZFSSA_OPTS,
     manila.share.manager.share_manager_opts,
     manila.volume._volume_opts,

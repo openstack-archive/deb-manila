@@ -35,6 +35,7 @@ from manila import context
 from manila import exception
 from manila.i18n import _
 from manila.i18n import _LE
+from manila.i18n import _LI
 from manila.i18n import _LW
 from manila.share import driver
 from manila.share.drivers import service_instance
@@ -139,10 +140,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.backend_name = self.configuration.safe_get(
             'share_backend_name') or "Cinder_Volumes"
         self.ssh_connections = {}
+        self._setup_service_instance_manager()
+        self.private_storage = kwargs.get('private_storage')
+
+    def _setup_service_instance_manager(self):
         self.service_instance_manager = (
             service_instance.ServiceInstanceManager(
                 driver_config=self.configuration))
-        self.private_storage = kwargs.get('private_storage')
 
     def _ssh_exec(self, server, command):
         connection = self.ssh_connections.get(server['instance_id'])
@@ -476,7 +480,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             share['size'],
             self.configuration.volume_name_template % share['id'], '',
             snapshot=volume_snapshot,
-            volume_type=self.configuration.cinder_volume_type)
+            volume_type=self.configuration.cinder_volume_type,
+            availability_zone=share['availability_zone'])
 
         self.private_storage.update(
             share['id'], {'volume_id': volume['id']})
@@ -493,12 +498,23 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         )
 
     def _wait_for_available_volume(self, volume, timeout,
-                                   msg_error, msg_timeout):
+                                   msg_error, msg_timeout,
+                                   expected_size=None):
         t = time.time()
         while time.time() - t < timeout:
             if volume['status'] == const.STATUS_AVAILABLE:
-                break
-            if volume['status'] == const.STATUS_ERROR:
+                if expected_size and volume['size'] != expected_size:
+                    LOG.debug("The volume %(vol_id)s is available but the "
+                              "volume size does not match the expected size. "
+                              "A volume resize operation may be pending. "
+                              "Expected size: %(expected_size)s, "
+                              "Actual size: %(volume_size)s.",
+                              dict(vol_id=volume['id'],
+                                   expected_size=expected_size,
+                                   volume_size=volume['size']))
+                else:
+                    break
+            elif volume['status'] == const.STATUS_ERROR:
                 raise exception.ManilaException(msg_error)
             time.sleep(1)
             volume = self.volume_api.get(self.admin_context, volume['id'])
@@ -509,7 +525,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _deallocate_container(self, context, share):
         """Deletes cinder volume."""
-        volume = self._get_volume(context, share['id'])
+        try:
+            volume = self._get_volume(context, share['id'])
+        except exception.VolumeNotFound:
+            LOG.info(_LI("Volume not found. Already deleted?"))
+            volume = None
         if volume:
             if volume['status'] == 'in-use':
                 raise exception.ManilaException(
@@ -585,7 +605,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         )
         return self._wait_for_available_volume(
             volume, self.configuration.max_time_to_extend_volume,
-            msg_error=msg_error, msg_timeout=msg_timeout
+            msg_error=msg_error, msg_timeout=msg_timeout,
+            expected_size=new_size
         )
 
     @ensure_server

@@ -27,7 +27,7 @@ from oslo_utils import importutils
 from manila import context
 from manila import db
 from manila import exception
-from manila.i18n import _LW
+from manila.i18n import _LE
 from manila import manager
 from manila import rpc
 from manila.share import rpcapi as share_rpcapi
@@ -46,7 +46,7 @@ CONF.register_opt(scheduler_driver_opt)
 class SchedulerManager(manager.Manager):
     """Chooses a host to create shares."""
 
-    RPC_API_VERSION = '1.1'
+    RPC_API_VERSION = '1.2'
 
     def __init__(self, scheduler_driver=None, service_name=None,
                  *args, **kwargs):
@@ -76,8 +76,8 @@ class SchedulerManager(manager.Manager):
                                                 host,
                                                 capabilities)
 
-    def create_share(self, context, topic, share_id, snapshot_id=None,
-                     request_spec=None, filter_properties=None):
+    def create_share_instance(self, context, request_spec=None,
+                              filter_properties=None):
         try:
             self.driver.schedule_create_share(context, request_spec,
                                               filter_properties)
@@ -96,8 +96,8 @@ class SchedulerManager(manager.Manager):
 
     def _set_share_error_state_and_notify(self, method, context, ex,
                                           request_spec):
-        LOG.warning(_LW("Failed to schedule_%(method)s: %(ex)s"),
-                    {"method": method, "ex": ex})
+        LOG.error(_LE("Failed to schedule_%(method)s: %(ex)s"),
+                  {"method": method, "ex": ex})
 
         share_state = {'status': 'error'}
         properties = request_spec.get('share_properties', {})

@@ -53,7 +53,7 @@ service_opts = [
                     'periodic task scheduler to reduce stampeding. '
                     '(Disable by setting to 0)'),
     cfg.StrOpt('osapi_share_listen',
-               default="0.0.0.0",
+               default="::",
                help='IP address for OpenStack Share API to listen on.'),
     cfg.IntOpt('osapi_share_listen_port',
                default=8786,
@@ -239,7 +239,7 @@ class Service(service.Service):
                 service_ref = db.service_get(ctxt, self.service_id)
 
             state_catalog['report_count'] = service_ref['report_count'] + 1
-            if zone != service_ref['availability_zone']:
+            if zone != service_ref['availability_zone']['name']:
                 state_catalog['availability_zone'] = zone
 
             db.service_update(ctxt,
@@ -277,7 +277,7 @@ class WSGIService(service.ServiceBase):
         self.host = getattr(CONF, '%s_listen' % name, "0.0.0.0")
         self.port = getattr(CONF, '%s_listen_port' % name, 0)
         self.workers = getattr(CONF, '%s_workers' % name, None)
-        if self.workers < 1:
+        if self.workers is not None and self.workers < 1:
             LOG.warn(
                 _LW("Value of config option %(name)s_workers must be integer "
                     "greater than 1.  Input value ignored.") % {'name': name})

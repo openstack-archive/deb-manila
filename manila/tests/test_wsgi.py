@@ -19,13 +19,13 @@
 import os.path
 import ssl
 import tempfile
-import urllib2
 
 import ddt
 import eventlet
 import mock
 from oslo_config import cfg
 import six
+from six.moves import urllib
 import testtools
 import webob
 import webob.dec
@@ -132,8 +132,8 @@ class TestWSGIServer(test.TestCase):
             "test_app", hello_world, host="127.0.0.1", port=0)
         server.start()
 
-        response = urllib2.urlopen('http://127.0.0.1:%d/' % server.port)
-        self.assertEqual(greetings, response.read())
+        response = urllib.request.urlopen('http://127.0.0.1:%d/' % server.port)
+        self.assertEqual(six.b(greetings), response.read())
 
         # Verify provided parameters to eventlet.spawn func
         eventlet.spawn.assert_called_once_with(
@@ -156,6 +156,7 @@ class TestWSGIServer(test.TestCase):
             "test_app", lambda *args, **kwargs: None, host="127.0.0.1", port=0)
         self.assertEqual(client_socket_timeout, server.client_socket_timeout)
 
+    @testtools.skipIf(six.PY3, "bug/1482633")
     def test_app_using_ssl(self):
         CONF.set_default("ssl_cert_file",
                          os.path.join(TEST_VAR_DIR, 'certificate.crt'))
@@ -173,11 +174,12 @@ class TestWSGIServer(test.TestCase):
         server.start()
 
         if hasattr(ssl, '_create_unverified_context'):
-            response = urllib2.urlopen(
+            response = urllib.request.urlopen(
                 'https://127.0.0.1:%d/' % server.port,
                 context=ssl._create_unverified_context())
         else:
-            response = urllib2.urlopen('https://127.0.0.1:%d/' % server.port)
+            response = urllib.request.urlopen(
+                'https://127.0.0.1:%d/' % server.port)
 
         self.assertEqual(greetings, response.read())
 
@@ -187,6 +189,7 @@ class TestWSGIServer(test.TestCase):
                       "Test requires an IPV6 configured interface")
     @testtools.skipIf(utils.is_eventlet_bug105(),
                       'Eventlet bug #105 affect test results.')
+    @testtools.skipIf(six.PY3, "bug/1482633")
     def test_app_using_ipv6_and_ssl(self):
         CONF.set_default("ssl_cert_file",
                          os.path.join(TEST_VAR_DIR, 'certificate.crt'))
@@ -206,11 +209,12 @@ class TestWSGIServer(test.TestCase):
         server.start()
 
         if hasattr(ssl, '_create_unverified_context'):
-            response = urllib2.urlopen(
+            response = urllib.request.urlopen(
                 'https://[::1]:%d/' % server.port,
                 context=ssl._create_unverified_context())
         else:
-            response = urllib2.urlopen('https://[::1]:%d/' % server.port)
+            response = urllib.request.urlopen(
+                'https://[::1]:%d/' % server.port)
 
         self.assertEqual(greetings, response.read())
 
@@ -245,11 +249,11 @@ class ExceptionTest(test.TestCase):
 
         api = self._wsgi_app(fail)
         resp = webob.Request.blank('/').get_response(api)
-        self.assertTrue('{"computeFault' in resp.body, resp.body)
+        self.assertIn('{"computeFault', six.text_type(resp.body), resp.body)
         expected = ('ExceptionWithSafety: some explanation' if expose else
                     'The server has either erred or is incapable '
                     'of performing the requested operation.')
-        self.assertTrue(expected in resp.body, resp.body)
+        self.assertIn(expected, six.text_type(resp.body), resp.body)
         self.assertEqual(resp.status_int, 500, resp.body)
 
     def test_safe_exceptions_are_described_in_faults(self):
@@ -265,7 +269,7 @@ class ExceptionTest(test.TestCase):
 
         api = self._wsgi_app(fail)
         resp = webob.Request.blank('/').get_response(api)
-        self.assertTrue(msg in resp.body, resp.body)
+        self.assertIn(msg, six.text_type(resp.body), resp.body)
         self.assertEqual(resp.status_int, exception_type.code, resp.body)
 
         if hasattr(exception_type, 'headers'):

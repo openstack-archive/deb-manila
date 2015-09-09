@@ -13,11 +13,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from tempest import exceptions
+from tempest_lib import exceptions
 
 
 class ShareBuildErrorException(exceptions.TempestException):
     message = "Share %(share_id)s failed to build and is in ERROR status"
+
+
+class ShareInstanceBuildErrorException(exceptions.TempestException):
+    message = "Share instance %(id)s failed to build and is in ERROR status"
 
 
 class AccessRuleBuildErrorException(exceptions.TempestException):

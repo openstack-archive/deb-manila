@@ -24,7 +24,7 @@ from oslo_utils import units
 import six
 
 from manila import exception
-from manila.i18n import _, _LI
+from manila.i18n import _, _LI, _LW
 
 hp3parclient = importutils.try_import("hp3parclient")
 if hp3parclient:
@@ -36,18 +36,38 @@ MIN_CLIENT_VERSION = (3, 2, 1)
 MIN_SMB_CA_VERSION = (3, 2, 2)
 DENY = '-'
 ALLOW = '+'
-OPEN_STACK_MANILA_FSHARE = 'OpenStack Manila fshare'
+OPEN_STACK_MANILA = 'OpenStack Manila'
+FULL = 1
+THIN = 2
+DEDUPE = 6
+ENABLED = 1
+DISABLED = 2
 CACHE = 'cache'
 CONTINUOUS_AVAIL = 'continuous_avail'
 ACCESS_BASED_ENUM = 'access_based_enum'
+SMB_EXTRA_SPECS_MAP = {
+    CACHE: CACHE,
+    CONTINUOUS_AVAIL: 'ca',
+    ACCESS_BASED_ENUM: 'abe',
+}
 
 
 class HP3ParMediator(object):
+    """3PAR client-facing code for the 3PAR driver.
 
-    VERSION = "1.0.00"
+    Version history:
+        1.0.00 - Begin Liberty development (post-Kilo)
+        1.0.01 - Report thin/dedup/hp_flash_cache capabilities
+        1.0.02 - Add share server/share network support
+
+    """
+
+    VERSION = "1.0.02"
 
     def __init__(self, **kwargs):
 
+        self.hp3par_username = kwargs.get('hp3par_username')
+        self.hp3par_password = kwargs.get('hp3par_password')
         self.hp3par_api_url = kwargs.get('hp3par_api_url')
         self.hp3par_debug = kwargs.get('hp3par_debug')
         self.hp3par_san_ip = kwargs.get('hp3par_san_ip')
@@ -131,27 +151,104 @@ class HP3ParMediator(object):
         if self.hp3par_debug:
             self._client.debug_rest(True)  # Includes SSH debug (setSSH above)
 
-    def get_capacity(self, fpg):
+    def _wsapi_login(self):
+        try:
+            self._client.login(self.hp3par_username, self.hp3par_password)
+        except Exception as e:
+            msg = (_("Failed to Login to 3PAR (%(url)s) as %(user)s "
+                     "because: %(err)s") %
+                   {'url': self.hp3par_api_url,
+                    'user': self.hp3par_username,
+                    'err': six.text_type(e)})
+            LOG.error(msg)
+            raise exception.ShareBackendException(msg=msg)
+
+    def _wsapi_logout(self):
+        try:
+            self._client.http.unauthenticate()
+        except Exception as e:
+            msg = _LW("Failed to Logout from 3PAR (%(url)s) because %(err)s")
+            LOG.warning(msg, {'url': self.hp3par_api_url,
+                              'err': six.text_type(e)})
+            # don't raise exception on logout()
+
+    def get_provisioned_gb(self, fpg):
+        total_mb = 0
+        try:
+            result = self._client.getfsquota(fpg=fpg)
+        except Exception as e:
+            result = {'message': six.text_type(e)}
+
+        error_msg = result.get('message')
+        if error_msg:
+            message = (_('Error while getting fsquotas for FPG '
+                         '%(fpg)s: %(msg)s') %
+                       {'fpg': fpg, 'msg': error_msg})
+            LOG.error(message)
+            raise exception.ShareBackendException(msg=message)
+
+        for fsquota in result['members']:
+            total_mb += float(fsquota['hardBlock'])
+        return total_mb / units.Ki
+
+    def get_fpg_status(self, fpg):
+        """Get capacity and capabilities for FPG."""
+
         try:
             result = self._client.getfpg(fpg)
         except Exception as e:
             msg = (_('Failed to get capacity for fpg %(fpg)s: %(e)s') %
                    {'fpg': fpg, 'e': six.text_type(e)})
             LOG.exception(msg)
-            raise exception.ShareBackendException(message=msg)
+            raise exception.ShareBackendException(msg=msg)
 
         if result['total'] != 1:
             msg = (_('Failed to get capacity for fpg %s.') % fpg)
             LOG.exception(msg)
-            raise exception.ShareBackendException(message=msg)
+            raise exception.ShareBackendException(msg=msg)
+
+        member = result['members'][0]
+        total_capacity_gb = float(member['capacityKiB']) / units.Mi
+        free_capacity_gb = float(member['availCapacityKiB']) / units.Mi
+
+        volumes = member['vvs']
+        if isinstance(volumes, list):
+            volume = volumes[0]  # Use first name from list
         else:
-            member = result['members'][0]
-            total_capacity_gb = int(member['capacityKiB']) / units.Mi
-            free_capacity_gb = int(member['availCapacityKiB']) / units.Mi
-            return {
-                'total_capacity_gb': total_capacity_gb,
-                'free_capacity_gb': free_capacity_gb
-            }
+            volume = volumes  # There is just a name
+
+        self._wsapi_login()
+        try:
+            volume_info = self._client.getVolume(volume)
+            volume_set = self._client.getVolumeSet(fpg)
+        finally:
+            self._wsapi_logout()
+
+        provisioning_type = volume_info['provisioningType']
+        if provisioning_type not in (THIN, FULL, DEDUPE):
+            msg = (_('Unexpected provisioning type for FPG %(fpg)s: '
+                     '%(ptype)s.') % {'fpg': fpg, 'ptype': provisioning_type})
+            LOG.exception(msg)
+            raise exception.ShareBackendException(msg=msg)
+
+        dedupe = provisioning_type == DEDUPE
+        thin_provisioning = provisioning_type in (THIN, DEDUPE)
+
+        flash_cache_policy = volume_set.get('flashCachePolicy', DISABLED)
+        hp3par_flash_cache = flash_cache_policy == ENABLED
+
+        status = {
+            'total_capacity_gb': total_capacity_gb,
+            'free_capacity_gb': free_capacity_gb,
+            'thin_provisioning': thin_provisioning,
+            'dedupe': dedupe,
+            'hp3par_flash_cache': hp3par_flash_cache,
+        }
+
+        if thin_provisioning:
+            status['provisioned_capacity_gb'] = self.get_provisioned_gb(fpg)
+
+        return status
 
     @staticmethod
     def ensure_supported_protocol(share_proto):
@@ -185,7 +282,7 @@ class HP3ParMediator(object):
     def _get_nfs_options(extra_specs, readonly):
         """Validate the NFS extra_specs and return the options to use."""
 
-        nfs_options = extra_specs.get('hp_3par:nfs_options')
+        nfs_options = extra_specs.get('hpe3par:nfs_options')
         if nfs_options:
             options = nfs_options.split(',')
         else:
@@ -206,7 +303,7 @@ class HP3ParMediator(object):
         ]
 
         if invalid_options:
-            raise exception.InvalidInput(_('Invalid hp3_par:nfs_options in '
+            raise exception.InvalidInput(_('Invalid hpe3par:nfs_options in '
                                            'extra-specs. The following '
                                            'options are not allowed: %s') %
                                          invalid_options)
@@ -218,11 +315,11 @@ class HP3ParMediator(object):
         return ','.join(options)
 
     def _build_createfshare_kwargs(self, protocol, fpg, fstore, readonly,
-                                   sharedir, extra_specs):
+                                   sharedir, extra_specs, comment):
         createfshare_kwargs = dict(fpg=fpg,
                                    fstore=fstore,
                                    sharedir=sharedir,
-                                   comment=OPEN_STACK_MANILA_FSHARE)
+                                   comment=comment)
         if protocol == 'nfs':
             createfshare_kwargs['clientip'] = '127.0.0.1'
             options = self._get_nfs_options(extra_specs, readonly)
@@ -236,14 +333,16 @@ class HP3ParMediator(object):
                 smb_opts = (ACCESS_BASED_ENUM, CONTINUOUS_AVAIL, CACHE)
 
             for smb_opt in smb_opts:
-                opt_value = extra_specs.get('hp_3par:smb_%s' % smb_opt)
+                opt_value = extra_specs.get('hpe3par:smb_%s' % smb_opt)
                 if opt_value:
-                    createfshare_kwargs[smb_opt] = opt_value
+                    opt_key = SMB_EXTRA_SPECS_MAP[smb_opt]
+                    createfshare_kwargs[opt_key] = opt_value
         return createfshare_kwargs
 
     def create_share(self, project_id, share_id, share_proto, extra_specs,
                      fpg, vfs,
-                     fstore=None, sharedir=None, readonly=False, size=None):
+                     fstore=None, sharedir=None, readonly=False, size=None,
+                     comment=OPEN_STACK_MANILA):
         """Create the share and return its path.
 
         This method can create a share when called by the driver or when
@@ -284,14 +383,15 @@ class HP3ParMediator(object):
                                                               fstore,
                                                               readonly,
                                                               sharedir,
-                                                              extra_specs)
+                                                              extra_specs,
+                                                              comment)
 
         if not use_existing_fstore:
 
             try:
                 result = self._client.createfstore(
                     vfs, fstore, fpg=fpg,
-                    comment='OpenStack Manila fstore')
+                    comment=comment)
                 LOG.debug("createfstore result=%s", result)
             except Exception as e:
                 msg = (_('Failed to create fstore %(fstore)s: %(e)s') %
@@ -369,7 +469,8 @@ class HP3ParMediator(object):
 
     def create_share_from_snapshot(self, share_id, share_proto, extra_specs,
                                    orig_project_id, orig_share_id, orig_proto,
-                                   snapshot_id, fpg, vfs):
+                                   snapshot_id, fpg, vfs,
+                                   comment=OPEN_STACK_MANILA):
 
         protocol = self.ensure_supported_protocol(share_proto)
         snapshot_tag = self.ensure_prefix(snapshot_id)
@@ -412,6 +513,7 @@ class HP3ParMediator(object):
             fstore=fstore,
             sharedir=sharedir,
             readonly=True,
+            comment=comment,
         )
 
     def delete_share(self, project_id, share_id, share_proto, fpg, vfs):
@@ -734,3 +836,88 @@ class HP3ParMediator(object):
 
         self._change_access(DENY, project_id, share_id, share_proto,
                             access_type, access_to, fpg, vfs)
+
+    def fsip_exists(self, fsip):
+        """Try to get FSIP. Return True if it exists."""
+
+        vfs = fsip['vfs']
+        fpg = fsip['fspool']
+
+        try:
+            result = self._client.getfsip(vfs, fpg=fpg)
+            LOG.debug("getfsip result: %s", result)
+        except Exception as e:
+            LOG.exception(e)
+            msg = (_('Failed to get FSIPs for FPG/VFS %(fspool)s/%(vfs)s.') %
+                   fsip)
+            LOG.exception(msg)
+            raise exception.ShareBackendException(msg=msg)
+
+        for member in result['members']:
+            if all(item in member.items() for item in fsip.items()):
+                return True
+
+        return False
+
+    def create_fsip(self, ip, subnet, vlantag, fpg, vfs):
+
+        vlantag_str = six.text_type(vlantag) if vlantag else '0'
+
+        # Try to create it. It's OK if it already exists.
+        try:
+            result = self._client.createfsip(ip,
+                                             subnet,
+                                             vfs,
+                                             fpg=fpg,
+                                             vlantag=vlantag_str)
+            LOG.debug("createfsip result: %s", result)
+
+        except Exception as e:
+            LOG.exception(e)
+            msg = (_('Failed to create FSIP for %s') % ip)
+            LOG.exception(msg)
+            raise exception.ShareBackendException(msg=msg)
+
+        # Verify that it really exists.
+        fsip = {
+            'fspool': fpg,
+            'vfs': vfs,
+            'address': ip,
+            'prefixLen': subnet,
+            'vlanTag': vlantag_str,
+        }
+        if not self.fsip_exists(fsip):
+            msg = (_('Failed to get FSIP after creating it for '
+                     'FPG/VFS/IP/subnet/VLAN '
+                     '%(fspool)s/%(vfs)s/'
+                     '%(address)s/%(prefixLen)s/%(vlanTag)s.') % fsip)
+            LOG.exception(msg)
+            raise exception.ShareBackendException(msg=msg)
+
+    def remove_fsip(self, ip, fpg, vfs):
+
+        if not (vfs and ip):
+            # If there is no VFS and/or IP, then there is no FSIP to remove.
+            return
+
+        try:
+            result = self._client.removefsip(vfs, ip, fpg=fpg)
+            LOG.debug("removefsip result: %s", result)
+
+        except Exception as e:
+            LOG.exception(e)
+            msg = (_('Failed to remove FSIP %s') % ip)
+            LOG.exception(msg)
+            raise exception.ShareBackendException(msg=msg)
+
+        # Verify that it really no longer exists.
+        fsip = {
+            'fspool': fpg,
+            'vfs': vfs,
+            'address': ip,
+        }
+        if self.fsip_exists(fsip):
+            msg = (_('Failed to remove FSIP for FPG/VFS/IP '
+                     '%(fspool)s/%(vfs)s/%(address)s.') % fsip)
+            LOG.exception(msg)
+            raise exception.ShareBackendException(msg=msg)

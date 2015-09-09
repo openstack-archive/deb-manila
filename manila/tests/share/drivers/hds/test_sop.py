@@ -22,6 +22,7 @@ import mock
 from oslo_config import cfg
 from oslo_serialization import jsonutils as json
 from oslo_utils import units
+from six import moves
 
 from manila import context
 from manila import exception
@@ -62,6 +63,7 @@ class SopShareDriverTestCase(test.TestCase):
         self._driver = sop.SopShareDriver(configuration=self.fake_conf)
         self.share = fake_share.fake_share(share_proto='NFS')
         self._driver.share_backend_name = 'HDS_SOP'
+        self.mock_object(time, 'sleep')
 
     def test_add_file_system_sopapi(self):
         httpclient = httplib2.Http(disable_ssl_certificate_validation=True,
@@ -92,7 +94,7 @@ class SopShareDriverTestCase(test.TestCase):
         }
 
         fsadd = self._driver._add_file_system_sopapi(httpclient, fakepayload1)
-        self.assertEqual(None, fsadd)
+        self.assertIsNone(fsadd)
         httpclient.request.assert_called_once_with(
             'https://' +
             self.server['backend_details']['ip'] +
@@ -216,10 +218,9 @@ class SopShareDriverTestCase(test.TestCase):
             },
         }
         self.assertEqual(expectedresult, fsadd)
-        httpcalls = [mock.call('fakeuri',
-                               'GET',
-                               body='',
-                               headers=fake_authorization) for x in xrange(2)]
+        httpcalls = [
+            mock.call('fakeuri', 'GET', body='', headers=fake_authorization)
+            for x in moves.range(2)]
         self.assertEqual(httpcalls, httpclient.request.call_args_list)
 
     def test_wait_for_job_completion_notimeout(self):
@@ -243,7 +244,7 @@ class SopShareDriverTestCase(test.TestCase):
                        'esource-action":"ADD","percent-complete":75,"resource'
                        '-id":"fakeuuid","target-node-name":"Node005","target-'
                        'node-id":"fakeuuid","spawned-jobs":false,"spawned-job'
-                       's-list-uri":""}}') for x in xrange(200)
+                       's-list-uri":""}}') for x in moves.range(200)
                       ]
 
         httpreturn.append(({'status': '200',
@@ -296,9 +297,9 @@ class SopShareDriverTestCase(test.TestCase):
                                'GET',
                                body='',
                                headers=fake_authorization)
-                     for x in xrange(201)]
+                     for x in moves.range(201)]
         self.assertEqual(httpcalls, httpclient.request.call_args_list)
-        timecalls = [mock.call(1) for x in xrange(200)]
+        timecalls = [mock.call(1) for x in moves.range(200)]
         self.assertEqual(timecalls, time.sleep.call_args_list)
 
     def test_wait_for_job_completion_timeout(self):
@@ -323,7 +324,7 @@ class SopShareDriverTestCase(test.TestCase):
                     ':75,"resource-id":"fakeuuid"'
                     ',"target-node-name":"Node005","target-node-id":"fakeuuid'
                     '","spawned-jobs":false,"spawned-jobs-list-uri":""}}')
-                   for x in xrange(301)]
+                   for x in moves.range(301)]
 
         httpret.append(({'status': '200',
                          'content-location':
@@ -355,9 +356,9 @@ class SopShareDriverTestCase(test.TestCase):
                                'GET',
                                body='',
                                headers=fake_authorization)
-                     for x in xrange(301)]
+                     for x in moves.range(301)]
         self.assertEqual(httpcalls, httpclient.request.call_args_list)
-        timecalls = [mock.call(1) for x in xrange(301)]
+        timecalls = [mock.call(1) for x in moves.range(301)]
         self.assertEqual(timecalls, time.sleep.call_args_list)
 
     def test_add_share_sopapi(self):
@@ -468,6 +469,7 @@ class SopShareDriverTestCase(test.TestCase):
             'total_capacity_gb': 1234,
             'free_capacity_gb': 2345,
             'pools': None,
+            'snapshot_support': True,
         }
         self.mock_object(self._driver, '_get_sop_filesystem_stats',
                          mock.Mock(return_value=(1234, 2345)))

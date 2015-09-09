@@ -178,7 +178,7 @@ class GlusterManager(object):
             raise exception.GlusterfsException(
                 _("'gluster version' failed on server "
                   "%(server)s: %(message)s") %
-                {'server': self.host, 'message': exc.message})
+                {'server': self.host, 'message': six.text_type(exc)})
         try:
             owords = out.split()
             if owords[0] != 'glusterfs':
@@ -407,19 +407,6 @@ class GlusterfsShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
         except exception.ProcessExecutionError:
             LOG.error(_LE('Unable to delete share %s'), share['name'])
             raise
-
-    def create_snapshot(self, context, snapshot, share_server=None):
-        """TBD: Is called to create snapshot."""
-        raise NotImplementedError()
-
-    def create_share_from_snapshot(self, context, share, snapshot,
-                                   share_server=None):
-        """Is called to create share from snapshot."""
-        raise NotImplementedError()
-
-    def delete_snapshot(self, context, snapshot, share_server=None):
-        """TBD: Is called to remove snapshot."""
-        raise NotImplementedError()
 
     def ensure_share(self, context, share, share_server=None):
         """Might not be needed?"""

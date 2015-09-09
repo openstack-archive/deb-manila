@@ -21,7 +21,10 @@ Manage hosts in the current zone.
 """
 
 import re
-import UserDict
+try:
+    from UserDict import IterableUserDict  # noqa
+except ImportError:
+    from collections import UserDict as IterableUserDict  # noqa
 
 from oslo_config import cfg
 from oslo_log import log
@@ -59,7 +62,7 @@ CONF.import_opt('max_over_subscription_ratio', 'manila.share.driver')
 LOG = log.getLogger(__name__)
 
 
-class ReadOnlyDict(UserDict.IterableUserDict):
+class ReadOnlyDict(IterableUserDict):
     """A read-only dict."""
     def __init__(self, source=None):
         self.data = {}
@@ -83,7 +86,7 @@ class ReadOnlyDict(UserDict.IterableUserDict):
     def update(self, source=None):
         if source is None:
             return
-        elif isinstance(source, UserDict.UserDict):
+        elif isinstance(source, IterableUserDict):
             self.data = source.data
         elif isinstance(source, type({})):
             self.data = source
@@ -117,9 +120,9 @@ class HostState(object):
         # equal to the allocated_capacity_gb.
         self.provisioned_capacity_gb = 0
         self.max_over_subscription_ratio = 1.0
-        self.thin_provisioning_support = False
-        self.thick_provisioning_support = False
+        self.thin_provisioning = False
         self.driver_handles_share_servers = False
+        self.snapshot_support = True
 
         # PoolState for all pools
         self.pools = {}
@@ -272,6 +275,9 @@ class HostState(object):
             pool_cap['driver_handles_share_servers'] = \
                 self.driver_handles_share_servers
 
+        if not pool_cap.get('snapshot_support'):
+            pool_cap['snapshot_support'] = True
+
     def update_backend(self, capability):
         self.share_backend_name = capability.get('share_backend_name')
         self.vendor_name = capability.get('vendor_name')
@@ -279,6 +285,7 @@ class HostState(object):
         self.storage_protocol = capability.get('storage_protocol')
         self.driver_handles_share_servers = capability.get(
             'driver_handles_share_servers')
+        self.snapshot_support = capability.get('snapshot_support')
         self.updated = capability['timestamp']
 
     def consume_from_share(self, share):
@@ -335,10 +342,8 @@ class PoolState(HostState):
             self.max_over_subscription_ratio = capability.get(
                 'max_over_subscription_ratio',
                 CONF.max_over_subscription_ratio)
-            self.thin_provisioning_support = capability.get(
-                'thin_provisioning_support', False)
-            self.thick_provisioning_support = capability.get(
-                'thick_provisioning_support', False)
+            self.thin_provisioning = capability.get(
+                'thin_provisioning', False)
 
     def update_pools(self, capability):
         # Do nothing, since we don't have pools within pool, yet

@@ -14,6 +14,7 @@
 #    under the License.
 
 from tempest_lib import exceptions as lib_exc  # noqa
+import testtools  # noqa
 
 from tempest.api.share import base
 from tempest import config_share as config
@@ -34,8 +35,9 @@ class ShareIpRulesForNFSNegativeTest(base.BaseSharesTest):
             raise cls.skipException(msg)
         # create share
         cls.share = cls.create_share(cls.protocol)
-        # create snapshot
-        cls.snap = cls.create_snapshot_wait_for_active(cls.share["id"])
+        if CONF.share.run_snapshot_tests:
+            # create snapshot
+            cls.snap = cls.create_snapshot_wait_for_active(cls.share["id"])
 
     @test.attr(type=["negative", "gate", ])
     def test_create_access_rule_ip_with_wrong_target_1(self):
@@ -128,8 +130,9 @@ class ShareUserRulesForNFSNegativeTest(base.BaseSharesTest):
             raise cls.skipException(msg)
         # create share
         cls.share = cls.create_share(cls.protocol)
-        # create snapshot
-        cls.snap = cls.create_snapshot_wait_for_active(cls.share["id"])
+        if CONF.share.run_snapshot_tests:
+            # create snapshot
+            cls.snap = cls.create_snapshot_wait_for_active(cls.share["id"])
 
     @test.attr(type=["negative", "gate", ])
     def test_create_access_rule_user_with_wrong_input_2(self):
@@ -164,6 +167,8 @@ class ShareUserRulesForNFSNegativeTest(base.BaseSharesTest):
                           "try+")
 
     @test.attr(type=["negative", "gate", ])
+    @testtools.skipUnless(CONF.share.run_snapshot_tests,
+                          "Snapshot tests are disabled.")
     def test_create_access_rule_user_to_snapshot(self):
         self.assertRaises(lib_exc.NotFound,
                           self.shares_client.create_access_rule,
@@ -193,6 +198,60 @@ class ShareUserRulesForCIFSNegativeTest(ShareUserRulesForNFSNegativeTest):
     protocol = "cifs"
 
 
+class ShareCertRulesForGLUSTERFSNegativeTest(base.BaseSharesTest):
+    protocol = "glusterfs"
+
+    @classmethod
+    def resource_setup(cls):
+        super(ShareCertRulesForGLUSTERFSNegativeTest, cls).resource_setup()
+        if not (cls.protocol in CONF.share.enable_protocols and
+                cls.protocol in CONF.share.enable_cert_rules_for_protocols):
+            msg = "CERT rule tests for %s protocol are disabled" % cls.protocol
+            raise cls.skipException(msg)
+        # create share
+        cls.share = cls.create_share(cls.protocol)
+        if CONF.share.run_snapshot_tests:
+            # create snapshot
+            cls.snap = cls.create_snapshot_wait_for_active(cls.share["id"])
+
+    @test.attr(type=["negative", "gate", ])
+    def test_create_access_rule_cert_with_empty_common_name(self):
+        self.assertRaises(lib_exc.BadRequest,
+                          self.shares_client.create_access_rule,
+                          self.share["id"], "cert", "")
+
+    @test.attr(type=["negative", "gate", ])
+    def test_create_access_rule_cert_with_whitespace_common_name(self):
+        self.assertRaises(lib_exc.BadRequest,
+                          self.shares_client.create_access_rule,
+                          self.share["id"], "cert", " ")
+
+    @test.attr(type=["negative", "gate", ])
+    def test_create_access_rule_cert_with_too_big_common_name(self):
+        # common name cannot be more than 64 characters long
+        self.assertRaises(lib_exc.BadRequest,
+                          self.shares_client.create_access_rule,
+                          self.share["id"], "cert", "a" * 65)
+
+    @test.attr(type=["negative", "gate", ])
+    @testtools.skipUnless(CONF.share.run_snapshot_tests,
+                          "Snapshot tests are disabled.")
+    def test_create_access_rule_cert_to_snapshot(self):
+        self.assertRaises(lib_exc.NotFound,
+                          self.shares_client.create_access_rule,
+                          self.snap["id"],
+                          access_type="cert",
+                          access_to="fakeclient1.com")
+
+    @test.attr(type=["negative", "gate", ])
+    def test_create_access_rule_cert_with_wrong_share_id(self):
+        self.assertRaises(lib_exc.NotFound,
+                          self.shares_client.create_access_rule,
+                          "wrong_share_id",
+                          access_type="cert",
+                          access_to="fakeclient2.com")
+
+
 class ShareRulesNegativeTest(base.BaseSharesTest):
     # Tests independent from rule type and share protocol
 
@@ -202,13 +261,16 @@ class ShareRulesNegativeTest(base.BaseSharesTest):
         if not (any(p in CONF.share.enable_ip_rules_for_protocols
                     for p in cls.protocols) or
                 any(p in CONF.share.enable_user_rules_for_protocols
+                    for p in cls.protocols) or
+                any(p in CONF.share.enable_cert_rules_for_protocols
                     for p in cls.protocols)):
             cls.message = "Rule tests are disabled"
             raise cls.skipException(cls.message)
         # create share
         cls.share = cls.create_share()
-        # create snapshot
-        cls.snap = cls.create_snapshot_wait_for_active(cls.share["id"])
+        if CONF.share.run_snapshot_tests:
+            # create snapshot
+            cls.snap = cls.create_snapshot_wait_for_active(cls.share["id"])
 
     @test.attr(type=["negative", "gate", ])
     def test_delete_access_rule_with_wrong_id(self):
@@ -229,6 +291,8 @@ class ShareRulesNegativeTest(base.BaseSharesTest):
                           "wrong_share_id")
 
     @test.attr(type=["negative", "gate", ])
+    @testtools.skipUnless(CONF.share.run_snapshot_tests,
+                          "Snapshot tests are disabled.")
     def test_create_access_rule_ip_to_snapshot(self):
         self.assertRaises(lib_exc.NotFound,
                           self.shares_client.create_access_rule,

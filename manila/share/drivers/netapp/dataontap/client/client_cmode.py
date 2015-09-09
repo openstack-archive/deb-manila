@@ -20,14 +20,20 @@ import hashlib
 import time
 
 from oslo_log import log
+from oslo_utils import importutils
 from oslo_utils import strutils
+from oslo_utils import units
 import six
 
 from manila import exception
 from manila.i18n import _, _LE, _LW
-from manila.share.drivers.netapp.dataontap.client import api as netapp_api
 from manila.share.drivers.netapp.dataontap.client import client_base
 from manila.share.drivers.netapp import utils as na_utils
+
+netapp_lib = importutils.try_import('netapp_lib')
+if netapp_lib:
+    from netapp_lib.api.zapi import errors as netapp_error
+    from netapp_lib.api.zapi import zapi as netapp_api
 
 
 LOG = log.getLogger(__name__)
@@ -211,7 +217,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             try:
                 vserver_client.offline_volume(root_volume_name)
             except netapp_api.NaApiError as e:
-                if e.code == netapp_api.EVOLUMEOFFLINE:
+                if e.code == netapp_error.EVOLUMEOFFLINE:
                     LOG.error(_LE("Volume %s is already offline."),
                               root_volume_name)
                 else:
@@ -240,7 +246,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 try:
                     vserver_client.send_request('cifs-server-delete', api_args)
                 except netapp_api.NaApiError as e:
-                    if e.code == netapp_api.EOBJECTNOTFOUND:
+                    if e.code == netapp_error.EOBJECTNOTFOUND:
                         LOG.error(_LE('CIFS server does not exist for '
                                       'Vserver %s.'), vserver_name)
                     else:
@@ -352,7 +358,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
 
         This must be called against a Vserver LIF.
         """
-        return self.get_vserver_aggregate_capacities().keys()
+        return list(self.get_vserver_aggregate_capacities().keys())
 
     @na_utils.trace
     def create_network_interface(self, ip, netmask, vlan, node, port,
@@ -402,7 +408,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             }
             self.send_request('net-vlan-create', api_args)
         except netapp_api.NaApiError as e:
-            if e.code == netapp_api.EDUPLICATEENTRY:
+            if e.code == netapp_error.EDUPLICATEENTRY:
                 LOG.debug('VLAN %(vlan)s already exists on port %(port)s',
                           {'vlan': vlan, 'port': port})
             else:
@@ -495,7 +501,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             }
             self.send_request('net-port-broadcast-domain-add-ports', api_args)
         except netapp_api.NaApiError as e:
-            if e.code == (netapp_api.
+            if e.code == (netapp_error.
                           E_VIFMGR_PORT_ALREADY_ASSIGNED_TO_BROADCAST_DOMAIN):
                 LOG.debug('Port %(port)s already exists in broadcast domain '
                           '%(domain)s', {'port': port, 'domain': domain})
@@ -762,7 +768,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
     @na_utils.trace
     def configure_ldap(self, security_service):
         """Configures LDAP on Vserver."""
-        config_name = hashlib.md5(security_service['id']).hexdigest()
+        config_name = hashlib.md5(six.b(security_service['id'])).hexdigest()
         api_args = {
             'ldap-client-config': config_name,
             'servers': {
@@ -819,7 +825,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         try:
             self.send_request('kerberos-realm-create', api_args)
         except netapp_api.NaApiError as e:
-            if e.code == netapp_api.EDUPLICATEENTRY:
+            if e.code == netapp_error.EDUPLICATEENTRY:
                 LOG.debug('Kerberos realm config already exists.')
             else:
                 msg = _('Failed to create Kerberos realm. %s')
@@ -869,7 +875,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         try:
             self.send_request('net-dns-create', api_args)
         except netapp_api.NaApiError as e:
-            if e.code == netapp_api.EDUPLICATEENTRY:
+            if e.code == netapp_error.EDUPLICATEENTRY:
                 LOG.error(_LE("DNS exists for Vserver."))
             else:
                 msg = _("Failed to configure DNS. %s")
@@ -911,6 +917,12 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         self.send_request('sis-enable', api_args)
 
     @na_utils.trace
+    def disable_dedup(self, volume_name):
+        """Disable deduplication on volume."""
+        api_args = {'path': '/vol/%s' % volume_name}
+        self.send_request('sis-disable', api_args)
+
+    @na_utils.trace
     def enable_compression(self, volume_name):
         """Enable compression on volume."""
         api_args = {
@@ -918,6 +930,45 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             'enable-compression': 'true'
         }
         self.send_request('sis-set-config', api_args)
+
+    @na_utils.trace
+    def disable_compression(self, volume_name):
+        """Disable compression on volume."""
+        api_args = {
+            'path': '/vol/%s' % volume_name,
+            'enable-compression': 'false'
+        }
+        self.send_request('sis-set-config', api_args)
+
+    @na_utils.trace
+    def get_volume_efficiency_status(self, volume_name):
+        """Get dedupe & compression status for a volume."""
+        api_args = {
+            'query': {
+                'sis-status-info': {
+                    'path': '/vol/%s' % volume_name,
+                },
+            },
+            'desired-attributes': {
+                'sis-status-info': {
+                    'state': None,
+                    'is-compression-enabled': None,
+                },
+            },
+        }
+        result = self.send_request('sis-get-iter', api_args)
+
+        attributes_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+        sis_status_info = attributes_list.get_child_by_name(
+            'sis-status-info') or netapp_api.NaElement('none')
+
+        return {
+            'dedupe': True if 'enabled' == sis_status_info.get_child_content(
+                'state') else False,
+            'compression': True if 'true' == sis_status_info.get_child_content(
+                'is-compression-enabled') else False,
+        }
 
     @na_utils.trace
     def set_volume_max_files(self, volume_name, max_files):
@@ -939,6 +990,108 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             },
         }
         self.send_request('volume-modify-iter', api_args)
+
+    @na_utils.trace
+    def set_volume_size(self, volume_name, size_gb):
+        """Set volume size."""
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'name': volume_name,
+                    },
+                },
+            },
+            'attributes': {
+                'volume-attributes': {
+                    'volume-space-attributes': {
+                        'size': int(size_gb) * units.Gi,
+                    },
+                },
+            },
+        }
+        result = self.send_request('volume-modify-iter', api_args)
+        failures = result.get_child_content('num-failed')
+        if failures and int(failures) > 0:
+            failure_list = result.get_child_by_name(
+                'failure-list') or netapp_api.NaElement('none')
+            errors = failure_list.get_children()
+            if errors:
+                raise netapp_api.NaApiError(
+                    errors[0].get_child_content('error-code'),
+                    errors[0].get_child_content('error-message'))
+
+    @na_utils.trace
+    def set_volume_name(self, volume_name, new_volume_name):
+        """Set flexvol name."""
+        api_args = {
+            'volume': volume_name,
+            'new-volume-name': new_volume_name,
+        }
+        self.send_request('volume-rename', api_args)
+
+    @na_utils.trace
+    def manage_volume(self, aggregate_name, volume_name,
+                      thin_provisioned=False, snapshot_policy=None,
+                      language=None, dedup_enabled=False,
+                      compression_enabled=False, max_files=None):
+        """Update volume as needed to bring under management as a share."""
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'containing-aggregate-name': aggregate_name,
+                        'name': volume_name,
+                    },
+                },
+            },
+            'attributes': {
+                'volume-attributes': {
+                    'volume-inode-attributes': {},
+                    'volume-language-attributes': {},
+                    'volume-snapshot-attributes': {},
+                    'volume-space-attributes': {
+                        'space-guarantee': ('none' if thin_provisioned else
+                                            'volume')
+                    },
+                },
+            },
+        }
+        if language:
+            api_args['attributes']['volume-attributes'][
+                'volume-language-attributes']['language'] = language
+        if max_files:
+            api_args['attributes']['volume-attributes'][
+                'volume-inode-attributes']['files-total'] = max_files
+        if snapshot_policy:
+            api_args['attributes']['volume-attributes'][
+                'volume-snapshot-attributes'][
+                    'snapshot-policy'] = snapshot_policy
+
+        self.send_request('volume-modify-iter', api_args)
+
+        # Efficiency options must be handled separately
+        self.update_volume_efficiency_attributes(volume_name,
+                                                 dedup_enabled,
+                                                 compression_enabled)
+
+    @na_utils.trace
+    def update_volume_efficiency_attributes(self, volume_name, dedup_enabled,
+                                            compression_enabled):
+        """Update dedupe & compression attributes to match desired values."""
+        efficiency_status = self.get_volume_efficiency_status(volume_name)
+
+        if efficiency_status['compression'] != compression_enabled:
+            if compression_enabled:
+                self.enable_compression(volume_name)
+            else:
+                self.disable_compression(volume_name)
+
+        if efficiency_status['dedupe'] != dedup_enabled:
+            if dedup_enabled:
+                self.enable_dedup(volume_name)
+            else:
+                self.disable_dedup(volume_name)
 
     @na_utils.trace
     def volume_exists(self, volume_name):
@@ -1004,6 +1157,159 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         return aggregate
 
     @na_utils.trace
+    def volume_has_luns(self, volume_name):
+        """Checks if volume has LUNs."""
+        LOG.debug('Checking if volume %s has LUNs', volume_name)
+
+        api_args = {
+            'query': {
+                'lun-info': {
+                    'volume': volume_name,
+                },
+            },
+            'desired-attributes': {
+                'lun-info': {
+                    'path': None,
+                },
+            },
+        }
+        result = self.send_request('lun-get-iter', api_args)
+        return self._has_records(result)
+
+    @na_utils.trace
+    def volume_has_junctioned_volumes(self, volume_name):
+        """Checks if volume has volumes mounted beneath its junction path."""
+        junction_path = self.get_volume_junction_path(volume_name)
+        if not junction_path:
+            return False
+
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'junction-path': junction_path + '/*',
+                    },
+                },
+            },
+            'desired-attributes': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'name': None,
+                    },
+                },
+            },
+        }
+        result = self.send_request('volume-get-iter', api_args)
+        return self._has_records(result)
+
+    @na_utils.trace
+    def get_volume_at_junction_path(self, junction_path):
+        """Returns the volume with the specified junction path, if present."""
+        if not junction_path:
+            return None
+
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'junction-path': junction_path,
+                    },
+                },
+            },
+            'desired-attributes': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'containing-aggregate-name': None,
+                        'junction-path': None,
+                        'name': None,
+                        'type': None,
+                        'style': None,
+                    },
+                    'volume-space-attributes': {
+                        'size': None,
+                    }
+                },
+            },
+        }
+        result = self.send_request('volume-get-iter', api_args)
+        if not self._has_records(result):
+            return None
+
+        attributes_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+        volume_attributes = attributes_list.get_child_by_name(
+            'volume-attributes') or netapp_api.NaElement('none')
+        volume_id_attributes = volume_attributes.get_child_by_name(
+            'volume-id-attributes') or netapp_api.NaElement('none')
+        volume_space_attributes = volume_attributes.get_child_by_name(
+            'volume-space-attributes') or netapp_api.NaElement('none')
+
+        volume = {
+            'aggregate': volume_id_attributes.get_child_content(
+                'containing-aggregate-name'),
+            'junction-path': volume_id_attributes.get_child_content(
+                'junction-path'),
+            'name': volume_id_attributes.get_child_content('name'),
+            'type': volume_id_attributes.get_child_content('type'),
+            'style': volume_id_attributes.get_child_content('style'),
+            'size': volume_space_attributes.get_child_content('size'),
+        }
+        return volume
+
+    @na_utils.trace
+    def get_volume_to_manage(self, aggregate_name, volume_name):
+        """Get flexvol to be managed by Manila."""
+
+        api_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'containing-aggregate-name': aggregate_name,
+                        'name': volume_name,
+                    },
+                },
+            },
+            'desired-attributes': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'containing-aggregate-name': None,
+                        'junction-path': None,
+                        'name': None,
+                        'type': None,
+                        'style': None,
+                    },
+                    'volume-space-attributes': {
+                        'size': None,
+                    }
+                },
+            },
+        }
+        result = self.send_request('volume-get-iter', api_args)
+        if not self._has_records(result):
+            return None
+
+        attributes_list = result.get_child_by_name(
+            'attributes-list') or netapp_api.NaElement('none')
+        volume_attributes = attributes_list.get_child_by_name(
+            'volume-attributes') or netapp_api.NaElement('none')
+        volume_id_attributes = volume_attributes.get_child_by_name(
+            'volume-id-attributes') or netapp_api.NaElement('none')
+        volume_space_attributes = volume_attributes.get_child_by_name(
+            'volume-space-attributes') or netapp_api.NaElement('none')
+
+        volume = {
+            'aggregate': volume_id_attributes.get_child_content(
+                'containing-aggregate-name'),
+            'junction-path': volume_id_attributes.get_child_content(
+                'junction-path'),
+            'name': volume_id_attributes.get_child_content('name'),
+            'type': volume_id_attributes.get_child_content('type'),
+            'style': volume_id_attributes.get_child_content('style'),
+            'size': volume_space_attributes.get_child_content('size'),
+        }
+        return volume
+
+    @na_utils.trace
     def create_volume_clone(self, volume_name, parent_volume_name,
                             parent_snapshot_name=None):
         """Clones a volume."""
@@ -1032,12 +1338,22 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         return result.get_child_content('junction')
 
     @na_utils.trace
+    def mount_volume(self, volume_name, junction_path=None):
+        """Mounts a volume on a junction path."""
+        api_args = {
+            'volume-name': volume_name,
+            'junction-path': (junction_path if junction_path
+                              else '/%s' % volume_name)
+        }
+        self.send_request('volume-mount', api_args)
+
+    @na_utils.trace
     def offline_volume(self, volume_name):
         """Offlines a volume."""
         try:
             self.send_request('volume-offline', {'name': volume_name})
         except netapp_api.NaApiError as e:
-            if e.code == netapp_api.EVOLUMEOFFLINE:
+            if e.code == netapp_error.EVOLUMEOFFLINE:
                 return
             raise
 
@@ -1051,7 +1367,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         try:
             self.send_request('volume-unmount', api_args)
         except netapp_api.NaApiError as e:
-            if e.code == netapp_api.EVOL_NOT_MOUNTED:
+            if e.code == netapp_error.EVOL_NOT_MOUNTED:
                 return
             raise
 
@@ -1072,13 +1388,13 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
 
         # Do the unmount, handling split-related errors with retries.
         retry_interval = 3  # seconds
-        for retry in range(wait_seconds / retry_interval):
+        for retry in range(int(wait_seconds / retry_interval)):
             try:
                 self._unmount_volume(volume_name, force=force)
                 LOG.debug('Volume %s unmounted.', volume_name)
                 return
             except netapp_api.NaApiError as e:
-                if e.code == netapp_api.EAPIERROR and 'job ID' in e.message:
+                if e.code == netapp_error.EAPIERROR and 'job ID' in e.message:
                     msg = _LW('Could not unmount volume %(volume)s due to '
                               'ongoing volume operation: %(exception)s')
                     msg_args = {'volume': volume_name, 'exception': e}
@@ -1142,7 +1458,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                 'code': error_code,
                 'reason': error_reason
             }
-            if error_code == netapp_api.ESNAPSHOTNOTALLOWED:
+            if error_code == netapp_error.ESNAPSHOTNOTALLOWED:
                 raise exception.SnapshotUnavailable(msg % msg_args)
             else:
                 raise exception.NetAppException(msg % msg_args)
@@ -1296,7 +1612,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             try:
                 self.send_request('export-rule-destroy', api_args)
             except netapp_api.NaApiError as e:
-                if e.code != netapp_api.EOBJECTNOTFOUND:
+                if e.code != netapp_error.EOBJECTNOTFOUND:
                     raise
 
     @na_utils.trace
@@ -1366,7 +1682,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         try:
             self.send_request('export-policy-create', api_args)
         except netapp_api.NaApiError as e:
-            if e.code != netapp_api.EDUPLICATEENTRY:
+            if e.code != netapp_error.EDUPLICATEENTRY:
                 raise
 
     @na_utils.trace
@@ -1385,7 +1701,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         try:
             self.send_request('export-policy-destroy', api_args)
         except netapp_api.NaApiError as e:
-            if e.code == netapp_api.EOBJECTNOTFOUND:
+            if e.code == netapp_error.EOBJECTNOTFOUND:
                 return
             raise
 
@@ -1554,7 +1870,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             # API succeeded, so definitely a cluster management LIF
             return True
         except netapp_api.NaApiError as e:
-            if e.code == netapp_api.EAPINOTFOUND:
+            if e.code == netapp_error.EAPINOTFOUND:
                 LOG.debug('Not connected to cluster management LIF.')
                 return False
             else:

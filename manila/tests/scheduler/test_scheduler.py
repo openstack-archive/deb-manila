@@ -29,6 +29,7 @@ from manila.scheduler import manager
 from manila.scheduler import simple
 from manila.share import rpcapi as share_rpcapi
 from manila import test
+from manila.tests import db_utils
 from manila import utils
 
 CONF = cfg.CONF
@@ -83,19 +84,19 @@ class SchedulerManagerTestCase(test.TestCase):
             raise exception.NoValidHost(reason="")
 
         fake_share_id = 1
-        topic = 'fake_topic'
-        share_id = fake_share_id
+
         request_spec = {'share_id': fake_share_id}
         with mock.patch.object(self.manager.driver,
                                'schedule_create_share',
                                mock.Mock(side_effect=raise_no_valid_host)):
-            self.manager.create_share(self.context, topic, share_id,
-                                      request_spec=request_spec,
-                                      filter_properties={})
+            self.mock_object(manager.LOG, 'error')
+            self.manager.create_share_instance(
+                self.context, request_spec=request_spec, filter_properties={})
             db.share_update.assert_called_once_with(
                 self.context, fake_share_id, {'status': 'error'})
             self.manager.driver.schedule_create_share.assert_called_once_with(
                 self.context, request_spec, {})
+            manager.LOG.error.assert_called_once_with(mock.ANY, mock.ANY)
 
     def test_get_pools(self):
         """Ensure get_pools exists and calls driver.get_pools."""
@@ -207,19 +208,18 @@ class SimpleSchedulerSharesTestCase(test.TestCase):
             'share_id': share_id,
             'share_properties': fake_share,
         }
-        with mock.patch.object(db, 'service_get_all_share_sorted',
-                               mock.Mock(return_value=fake_result)):
-            with mock.patch.object(driver, 'share_update_db',
-                                   mock.Mock(return_value=fake_share)):
-                self.driver.schedule_create_share(self.context,
-                                                  fake_request_spec, {})
-                utils.service_is_up.assert_called_once_with(
-                    utils.IsAMatcher(dict))
-                db.service_get_all_share_sorted.assert_called_once_with(
-                    utils.IsAMatcher(context.RequestContext))
-                driver.share_update_db.assert_called_once_with(
-                    utils.IsAMatcher(context.RequestContext),
-                    share_id, 'fake_host1')
+        self.mock_object(db, 'service_get_all_share_sorted',
+                         mock.Mock(return_value=fake_result))
+        self.mock_object(driver, 'share_update_db',
+                         mock.Mock(return_value=db_utils.create_share()))
+
+        self.driver.schedule_create_share(self.context,
+                                          fake_request_spec, {})
+        utils.service_is_up.assert_called_once_with(utils.IsAMatcher(dict))
+        db.service_get_all_share_sorted.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext))
+        driver.share_update_db.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), share_id, 'fake_host1')
 
     def test_create_share_if_services_not_available(self):
         share_id = 'fake'
@@ -260,34 +260,38 @@ class SimpleSchedulerSharesTestCase(test.TestCase):
         share_id = 'fake'
         fake_share = {
             'id': share_id,
-            'availability_zone': 'fake:fake',
             'size': 1,
+        }
+        fake_instance = {
+            'availability_zone_id': 'fake',
         }
         fake_service_1 = {
             'disabled': False, 'host': 'fake_host1',
-            'availability_zone': 'fake',
+            'availability_zone_id': 'fake',
         }
         fake_service_2 = {
             'disabled': False, 'host': 'fake_host2',
-            'availability_zone': 'super_fake',
+            'availability_zone_id': 'super_fake',
         }
         fake_result = [(fake_service_1, 0), (fake_service_2, 1)]
         fake_request_spec = {
             'share_id': share_id,
             'share_properties': fake_share,
+            'share_instance_properties': fake_instance,
         }
-        with mock.patch.object(db, 'service_get_all_share_sorted',
-                               mock.Mock(return_value=fake_result)):
-            with mock.patch.object(driver, 'share_update_db',
-                                   mock.Mock(return_value=fake_share)):
-                self.driver.schedule_create_share(self.context,
-                                                  fake_request_spec, {})
-                utils.service_is_up.assert_called_once_with(fake_service_1)
-                driver.share_update_db.assert_called_once_with(
-                    utils.IsAMatcher(context.RequestContext), share_id,
-                    fake_service_1['host'])
-                db.service_get_all_share_sorted.assert_called_once_with(
-                    utils.IsAMatcher(context.RequestContext))
+        self.mock_object(db, 'service_get_all_share_sorted',
+                         mock.Mock(return_value=fake_result))
+        self.mock_object(driver, 'share_update_db',
+                         mock.Mock(return_value=db_utils.create_share()))
+
+        self.driver.schedule_create_share(self.context,
+                                          fake_request_spec, {})
+        utils.service_is_up.assert_called_once_with(fake_service_1)
+        driver.share_update_db.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), share_id,
+            fake_service_1['host'])
+        db.service_get_all_share_sorted.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext))
 
     @mock.patch.object(utils, 'service_is_up', mock.Mock(return_value=True))
     def test_create_share_availability_zone_on_host(self):
@@ -297,41 +301,20 @@ class SimpleSchedulerSharesTestCase(test.TestCase):
             'availability_zone': 'fake:fake',
             'size': 1,
         }
+        fake_service = {'disabled': False, 'host': 'fake'}
         fake_request_spec = {
             'share_id': share_id,
             'share_properties': fake_share,
         }
-        with mock.patch.object(db, 'service_get_by_args',
-                               mock.Mock(return_value='fake_service')):
-            with mock.patch.object(driver, 'share_update_db',
-                                   mock.Mock(return_value=fake_share)):
-                self.driver.schedule_create_share(self.admin_context,
-                                                  fake_request_spec, {})
-                utils.service_is_up.assert_called_once_with('fake_service')
-                db.service_get_by_args.assert_called_once_with(
-                    utils.IsAMatcher(context.RequestContext),
-                    'fake', 'manila-share')
-                driver.share_update_db.assert_called_once_with(
-                    utils.IsAMatcher(context.RequestContext), share_id, 'fake')
+        self.mock_object(db, 'service_get_all_share_sorted',
+                         mock.Mock(return_value=[(fake_service, 1)]))
+        self.mock_object(driver, 'share_update_db',
+                         mock.Mock(return_value=db_utils.create_share()))
 
-    @mock.patch.object(utils, 'service_is_up', mock.Mock(return_value=False))
-    def test_create_share_availability_zone_if_service_down(self):
-        share_id = 'fake'
-        fake_share = {
-            'id': share_id,
-            'availability_zone': 'fake:fake',
-            'size': 1,
-        }
-        fake_request_spec = {
-            'share_id': share_id,
-            'share_properties': fake_share,
-        }
-        with mock.patch.object(db, 'service_get_by_args',
-                               mock.Mock(return_value='fake_service')):
-            self.assertRaises(exception.WillNotSchedule,
-                              self.driver.schedule_create_share,
-                              self.admin_context, fake_request_spec, {})
-            utils.service_is_up.assert_called_once_with('fake_service')
-            db.service_get_by_args.assert_called_once_with(
-                utils.IsAMatcher(context.RequestContext),
-                'fake', 'manila-share')
+        self.driver.schedule_create_share(self.admin_context,
+                                          fake_request_spec, {})
+        utils.service_is_up.assert_called_once_with(fake_service)
+        db.service_get_all_share_sorted.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext))
+        driver.share_update_db.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), share_id, 'fake')

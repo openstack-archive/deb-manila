@@ -26,8 +26,7 @@ def stub_share(id, **kwargs):
         'id': id,
         'share_proto': 'FAKEPROTO',
         'export_location': 'fake_location',
-        'export_locations': [{'path': 'fake_location'},
-                             {'path': 'fake_location2'}],
+        'export_locations': ['fake_location', 'fake_location2'],
         'user_id': 'fakeuser',
         'project_id': 'fakeproject',
         'host': 'fakehost',
@@ -42,6 +41,7 @@ def stub_share(id, **kwargs):
         'share_network_id': None,
         'share_server_id': 'fake_share_server_id',
         'is_public': False,
+        'snapshot_support': True,
     }
     share.update(kwargs)
     return share

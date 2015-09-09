@@ -17,11 +17,10 @@
 Tests dealing with HTTP rate-limiting.
 """
 
-import httplib
-
 from oslo_serialization import jsonutils
 import six
 from six import moves
+from six.moves import http_client
 import webob
 
 from manila.api.v1 import limits
@@ -284,7 +283,7 @@ class LimitTest(BaseLimitTestSuite):
         """Test a limit handles 1 GET per second."""
         limit = limits.Limit("GET", "*", ".*", 1, 1)
         delay = limit("GET", "/anything")
-        self.assertEqual(None, delay)
+        self.assertIsNone(delay)
         self.assertEqual(0, limit.next_request)
         self.assertEqual(0, limit.last_request)
 
@@ -292,7 +291,7 @@ class LimitTest(BaseLimitTestSuite):
         """Test two calls to 1 GET per second limit."""
         limit = limits.Limit("GET", "*", ".*", 1, 1)
         delay = limit("GET", "/anything")
-        self.assertEqual(None, delay)
+        self.assertIsNone(delay)
 
         delay = limit("GET", "/anything")
         self.assertEqual(1, delay)
@@ -302,7 +301,7 @@ class LimitTest(BaseLimitTestSuite):
         self.time += 4
 
         delay = limit("GET", "/anything")
-        self.assertEqual(None, delay)
+        self.assertIsNone(delay)
         self.assertEqual(4, limit.next_request)
         self.assertEqual(4, limit.last_request)
 
@@ -534,7 +533,7 @@ class WsgiLimiterTest(BaseLimitTestSuite):
 
     def _request_data(self, verb, path):
         """Get data describing a limit request verb/path."""
-        return jsonutils.dumps({"verb": verb, "path": path})
+        return six.b(jsonutils.dumps({"verb": verb, "path": path}))
 
     def _request(self, verb, url, username=None):
         """Send request.
@@ -568,25 +567,25 @@ class WsgiLimiterTest(BaseLimitTestSuite):
 
     def test_good_url(self):
         delay = self._request("GET", "/something")
-        self.assertEqual(delay, None)
+        self.assertIsNone(delay)
 
     def test_escaping(self):
         delay = self._request("GET", "/something/jump%20up")
-        self.assertEqual(delay, None)
+        self.assertIsNone(delay)
 
     def test_response_to_delays(self):
         delay = self._request("GET", "/delayed")
-        self.assertEqual(delay, None)
+        self.assertIsNone(delay)
 
         delay = self._request("GET", "/delayed")
         self.assertEqual(delay, '60.00')
 
     def test_response_to_delays_usernames(self):
         delay = self._request("GET", "/delayed", "user1")
-        self.assertEqual(delay, None)
+        self.assertIsNone(delay)
 
         delay = self._request("GET", "/delayed", "user2")
-        self.assertEqual(delay, None)
+        self.assertIsNone(delay)
 
         delay = self._request("GET", "/delayed", "user1")
         self.assertEqual(delay, '60.00')
@@ -596,19 +595,19 @@ class WsgiLimiterTest(BaseLimitTestSuite):
 
 
 class FakeHttplibSocket(object):
-    """Fake `httplib.HTTPResponse` replacement."""
+    """Fake `http_client.HTTPResponse` replacement."""
 
     def __init__(self, response_string):
         """Initialize new `FakeHttplibSocket`."""
-        self._buffer = six.StringIO(response_string)
+        self._buffer = six.BytesIO(six.b(response_string))
 
-    def makefile(self, _mode, _other):
+    def makefile(self, _mode, _other=None):
         """Returns the socket's internal buffer."""
         return self._buffer
 
 
 class FakeHttplibConnection(object):
-    """Fake `httplib.HTTPConnection`."""
+    """Fake `http_client.HTTPConnection`."""
 
     def __init__(self, app, host):
         """Initialize `FakeHttplibConnection`."""
@@ -620,7 +619,7 @@ class FakeHttplibConnection(object):
 
         Requests made via this connection actually get translated and routed
         into our WSGI app, we then wait for the response and turn it back into
-        an `httplib.HTTPResponse`.
+        an `http_client.HTTPResponse`.
         """
         if not headers:
             headers = {}
@@ -629,12 +628,12 @@ class FakeHttplibConnection(object):
         req.method = method
         req.headers = headers
         req.host = self.host
-        req.body = body
+        req.body = six.b(body)
 
         resp = str(req.get_response(self.app))
         resp = "HTTP/1.0 %s" % resp
         sock = FakeHttplibSocket(resp)
-        self.http_response = httplib.HTTPResponse(sock)
+        self.http_response = http_client.HTTPResponse(sock)
         self.http_response.begin()
 
     def getresponse(self):
@@ -650,7 +649,7 @@ def wire_HTTPConnection_to_WSGI(host, app):
 
     After calling this method, when any code calls
 
-    httplib.HTTPConnection(host)
+    http_client.HTTPConnection(host)
 
     the connection object will be a fake.  Its requests will be sent directly
     to the given WSGI app rather than through a socket.
@@ -680,8 +679,9 @@ def wire_HTTPConnection_to_WSGI(host, app):
             else:
                 return self.wrapped(connection_host, *args, **kwargs)
 
-    oldHTTPConnection = httplib.HTTPConnection
-    httplib.HTTPConnection = HTTPConnectionDecorator(httplib.HTTPConnection)
+    oldHTTPConnection = http_client.HTTPConnection
+    http_client.HTTPConnection = HTTPConnectionDecorator(
+        http_client.HTTPConnection)
     return oldHTTPConnection
 
 
@@ -692,7 +692,7 @@ class WsgiLimiterProxyTest(BaseLimitTestSuite):
         """Set up HTTP/WSGI magic.
 
         Do some nifty HTTP/WSGI magic which allows for WSGI to be called
-        directly by something like the `httplib` library.
+        directly by something like the `http_client` library.
         """
         super(WsgiLimiterProxyTest, self).setUp()
         self.app = limits.WsgiLimiter(TEST_LIMITS)
@@ -709,18 +709,17 @@ class WsgiLimiterProxyTest(BaseLimitTestSuite):
         """Forbidden request test."""
         delay = self.proxy.check_for_delay("GET", "/delayed")
         self.assertEqual(delay, (None, None))
-
         delay, error = self.proxy.check_for_delay("GET", "/delayed")
         error = error.strip()
 
-        expected = ("60.00", "403 Forbidden\n\nOnly 1 GET request(s) can be "
-                    "made to /delayed every minute.")
+        expected = ("60.00", six.b("403 Forbidden\n\nOnly 1 GET request(s) "
+                                   "can be made to /delayed every minute."))
 
         self.assertEqual((delay, error), expected)
 
     def tearDown(self):
         # restore original HTTPConnection object
-        httplib.HTTPConnection = self.oldHTTPConnection
+        http_client.HTTPConnection = self.oldHTTPConnection
         super(WsgiLimiterProxyTest, self).tearDown()
 
 

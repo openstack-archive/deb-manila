@@ -281,9 +281,62 @@ def reservation_expire(context):
 ###################
 
 
-def share_create(context, values):
+def share_instance_get(context, instance_id, with_share_data=False):
+    """Get share instance by id."""
+    return IMPL.share_instance_get(context, instance_id,
+                                   with_share_data=with_share_data)
+
+
+def share_instance_create(context, share_id, values):
+    """Create new share instance."""
+    return IMPL.share_instance_create(context, share_id, values)
+
+
+def share_instance_delete(context, instance_id):
+    """Delete share instance."""
+    return IMPL.share_instance_delete(context, instance_id)
+
+
+def share_instance_update(context, instance_id, values, with_share_data=False):
+    """Update share instance fields."""
+    return IMPL.share_instance_update(context, instance_id, values,
+                                      with_share_data=with_share_data)
+
+
+def share_instances_get_all(context):
+    """Returns all share instances."""
+    return IMPL.share_instances_get_all(context)
+
+
+def share_instances_get_all_by_share_server(context, share_server_id):
+    """Returns all share instances with given share_server_id."""
+    return IMPL.share_instances_get_all_by_share_server(context,
+                                                        share_server_id)
+
+
+def share_instances_get_all_by_host(context, host):
+    """Returns all share instances with given host."""
+    return IMPL.share_instances_get_all_by_host(context, host)
+
+
+def share_instances_get_all_by_share_network(context, share_network_id):
+    """Returns list of shares that belong to given share network."""
+    return IMPL.share_instances_get_all_by_share_network(context,
+                                                         share_network_id)
+
+
+def share_instances_get_all_by_share(context, share_id):
+    """Returns list of shares that belong to given share."""
+    return IMPL.share_instances_get_all_by_share_network(context, share_id)
+
+
+###################
+
+
+def share_create(context, values, create_share_instance=True):
     """Create new share."""
-    return IMPL.share_create(context, values)
+    return IMPL.share_create(context, values,
+                             create_share_instance=create_share_instance)
 
 
 def share_data_get_for_project(context, project_id, session=None):
@@ -308,14 +361,6 @@ def share_get_all(context, filters=None, sort_key=None, sort_dir=None):
     )
 
 
-def share_get_all_by_host(context, host, filters=None, sort_key=None,
-                          sort_dir=None):
-    """Returns all shares with given host."""
-    return IMPL.share_get_all_by_host(
-        context, host, filters=filters, sort_key=sort_key, sort_dir=sort_dir,
-    )
-
-
 def share_get_all_by_project(context, project_id, filters=None,
                              is_public=False, sort_key=None, sort_dir=None):
     """Returns all shares with given project ID."""
@@ -323,14 +368,6 @@ def share_get_all_by_project(context, project_id, filters=None,
         context, project_id, filters=filters, is_public=is_public,
         sort_key=sort_key, sort_dir=sort_dir,
     )
-
-
-def share_get_all_by_share_network(context, share_network_id, filters=None,
-                                   sort_key=None, sort_dir=None):
-    """Returns list of shares that belong to given share network."""
-    return IMPL.share_get_all_by_share_network(
-        context, share_network_id, filters=filters, sort_key=sort_key,
-        sort_dir=sort_dir)
 
 
 def share_get_all_by_share_server(context, share_server_id, filters=None,
@@ -356,12 +393,17 @@ def share_access_create(context, values):
 
 
 def share_access_get(context, access_id):
-    """Allow access to share."""
+    """Get share access rule."""
     return IMPL.share_access_get(context, access_id)
 
 
+def share_instance_access_get(context, access_id, instance_id):
+    """Get access rule mapping for share instance."""
+    return IMPL.share_instance_access_get(context, access_id, instance_id)
+
+
 def share_access_get_all_for_share(context, share_id):
-    """Allow access to share."""
+    """Get all access rules for given share."""
     return IMPL.share_access_get_all_for_share(context, share_id)
 
 
@@ -377,9 +419,31 @@ def share_access_delete(context, access_id):
     return IMPL.share_access_delete(context, access_id)
 
 
-def share_access_update(context, access_id, values):
-    """Update access record."""
-    return IMPL.share_access_update(context, access_id, values)
+def share_instance_access_delete(context, mapping_id):
+    """Deny access to share instance."""
+    return IMPL.share_instance_access_delete(context, mapping_id)
+
+
+def share_instance_access_update_state(context, mapping_id, state):
+    """Update state of access rule mapping."""
+    return IMPL.share_instance_access_update_state(context, mapping_id, state)
+
+
+####################
+
+
+def share_snapshot_instance_update(context, instance_id, values):
+    """Set the given properties on an snapshot instance and update it.
+
+    Raises NotFound if snapshot instance does not exist.
+    """
+    return IMPL.share_snapshot_instance_update(context, instance_id, values)
+
+
+def share_snapshot_instance_get(context, instance_id, with_share_data=False):
+    """Get a snapshot or raise if it does not exist."""
+    return IMPL.share_snapshot_instance_get(
+        context, instance_id, with_share_data=with_share_data)
 
 
 ####################
@@ -502,10 +566,10 @@ def share_export_locations_get(context, share_id):
     return IMPL.share_export_locations_get(context, share_id)
 
 
-def share_export_locations_update(context, share_id, export_locations,
+def share_export_locations_update(context, share_instance_id, export_locations,
                                   delete=True):
     """Update export locations of share."""
-    return IMPL.share_export_locations_update(context, share_id,
+    return IMPL.share_export_locations_update(context, share_instance_id,
                                               export_locations, delete)
 
 
@@ -771,3 +835,15 @@ def driver_private_data_update(context, host, entity_id, details,
 def driver_private_data_delete(context, host, entity_id, key=None):
     """Remove one, list or all key-value pairs for given host and entity_id."""
     return IMPL.driver_private_data_delete(context, host, entity_id, key)
+
+
+####################
+
+def availability_zone_get(context, id_or_name):
+    """Get availability zone by name or id."""
+    return IMPL.availability_zone_get(context, id_or_name)
+
+
+def availability_zone_get_all(context):
+    """Get all active availability zones."""
+    return IMPL.availability_zone_get_all(context)

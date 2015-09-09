@@ -22,6 +22,7 @@ import errno
 import inspect
 import os
 import pyclbr
+import re
 import shutil
 import socket
 import sys
@@ -145,6 +146,41 @@ class SSHPool(pools.Pool):
             self.free_items.pop(ssh)
         if self.current_size > 0:
             self.current_size -= 1
+
+
+def check_ssh_injection(cmd_list):
+    ssh_injection_pattern = ['`', '$', '|', '||', ';', '&', '&&', '>', '>>',
+                             '<']
+
+    # Check whether injection attacks exist
+    for arg in cmd_list:
+        arg = arg.strip()
+
+        # Check for matching quotes on the ends
+        is_quoted = re.match('^(?P<quote>[\'"])(?P<quoted>.*)(?P=quote)$', arg)
+        if is_quoted:
+            # Check for unescaped quotes within the quoted argument
+            quoted = is_quoted.group('quoted')
+            if quoted:
+                if (re.match('[\'"]', quoted) or
+                        re.search('[^\\\\][\'"]', quoted)):
+                    raise exception.SSHInjectionThreat(command=cmd_list)
+        else:
+            # We only allow spaces within quoted arguments, and that
+            # is the only special character allowed within quotes
+            if len(arg.split()) > 1:
+                raise exception.SSHInjectionThreat(command=cmd_list)
+
+        # Second, check whether danger character in command. So the shell
+        # special operator must be a single argument.
+        for c in ssh_injection_pattern:
+            if c not in arg:
+                continue
+
+            result = arg.find(c)
+            if not result == -1:
+                if result == 0 or not arg[result - 1] == '\\':
+                    raise exception.SSHInjectionThreat(command=cmd_list)
 
 
 class LazyPluggable(object):
@@ -313,7 +349,14 @@ def monkey_patch():
             # set the decorator for the class methods
             if isinstance(module_data[key], pyclbr.Class):
                 clz = importutils.import_class("%s.%s" % (module, key))
-                for method, func in inspect.getmembers(clz, inspect.ismethod):
+                # NOTE(vponomaryov): we need to distinguish class methods types
+                # for py2 and py3, because the concept of 'unbound methods' has
+                # been removed from the python3.x
+                if six.PY3:
+                    member_type = inspect.isfunction
+                else:
+                    member_type = inspect.ismethod
+                for method, func in inspect.getmembers(clz, member_type):
                     setattr(
                         clz, method,
                         decorator("%s.%s.%s" % (module, key, method), func))
@@ -467,6 +510,34 @@ class IsAMatcher(object):
 
     def __eq__(self, actual_value):
         return isinstance(actual_value, self.expected_value)
+
+
+class ComparableMixin(object):
+    def _compare(self, other, method):
+        try:
+            return method(self._cmpkey(), other._cmpkey())
+        except (AttributeError, TypeError):
+            # _cmpkey not implemented, or return different type,
+            # so I can't compare with "other".
+            return NotImplemented
+
+    def __lt__(self, other):
+        return self._compare(other, lambda s, o: s < o)
+
+    def __le__(self, other):
+        return self._compare(other, lambda s, o: s <= o)
+
+    def __eq__(self, other):
+        return self._compare(other, lambda s, o: s == o)
+
+    def __ge__(self, other):
+        return self._compare(other, lambda s, o: s >= o)
+
+    def __gt__(self, other):
+        return self._compare(other, lambda s, o: s > o)
+
+    def __ne__(self, other):
+        return self._compare(other, lambda s, o: s != o)
 
 
 def retry(exception, interval=1, retries=10, backoff_rate=2):

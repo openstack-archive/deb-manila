@@ -61,8 +61,20 @@ class NetAppCmodeSingleSvmShareDriver(driver.ShareDriver):
     def delete_snapshot(self, context, snapshot, **kwargs):
         self.library.delete_snapshot(context, snapshot, **kwargs)
 
+    def extend_share(self, share, new_size, **kwargs):
+        self.library.extend_share(share, new_size, **kwargs)
+
+    def shrink_share(self, share, new_size, **kwargs):
+        self.library.shrink_share(share, new_size, **kwargs)
+
     def ensure_share(self, context, share, **kwargs):
         pass
+
+    def manage_existing(self, share, driver_options):
+        return self.library.manage_existing(share, driver_options)
+
+    def unmanage(self, share):
+        self.library.unmanage(share)
 
     def allow_access(self, context, share, access, **kwargs):
         self.library.allow_access(context, share, access, **kwargs)

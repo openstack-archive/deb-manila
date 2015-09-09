@@ -20,7 +20,8 @@ DEFAULT_TIMEOUT = 60
 
 MSG_SNAPSHOT_NOT_FOUND = 1073754118
 IP_ALLOCATIONS = 0
-SOCKET_TIMEOUT = 720
+SOCKET_TIMEOUT = 52
+LOGIN_SOCKET_TIMEOUT = 4
 
 ACCESS_NFS_RW = "1"
 ACCESS_NFS_RO = "0"
@@ -29,3 +30,21 @@ ACCESS_CIFS_RO = "0"
 
 ERROR_CONNECT_TO_SERVER = -403
 ERROR_UNAUTHORIZED_TO_SERVER = -401
+
+OPTS_CAPABILITIES = {
+    'dedupe': False,
+    'compression': False,
+    'huawei_smartcache': False,
+    'huawei_smartpartition': False,
+    'thin_provisioning': False,
+}
+
+OPTS_VALUE = {
+    'cachename': None,
+    'partitionname': None,
+}
+
+OPTS_ASSOCIATE = {
+    'huawei_smartcache': 'cachename',
+    'huawei_smartpartition': 'partitionname',
+}

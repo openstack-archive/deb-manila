@@ -23,6 +23,7 @@ import ddt
 import mock
 from oslo_concurrency import processutils
 from oslo_config import cfg
+from six import moves
 
 from manila.common import constants as const
 from manila import compute
@@ -120,10 +121,12 @@ class GenericShareDriverTestCase(test.TestCase):
             'backend_details': {
                 'ip': '1.2.3.4',
                 'instance_id': 'fake'
-            }
+            },
+            'availability_zone': 'fake_az',
         }
         self.access = fake_share.fake_access()
         self.snapshot = fake_share.fake_snapshot()
+        self.mock_object(time, 'sleep')
 
     def test_do_setup(self):
         self.mock_object(volume, 'API')
@@ -296,23 +299,22 @@ class GenericShareDriverTestCase(test.TestCase):
                          mock.Mock(return_value=mount_path))
         self.mock_object(self._driver, '_ssh_exec',
                          mock.Mock(side_effect=_side_effect))
-        self.mock_object(time, 'sleep')
 
         self._driver._unmount_device(self.share, self.server)
 
         self.assertEqual(1, time.sleep.call_count)
         self.assertEqual(self._driver._get_mount_path.mock_calls,
-                         [mock.call(self.share) for i in xrange(2)])
+                         [mock.call(self.share) for i in moves.range(2)])
         self.assertEqual(self._driver._is_device_mounted.mock_calls,
                          [mock.call(mount_path,
-                                    self.server) for i in xrange(2)])
+                                    self.server) for i in moves.range(2)])
         self._driver._sync_mount_temp_and_perm_files.assert_called_once_with(
             self.server)
         self.assertEqual(
             self._driver._ssh_exec.mock_calls,
             [mock.call(self.server, ['sudo umount', mount_path,
                                      '&& sudo rmdir', mount_path])
-             for i in xrange(2)]
+             for i in moves.range(2)]
         )
 
     def test_unmount_device_not_present(self):
@@ -549,7 +551,7 @@ class GenericShareDriverTestCase(test.TestCase):
 
         result = self._driver._get_volume(self._context, self.share['id'])
 
-        self.assertEqual(result, None)
+        self.assertIsNone(result)
         self._driver.volume_api.get_all.assert_called_once_with(
             self._context, {'all_tenants': True, 'name': vol_name})
 
@@ -599,7 +601,7 @@ class GenericShareDriverTestCase(test.TestCase):
                          mock.Mock(return_value=[]))
         result = self._driver._get_volume_snapshot(self._context,
                                                    self.share['id'])
-        self.assertEqual(result, None)
+        self.assertIsNone(result)
         self._driver.volume_api.get_all_snapshots.assert_called_once_with(
             self._context, {'name': snap_name})
 
@@ -670,7 +672,8 @@ class GenericShareDriverTestCase(test.TestCase):
             CONF.volume_name_template % self.share['id'],
             '',
             snapshot=None,
-            volume_type='fake_volume_type')
+            volume_type='fake_volume_type',
+            availability_zone=self.share['availability_zone'])
 
     def test_allocate_container_with_snaphot(self):
         fake_vol = fake_volume.FakeVolume()
@@ -690,7 +693,8 @@ class GenericShareDriverTestCase(test.TestCase):
             CONF.volume_name_template % self.share['id'],
             '',
             snapshot=fake_vol_snap,
-            volume_type=None)
+            volume_type=None,
+            availability_zone=self.share['availability_zone'])
 
     def test_allocate_container_error(self):
         fake_vol = fake_volume.FakeVolume(status='error')
@@ -715,11 +719,40 @@ class GenericShareDriverTestCase(test.TestCase):
         self._driver.volume_api.get.assert_called_once_with(
             mock.ANY, fake_volume['id'])
 
+    @mock.patch('time.sleep')
+    def test_wait_for_extending_volume(self, mock_sleep):
+        initial_size = 1
+        expected_size = 2
+        mock_volume = fake_volume.FakeVolume(status='available',
+                                             size=initial_size)
+        mock_extending_vol = fake_volume.FakeVolume(status='extending',
+                                                    size=initial_size)
+        mock_extended_vol = fake_volume.FakeVolume(status='available',
+                                                   size=expected_size)
+
+        self.mock_object(self._driver.volume_api, 'get',
+                         mock.Mock(side_effect=[mock_extending_vol,
+                                                mock_extended_vol]))
+
+        result = self._driver._wait_for_available_volume(
+            mock_volume, 5, "error", "timeout",
+            expected_size=expected_size)
+
+        expected_get_count = 2
+
+        self.assertEqual(mock_extended_vol, result)
+        self._driver.volume_api.get.assert_has_calls(
+            [mock.call(self._driver.admin_context, mock_volume['id'])] *
+            expected_get_count)
+        mock_sleep.assert_has_calls([mock.call(1)] * expected_get_count)
+
     @ddt.data(mock.Mock(return_value={'status': 'creating', 'id': 'fake'}),
               mock.Mock(return_value={'status': 'error', 'id': 'fake'}))
     def test_wait_for_available_volume_invalid(self, volume_get_mock):
         fake_volume = {'status': 'creating', 'id': 'fake'}
         self.mock_object(self._driver.volume_api, 'get', volume_get_mock)
+        self.mock_object(time, 'time',
+                         mock.Mock(side_effect=[1.0, 1.33, 1.67, 2.0]))
 
         self.assertRaises(
             exception.ManilaException,
@@ -743,6 +776,19 @@ class GenericShareDriverTestCase(test.TestCase):
             self._context, fake_vol['id'])
         self._driver.volume_api.get.assert_called_once_with(
             self._context, fake_vol['id'])
+
+    def test_deallocate_container_with_volume_not_found(self):
+        fake_vol = fake_volume.FakeVolume()
+        self.mock_object(self._driver, '_get_volume',
+                         mock.Mock(side_effect=exception.VolumeNotFound(
+                             volume_id=fake_vol['id'])))
+        self.mock_object(self._driver.volume_api, 'delete')
+
+        self._driver._deallocate_container(self._context, self.share)
+
+        self._driver._get_volume.assert_called_once_with(
+            self._context, self.share['id'])
+        self.assertFalse(self._driver.volume_api.delete.called)
 
     def test_create_share_from_snapshot(self):
         vol1 = 'fake_vol1'
@@ -1441,7 +1487,8 @@ class GenericShareDriverTestCase(test.TestCase):
             self._context, fake_volume['id'], new_size
         )
         self._driver._wait_for_available_volume.assert_called_once_with(
-            fake_volume, mock.ANY, msg_timeout=mock.ANY, msg_error=mock.ANY
+            fake_volume, mock.ANY, msg_timeout=mock.ANY, msg_error=mock.ANY,
+            expected_size=new_size
         )
 
     def test_resize_filesystem(self):

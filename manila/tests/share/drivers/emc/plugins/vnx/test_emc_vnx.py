@@ -20,6 +20,7 @@ from lxml import doctestcompare
 import mock
 from oslo_log import log
 from oslo_utils import units
+import six
 
 from manila.common import constants as const
 import manila.db
@@ -877,6 +878,11 @@ disks     = d7
         return "%s : done" % mover_name
 
     @staticmethod
+    def resp_delete_nfs_share_vdm_locked(mover_name):
+        return ("Error 2201: %s : unable to acquire lock(s), try later"
+                % mover_name)
+
+    @staticmethod
     def req_set_nfs_share_access(path, mover_name, hosts=[],
                                  access_level=const.ACCESS_LEVEL_RW):
         if access_level == const.ACCESS_LEVEL_RW and hosts:
@@ -1167,6 +1173,10 @@ class EMCMock(mock.Mock):
             except StopIteration:
                 return True
 
+            if not isinstance(expect, six.binary_type):
+                expect = six.b(expect)
+            if not isinstance(actual, six.binary_type):
+                actual = six.b(actual)
             if not CHECKER.check_output(expect, actual, PARSE_XML):
                 raise AssertionError(
                     'Mismatch error.\nExpected: %r\n'
@@ -1420,6 +1430,40 @@ class EMCShareDriverVNXTestCase(test.TestCase):
             mock.call(TD.req_delete_filesystem(TD.default_fs_id)),
         ]
 
+        helper.XMLAPIConnector.request.assert_has_calls(expected_calls)
+
+    @mock.patch('time.sleep')
+    def test_delete_nfs_share_retry(self, sleep_mock):
+        share = TD.fake_share(share_proto='NFS')
+        share_server = TD.fake_share_server()
+        mover_name = share_server['backend_details']['share_server_name']
+        path = '/' + share['name']
+        sshHook = SSHSideEffect()
+        sshHook.append(TD.resp_get_nfs_share_by_path(mover_name,
+                                                     path))
+        sshHook.append(TD.resp_delete_nfs_share_vdm_locked(mover_name))
+        sshHook.append(TD.resp_delete_nfs_share_success(mover_name))
+        helper.SSHConnector.run_ssh = mock.Mock(side_effect=sshHook)
+
+        hook = RequestSideEffect()
+        hook.append(TD.resp_task_succeed())
+        hook.append(TD.resp_get_filesystem(share['name']))
+        hook.append(TD.resp_task_succeed())
+        helper.XMLAPIConnector.request = EMCMock(side_effect=hook)
+        self.driver.delete_share(None, share, share_server)
+        expected_calls = [
+            mock.call(TD.req_get_nfs_share_by_path(mover_name, path)),
+            mock.call(TD.req_delete_nfs_share(path, mover_name)),
+            mock.call(TD.req_delete_nfs_share(path, mover_name)),
+        ]
+        helper.SSHConnector.run_ssh.assert_has_calls(expected_calls)
+        self.assertTrue(sleep_mock.called)
+        expected_calls = [
+            mock.call(TD.req_delete_mount(path)),
+            mock.call(TD.req_get_filesystem(share['name'],
+                                            need_capacity=True)),
+            mock.call(TD.req_delete_filesystem(TD.default_fs_id)),
+        ]
         helper.XMLAPIConnector.request.assert_has_calls(expected_calls)
 
     def test_create_cifs_share_default(self):

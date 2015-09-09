@@ -12,7 +12,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-import cookielib
 import random
 import re
 
@@ -21,6 +20,7 @@ from lxml import builder
 from lxml import etree as ET
 from oslo_log import log
 import six
+from six.moves import http_cookiejar
 from six.moves.urllib import error as url_error  # pylint: disable=E0611
 from six.moves.urllib import request as url_request  # pylint: disable=E0611
 
@@ -49,7 +49,7 @@ class XMLAPIConnector(object):
         self._url = ('https://' + self.storage_ip
                      + '/servlets/CelerraManagementServices')
         https_handler = url_request.HTTPSHandler()
-        cookie_jar = cookielib.CookieJar()
+        cookie_jar = http_cookiejar.CookieJar()
         cookie_handler = url_request.HTTPCookieProcessor(cookie_jar)
         self.url_opener = url_request.build_opener(https_handler,
                                                    cookie_handler)
@@ -484,7 +484,7 @@ class XMLAPIHelper(object):
         return dest
 
     def _send_request(self, req):
-        req_xml = constants.XML_HEADER + ET.tostring(req)
+        req_xml = six.b(constants.XML_HEADER) + ET.tostring(req)
         rsp_xml = self._conn.request(req_xml)
 
         result = parser.parse_xml_api(
@@ -1091,6 +1091,10 @@ class NASCommandHelper(object):
     def __init__(self, configuration):
         super(NASCommandHelper, self).__init__()
         self._conn = SSHConnector(configuration)
+        # Add more patterns for ssh retry.
+        self.retry_patterns = [
+            (constants.SSH_DEFAULT_RETRY_PATTERN,
+             manila.exception.EMCVnxLockRequiredException())]
 
     def get_interconnect_id(self, src, dest):
 
@@ -1270,16 +1274,17 @@ class NASCommandHelper(object):
                                             'return=%(err)s'
                                             % {'output': out, 'err': err})
 
+    @utils.retry(manila.exception.EMCVnxLockRequiredException)
     def delete_nfs_share(self, path, mover_name):
         result = (constants.STATUS_OK, '')
-        create_nfs_share_cmd = [
+        delete_nfs_share_cmd = [
             'env', 'NAS_DB=/nas', '/nas/bin/server_export', mover_name,
             '-unexport',
             '-perm',
             path,
         ]
 
-        out, err = self._execute_cmd(create_nfs_share_cmd)
+        out, err = self._execute_cmd(delete_nfs_share_cmd)
         if re.search(r'%s\s*:\s*done' % mover_name, out):
             return result
         else:
@@ -1521,8 +1526,19 @@ class NASCommandHelper(object):
         else:
             return constants.STATUS_ERROR, out
 
-    def _execute_cmd(self, cmd):
+    def _execute_cmd(self, cmd, retry_patterns=None):
+        """Execute NAS command via SSH.
+
+        :param retry_patterns: list of tuples,where each tuple contains
+                               a reg expression and a exception.
+        """
+        if retry_patterns is None:
+            retry_patterns = self.retry_patterns
         out, err = self._conn.run_ssh(cmd)
-        LOG.debug('SSH: cmd = %(cmd)s, output = %(out)s, error = %(err)s',
+        LOG.debug('SSH: cmd = %(cmd)s,'
+                  ' output = %(out)s, error = %(err)s.',
                   {'cmd': cmd, 'out': out, 'err': err})
+        for pattern in retry_patterns:
+            if re.search(pattern[0], out):
+                raise pattern[1]
         return out, err

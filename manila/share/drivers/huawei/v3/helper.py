@@ -36,6 +36,9 @@ class RestHelper(object):
 
     def __init__(self, configuration):
         self.configuration = configuration
+        self.init_http_head()
+
+    def init_http_head(self):
         self.cookie = http_cookiejar.CookieJar()
         self.url = None
         self.headers = {
@@ -43,12 +46,15 @@ class RestHelper(object):
             "Content-Type": "application/json",
         }
 
-    def do_call(self, url, data=None, method=None):
+    def do_call(self, url, data=None, method=None,
+                calltimeout=constants.SOCKET_TIMEOUT):
         """Send requests to server.
 
         Send HTTPS call, get response in JSON.
         Convert response into Python Object and return it.
         """
+        if self.url:
+            url = self.url + url
         if "xx/sessions" not in url:
             LOG.debug('Request URL: %(url)s\n'
                       'Call Method: %(method)s\n'
@@ -64,7 +70,7 @@ class RestHelper(object):
             req = urlreq.Request(url, data, self.headers)
             if method:
                 req.get_method = lambda: method
-            res_temp = urlreq.urlopen(req, timeout=constants.SOCKET_TIMEOUT)
+            res_temp = urlreq.urlopen(req, timeout=calltimeout)
             res = res_temp.read().decode("utf-8")
 
             LOG.debug('Response Data: %(res)s.', {'res': res})
@@ -96,7 +102,9 @@ class RestHelper(object):
             data = jsonutils.dumps({"username": login_info['UserName'],
                                     "password": login_info['UserPassword'],
                                     "scope": "0"})
-            result = self.do_call(url, data)
+            self.init_http_head()
+            result = self.do_call(url, data,
+                                  calltimeout=constants.LOGIN_SOCKET_TIMEOUT)
 
             if((result['error']['code'] != 0)
                or ("data" not in result)
@@ -119,6 +127,7 @@ class RestHelper(object):
 
         return deviceid
 
+    @utils.synchronized('huawei_manila', external=True)
     def call(self, url, data=None, method=None):
         """Send requests to server.
 
@@ -140,13 +149,12 @@ class RestHelper(object):
                       'New URL: %(new_url)s\n',
                       {'old_url': old_url,
                        'new_url': self.url})
-            url = url.replace(old_url, self.url)
             result = self.do_call(url, data, method)
         return result
 
     def _create_filesystem(self, fs_param):
         """Create file system."""
-        url = self.url + "/filesystem"
+        url = "/filesystem"
         data = jsonutils.dumps(fs_param)
         result = self.call(url, data)
 
@@ -183,12 +191,12 @@ class RestHelper(object):
         need_encode = False
         for key in ['UserName', 'UserPassword']:
             node = root.find('Storage/%s' % key)
-            node_text = node.text
-            if node_text.find(prefix_name) > -1:
-                logininfo[key] = base64.b64decode(node_text[4:])
+            if node.text.find(prefix_name) > -1:
+                logininfo[key] = base64.b64decode(six.b(node.text[4:]))
             else:
-                logininfo[key] = node_text
-                node.text = prefix_name + base64.b64encode(node_text)
+                logininfo[key] = node.text
+                node.text = prefix_name + six.text_type(
+                    base64.b64encode(six.b(node.text)))
                 need_encode = True
         if need_encode:
             self._change_file_mode(filename)
@@ -237,7 +245,7 @@ class RestHelper(object):
                 reason=(_('Invalid NAS protocol supplied: %s.')
                         % share_proto))
 
-        url = self.url + "/" + share_url_type
+        url = "/" + share_url_type
         data = jsonutils.dumps(filepath)
 
         result = self.call(url, data, "POST")
@@ -250,7 +258,7 @@ class RestHelper(object):
 
     def _delete_share_by_id(self, share_id, share_url_type):
         """Delete share by share id."""
-        url = self.url + "/" + share_url_type + "/" + share_id
+        url = "/" + share_url_type + "/" + share_id
 
         result = self.call(url, None, "DELETE")
         self._assert_rest_result(result, 'Delete share error.')
@@ -258,13 +266,13 @@ class RestHelper(object):
     def _delete_fs(self, fs_id):
         """Delete file system."""
         # Get available file system
-        url = self.url + "/filesystem/" + fs_id
+        url = "/filesystem/" + fs_id
 
         result = self.call(url, None, "DELETE")
         self._assert_rest_result(result, 'Delete file system error.')
 
     def _get_cifs_service_status(self):
-        url = self.url + "/CIFSSERVICE"
+        url = "/CIFSSERVICE"
         result = self.call(url, None, "GET")
 
         msg = 'Get CIFS service status error.'
@@ -274,7 +282,7 @@ class RestHelper(object):
         return result['data']['RUNNINGSTATUS']
 
     def _get_nfs_service_status(self):
-        url = self.url + "/NFSSERVICE"
+        url = "/NFSSERVICE"
         result = self.call(url, None, "GET")
 
         msg = 'Get NFS service status error.'
@@ -289,7 +297,7 @@ class RestHelper(object):
         return service
 
     def _start_nfs_service_status(self):
-        url = self.url + "/NFSSERVICE"
+        url = "/NFSSERVICE"
         nfsserviceinfo = {
             "NFSV4DOMAIN": "localdomain",
             "RUNNINGSTATUS": "2",
@@ -304,7 +312,7 @@ class RestHelper(object):
         self._assert_rest_result(result, 'Start NFS service error.')
 
     def _start_cifs_service_status(self):
-        url = self.url + "/CIFSSERVICE"
+        url = "/CIFSSERVICE"
         cifsserviceinfo = {
             "ENABLENOTIFY": "true",
             "ENABLEOPLOCK": "true",
@@ -341,7 +349,7 @@ class RestHelper(object):
         return poolinfo
 
     def _find_all_pool_info(self):
-        url = self.url + "/storagepool"
+        url = "/storagepool"
         result = self.call(url, None)
 
         msg = "Query resource pool error."
@@ -366,14 +374,14 @@ class RestHelper(object):
         return root
 
     def _remove_access_from_share(self, access_id, access_type):
-        url = self.url + "/" + access_type + "/" + access_id
+        url = "/" + access_type + "/" + access_id
         result = self.call(url, None, "DELETE")
         self._assert_rest_result(result, 'delete access from share error!')
 
     def _get_access_from_count(self, share_id, share_client_type):
         url_subfix = ("/" + share_client_type + "/count?"
                       + "filter=PARENTID::" + share_id)
-        url = self.url + url_subfix
+        url = url_subfix
         result = self.call(url, None, "GET")
 
         msg = "Get access count by share error!"
@@ -404,7 +412,7 @@ class RestHelper(object):
                                      access_to, range_begin,
                                      share_client_type):
         range_end = range_begin + 100
-        url = (self.url + "/" + share_client_type + "?filter=PARENTID::"
+        url = ("/" + share_client_type + "?filter=PARENTID::"
                + share_id + "&range=[" + six.text_type(range_begin)
                + "-" + six.text_type(range_end) + "]")
         result = self.call(url, None, "GET")
@@ -418,7 +426,7 @@ class RestHelper(object):
                            share_proto, access_level):
         """Allow access to the share."""
         access_type = self._get_share_client_type(share_proto)
-        url = self.url + "/" + access_type
+        url = "/" + access_type
 
         access = {}
         if access_type == "NFS_SHARE_AUTH_CLIENT":
@@ -461,7 +469,7 @@ class RestHelper(object):
         """Check the snapshot id exists."""
         url_subfix = "/FSSNAPSHOT/" + snap_id
 
-        url = self.url + url_subfix
+        url = url_subfix
         result = self.call(url, None, "GET")
 
         if result['error']['code'] == constants.MSG_SNAPSHOT_NOT_FOUND:
@@ -477,7 +485,7 @@ class RestHelper(object):
 
     def _delete_snapshot(self, snap_id):
         """Deletes snapshot."""
-        url = self.url + "/FSSNAPSHOT/%s" % snap_id
+        url = "/FSSNAPSHOT/%s" % snap_id
         data = jsonutils.dumps({"TYPE": "48", "ID": snap_id})
         result = self.call(url, data, "DELETE")
         self._assert_rest_result(result, 'Delete snapshot error.')
@@ -492,7 +500,7 @@ class RestHelper(object):
             "DESCRIPTION": "",
         }
 
-        url = self.url + "/FSSNAPSHOT"
+        url = "/FSSNAPSHOT"
         data = jsonutils.dumps(filepath)
 
         result = self.call(url, data, "POST")
@@ -522,7 +530,7 @@ class RestHelper(object):
 
     def _get_share_count(self, share_url_type):
         """Get share count."""
-        url = self.url + "/" + share_url_type + "/count"
+        url = "/" + share_url_type + "/count"
         result = self.call(url, None, "GET")
         self._assert_rest_result(result, 'Get share count error!')
 
@@ -532,7 +540,7 @@ class RestHelper(object):
                                  range_begin, share_url_type):
         """Get share by share name."""
         range_end = range_begin + 100
-        url = (self.url + "/" + share_url_type + "?range=["
+        url = ("/" + share_url_type + "?range=["
                + six.text_type(range_begin) + "-"
                + six.text_type(range_end) + "]")
         result = self.call(url, None, "GET")
@@ -563,7 +571,7 @@ class RestHelper(object):
         return share_url_type
 
     def _get_fsid_by_name(self, share_name):
-        url = self.url + "/FILESYSTEM?range=[0-8191]"
+        url = "/FILESYSTEM?range=[0-8191]"
         result = self.call(url, None, "GET")
         self._assert_rest_result(result, 'Get filesystem by name error!')
         sharename = share_name.replace("-", "_")
@@ -573,7 +581,7 @@ class RestHelper(object):
                 return item['ID']
 
     def _get_fs_info_by_id(self, fsid):
-        url = self.url + "/filesystem/%s" % fsid
+        url = "/filesystem/%s" % fsid
         result = self.call(url, None, "GET")
 
         msg = "Get filesystem info by id error!"
@@ -596,13 +604,50 @@ class RestHelper(object):
         share_name = "share_" + share_id
         return share_name
 
+    def _get_share_name_by_export_location(self, export_location, share_proto):
+        export_location_split = None
+        share_name = None
+        share_ip = None
+        if export_location:
+            if share_proto == 'NFS':
+                export_location_split = export_location.split(':/')
+                if len(export_location_split) == 2:
+                    share_name = export_location_split[1]
+                    share_ip = export_location_split[0]
+            elif share_proto == 'CIFS':
+                export_location_split = export_location.split('\\')
+                if (len(export_location_split) == 4 and
+                        export_location_split[0] == "" and
+                        export_location_split[1] == ""):
+                    share_ip = export_location_split[2]
+                    share_name = export_location_split[3]
+
+        if share_name is None:
+            raise exception.InvalidInput(
+                reason=(_('No share with export location %s could be found.')
+                        % export_location))
+
+        root = self._read_xml()
+        target_ip = root.findtext('Storage/LogicalPortIP')
+
+        if target_ip:
+            if share_ip != target_ip.strip():
+                raise exception.InvalidInput(
+                    reason=(_('The share IP %s is not configured.')
+                            % share_ip))
+        else:
+            raise exception.InvalidInput(
+                reason=(_('The config parameter LogicalPortIP is not set.')))
+
+        return share_name
+
     def _get_snapshot_id(self, fs_id, snap_name):
         snapshot_id = (fs_id + "@" + "share_snapshot_"
                        + snap_name.replace("-", "_"))
         return snapshot_id
 
     def _change_share_size(self, fsid, new_size):
-        url = self.url + "/filesystem/%s" % fsid
+        url = "/filesystem/%s" % fsid
 
         capacityinfo = {
             "CAPACITY": new_size,
@@ -614,3 +659,57 @@ class RestHelper(object):
         msg = "Change a share size error!"
         self._assert_rest_result(result, msg)
         self._assert_data_in_result(result, msg)
+
+    def _change_fs_name(self, fsid, name):
+        url = "/filesystem/%s" % fsid
+        fs_param = {
+            "NAME": name.replace("-", "_"),
+        }
+        data = jsonutils.dumps(fs_param)
+        result = self.call(url, data, "PUT")
+
+        msg = _("Change filesystem name error.")
+        self._assert_rest_result(result, msg)
+
+    def _get_partition_id_by_name(self, name):
+        url = self.url + "/cachepartition"
+        result = self.call(url, None, "GET")
+        self._assert_rest_result(result, _('Get partition by name error.'))
+
+        if "data" in result:
+            for item in result['data']:
+                if name == item['NAME']:
+                    return item['ID']
+        return None
+
+    def _add_fs_to_partition(self, fs_id, partition_id):
+        url = self.url + "/filesystem/associate/cachepartition"
+        data = jsonutils.dumps({"ID": partition_id,
+                                "ASSOCIATEOBJTYPE": 40,
+                                "ASSOCIATEOBJID": fs_id,
+                                "TYPE": 268})
+        result = self.call(url, data, "POST")
+
+        self._assert_rest_result(result,
+                                 _('Add filesystem to partition error.'))
+
+    def _get_cache_id_by_name(self, name):
+        url = self.url + "/SMARTCACHEPARTITION"
+        result = self.call(url, None, "GET")
+        self._assert_rest_result(result, _('Get cache by name error.'))
+
+        if "data" in result:
+            for item in result['data']:
+                if name == item['NAME']:
+                    return item['ID']
+        return None
+
+    def _add_fs_to_cache(self, fs_id, cache_id):
+        url = self.url + "/SMARTCACHEPARTITION/CREATE_ASSOCIATE"
+        data = jsonutils.dumps({"ID": cache_id,
+                                "ASSOCIATEOBJTYPE": 40,
+                                "ASSOCIATEOBJID": fs_id,
+                                "TYPE": 273})
+        result = self.call(url, data, "PUT")
+
+        self._assert_rest_result(result, _('Add filesystem to cache error.'))

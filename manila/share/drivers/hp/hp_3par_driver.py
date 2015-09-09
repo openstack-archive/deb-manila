@@ -14,10 +14,12 @@
 
 """HP 3PAR Driver for OpenStack Manila."""
 
+import datetime
 import hashlib
 import inspect
 import logging
 import os
+import re
 
 from oslo_config import cfg
 from oslo_log import log
@@ -29,12 +31,20 @@ from manila.i18n import _LI
 from manila.share import driver
 from manila.share.drivers.hp import hp_3par_mediator
 from manila.share import share_types
+from manila import utils
 
 HP3PAR_OPTS = [
     cfg.StrOpt('hp3par_api_url',
                default='',
                help="3PAR WSAPI Server Url like "
                     "https://<3par ip>:8080/api/v1"),
+    cfg.StrOpt('hp3par_username',
+               default='',
+               help="3PAR username with the 'edit' role"),
+    cfg.StrOpt('hp3par_password',
+               default='',
+               help="3PAR password for the user specified in hp3par_username",
+               secret=True),
     cfg.StrOpt('hp3par_san_ip',
                default='',
                help="IP address of SAN controller"),
@@ -71,13 +81,19 @@ LOG = log.getLogger(__name__)
 class HP3ParShareDriver(driver.ShareDriver):
     """HP 3PAR driver for Manila.
 
-     Supports NFS and CIFS protocols on arrays with File Persona.
-     """
+    Supports NFS and CIFS protocols on arrays with File Persona.
 
-    VERSION = "1.0.00"
+    Version history:
+        1.0.00 - Begin Liberty development (post-Kilo)
+        1.0.01 - Report thin/dedup/hp_flash_cache capabilities
+        1.0.02 - Add share server/share network support
+
+    """
+
+    VERSION = "1.0.02"
 
     def __init__(self, *args, **kwargs):
-        super(HP3ParShareDriver, self).__init__(False, *args, **kwargs)
+        super(HP3ParShareDriver, self).__init__((True, False), *args, **kwargs)
 
         self.configuration = kwargs.get('configuration', None)
         self.configuration.append_config_values(HP3PAR_OPTS)
@@ -94,13 +110,17 @@ class HP3ParShareDriver(driver.ShareDriver):
                  {'driver_name': self.__class__.__name__,
                   'version': self.VERSION})
 
-        self.share_ip_address = self.configuration.hp3par_share_ip_address
-        if not self.share_ip_address:
-            raise exception.HP3ParInvalid(
-                _("Unsupported configuration.  "
-                  "hp3par_share_ip_address is not set."))
+        if not self.driver_handles_share_servers:
+            self.share_ip_address = self.configuration.hp3par_share_ip_address
+            if not self.share_ip_address:
+                raise exception.HP3ParInvalid(
+                    _("Unsupported configuration. "
+                      "hp3par_share_ip_address must be set when "
+                      "driver_handles_share_servers is False."))
 
         mediator = hp_3par_mediator.HP3ParMediator(
+            hp3par_username=self.configuration.hp3par_username,
+            hp3par_password=self.configuration.hp3par_password,
             hp3par_api_url=self.configuration.hp3par_api_url,
             hp3par_debug=self.configuration.hp3par_debug,
             hp3par_san_ip=self.configuration.hp3par_san_ip,
@@ -152,8 +172,60 @@ class HP3ParShareDriver(driver.ShareDriver):
 
         return sha1.hexdigest()
 
+    def get_network_allocations_number(self):
+        return 1
+
+    @staticmethod
+    def _validate_network_type(network_type):
+        if network_type not in ('flat', 'vlan', None):
+            reason = _('Invalid network type. %s is not supported by the '
+                       '3PAR driver.')
+            raise exception.NetworkBadConfigurationException(
+                reason=reason % network_type)
+
+    def _setup_server(self, network_info, metadata=None):
+        LOG.debug("begin _setup_server with %s", network_info)
+
+        self._validate_network_type(network_info['network_type'])
+
+        ip = network_info['network_allocations'][0]['ip_address']
+        subnet = utils.cidr_to_netmask(network_info['cidr'])
+        vlantag = network_info['segmentation_id']
+
+        self._hp3par.create_fsip(ip, subnet, vlantag, self.fpg, self.vfs)
+
+        return {
+            'share_server_name': network_info['server_id'],
+            'share_server_id': network_info['server_id'],
+            'ip': ip,
+            'subnet': subnet,
+            'vlantag': vlantag if vlantag else 0,
+            'fpg': self.fpg,
+            'vfs': self.vfs,
+        }
+
+    def _teardown_server(self, server_details, security_services=None):
+        LOG.debug("begin _teardown_server with %s", server_details)
+
+        self._hp3par.remove_fsip(server_details.get('ip'),
+                                 server_details.get('fpg'),
+                                 server_details.get('vfs'))
+
+    def _get_share_ip(self, share_server):
+        return share_server['backend_details'].get('ip') if share_server else (
+            self.share_ip_address)
+
     @staticmethod
     def _build_export_location(protocol, ip, path):
+
+        if not ip:
+            message = _('Failed to build export location due to missing IP.')
+            raise exception.InvalidInput(message)
+
+        if not path:
+            message = _('Failed to build export location due to missing path.')
+            raise exception.InvalidInput(message)
+
         if protocol == 'NFS':
             location = ':'.join((ip, path))
         elif protocol == 'CIFS':
@@ -162,12 +234,29 @@ class HP3ParShareDriver(driver.ShareDriver):
             message = _('Invalid protocol. Expected NFS or CIFS. '
                         'Got %s.') % protocol
             raise exception.InvalidInput(message)
+
         return location
+
+    @staticmethod
+    def build_share_comment(share):
+        """Create an informational only comment to help admins and testers."""
+
+        info = {
+            'name': share['display_name'],
+            'host': share['host'],
+            'now': datetime.datetime.now().strftime('%H%M%S'),
+        }
+
+        acceptable = re.compile('[^a-zA-Z0-9_=:@# \-]+', re.UNICODE)
+        comment = ("OpenStack Manila - host=%(host)s  orig_name=%(name)s "
+                   "created=%(now)s" % info)
+
+        return acceptable.sub('_', comment)[:254]  # clean and truncate
 
     def create_share(self, context, share, share_server=None):
         """Is called to create share."""
 
-        ip = self.share_ip_address
+        ip = self._get_share_ip(share_server)
 
         protocol = share['share_proto']
         extra_specs = share_types.get_extra_specs_from_share(share)
@@ -178,7 +267,8 @@ class HP3ParShareDriver(driver.ShareDriver):
             protocol,
             extra_specs,
             self.fpg, self.vfs,
-            size=share['size']
+            size=share['size'],
+            comment=self.build_share_comment(share)
         )
 
         return self._build_export_location(protocol, ip, path)
@@ -187,7 +277,7 @@ class HP3ParShareDriver(driver.ShareDriver):
                                    share_server=None):
         """Is called to create share from snapshot."""
 
-        ip = self.share_ip_address
+        ip = self._get_share_ip(share_server)
 
         protocol = share['share_proto']
         extra_specs = share_types.get_extra_specs_from_share(share)
@@ -201,7 +291,8 @@ class HP3ParShareDriver(driver.ShareDriver):
             snapshot['share']['share_proto'],
             snapshot['id'],
             self.fpg,
-            self.vfs
+            self.vfs,
+            comment=self.build_share_comment(share)
         )
 
         return self._build_export_location(protocol, ip, path)
@@ -261,20 +352,11 @@ class HP3ParShareDriver(driver.ShareDriver):
     def _update_share_stats(self):
         """Retrieve stats info from share group."""
 
-        if not self._hp3par:
-            LOG.info(
-                _LI("Skipping share statistics update. Setup has not "
-                    "completed."))
-            total_capacity_gb = 0
-            free_capacity_gb = 0
-        else:
-            capacity_stats = self._hp3par.get_capacity(self.fpg)
-            LOG.debug("Share capacity = %s.", capacity_stats)
-            total_capacity_gb = capacity_stats['total_capacity_gb']
-            free_capacity_gb = capacity_stats['free_capacity_gb']
-
         backend_name = self.configuration.safe_get(
             'share_backend_name') or "HP_3PAR"
+
+        max_over_subscription_ratio = self.configuration.safe_get(
+            'max_over_subscription_ratio')
 
         reserved_share_percentage = self.configuration.safe_get(
             'reserved_share_percentage')
@@ -287,10 +369,22 @@ class HP3ParShareDriver(driver.ShareDriver):
             'vendor_name': 'HP',
             'driver_version': self.VERSION,
             'storage_protocol': 'NFS_CIFS',
-            'total_capacity_gb': total_capacity_gb,
-            'free_capacity_gb': free_capacity_gb,
+            'total_capacity_gb': 0,
+            'free_capacity_gb': 0,
+            'provisioned_capacity_gb': 0,
             'reserved_percentage': reserved_share_percentage,
+            'max_over_subscription_ratio': max_over_subscription_ratio,
             'QoS_support': False,
+            'thin_provisioning': True,  # 3PAR default is thin
         }
+
+        if not self._hp3par:
+            LOG.info(
+                _LI("Skipping capacity and capabilities update. Setup has not "
+                    "completed."))
+        else:
+            fpg_status = self._hp3par.get_fpg_status(self.fpg)
+            LOG.debug("FPG status = %s.", fpg_status)
+            stats.update(fpg_status)
 
         super(HP3ParShareDriver, self)._update_share_stats(stats)

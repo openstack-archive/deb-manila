@@ -15,8 +15,12 @@
 """
 Tests For Filter Scheduler.
 """
-import mock
 
+import ddt
+import mock
+from oslo_utils import strutils
+
+from manila.common import constants
 from manila import context
 from manila import exception
 from manila.scheduler import filter_scheduler
@@ -24,7 +28,10 @@ from manila.scheduler import host_manager
 from manila.tests.scheduler import fakes
 from manila.tests.scheduler import test_scheduler
 
+SNAPSHOT_SUPPORT = constants.ExtraSpecs.SNAPSHOT_SUPPORT
 
+
+@ddt.ddt
 class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
     """Test case for Filter Scheduler."""
 
@@ -36,6 +43,7 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         fake_context = context.RequestContext('user', 'project')
         request_spec = {
             'share_properties': {'project_id': 1, 'size': 1},
+            'share_instance_properties': {},
             'share_type': {'name': 'NFS'},
             'share_id': ['fake-id1'],
         }
@@ -60,6 +68,7 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         fake_context = context.RequestContext('user', 'project')
         request_spec = {
             'share_properties': {'project_id': 1, 'size': 1},
+            'share_instance_properties': {},
             'share_type': {'name': 'NFS'},
             'share_id': ['fake-id1'],
         }
@@ -67,22 +76,71 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                           fake_context, request_spec, {})
         self.assertTrue(self.was_admin)
 
+    @ddt.data(
+        {'name': 'foo'},
+        {'name': 'foo', 'extra_specs': {}},
+        *[{'name': 'foo', 'extra_specs': {SNAPSHOT_SUPPORT: v}}
+          for v in ('True', '<is> True', 'true', '1')]
+    )
     @mock.patch('manila.db.service_get_all_by_topic')
-    def test_schedule_happy_day_share(self, _mock_service_get_all_by_topic):
-        # Make sure there's nothing glaringly wrong with _schedule()
-        # by doing a happy day pass through.
+    def test__schedule_share_with_snapshot_support(
+            self, share_type, _mock_service_get_all_by_topic):
         sched = fakes.FakeFilterScheduler()
         sched.host_manager = fakes.FakeHostManager()
         fake_context = context.RequestContext('user', 'project',
                                               is_admin=True)
         fakes.mock_host_manager_db_calls(_mock_service_get_all_by_topic)
         request_spec = {
-            'share_type': {'name': 'NFS'},
+            'share_type': share_type,
+            'share_properties': {'project_id': 1, 'size': 1},
+            'share_instance_properties': {},
+        }
+
+        weighed_host = sched._schedule_share(fake_context, request_spec, {})
+
+        self.assertIsNotNone(weighed_host)
+        self.assertIsNotNone(weighed_host.obj)
+        self.assertTrue(hasattr(weighed_host.obj, SNAPSHOT_SUPPORT))
+        expected_snapshot_support = strutils.bool_from_string(
+            share_type.get('extra_specs', {}).get(
+                SNAPSHOT_SUPPORT, 'True').split()[-1])
+        self.assertEqual(
+            expected_snapshot_support,
+            getattr(weighed_host.obj, SNAPSHOT_SUPPORT))
+        self.assertTrue(_mock_service_get_all_by_topic.called)
+
+    @ddt.data(
+        *[{'name': 'foo', 'extra_specs': {SNAPSHOT_SUPPORT: v}}
+          for v in ('False', '<is> False', 'false', '0')]
+    )
+    @mock.patch('manila.db.service_get_all_by_topic')
+    def test__schedule_share_without_snapshot_support(
+            self, share_type, _mock_service_get_all_by_topic):
+        sched = fakes.FakeFilterScheduler()
+        sched.host_manager = fakes.FakeHostManager()
+        fake_context = context.RequestContext('user', 'project',
+                                              is_admin=True)
+        fakes.mock_host_manager_db_calls(_mock_service_get_all_by_topic)
+        request_spec = {
+            'share_type': share_type,
+            'share_properties': {'project_id': 1, 'size': 1},
+            'share_instance_properties': {'project_id': 1, 'size': 1},
+        }
+
+        weighed_host = sched._schedule_share(fake_context, request_spec, {})
+
+        self.assertIsNone(weighed_host)
+        self.assertTrue(_mock_service_get_all_by_topic.called)
+
+    def test_schedule_share_type_is_none(self):
+        sched = fakes.FakeFilterScheduler()
+        request_spec = {
+            'share_type': None,
             'share_properties': {'project_id': 1, 'size': 1},
         }
-        weighed_host = sched._schedule_share(fake_context, request_spec, {})
-        self.assertIsNotNone(weighed_host.obj)
-        self.assertTrue(_mock_service_get_all_by_topic.called)
+        self.assertRaises(exception.InvalidParameterValue,
+                          sched._schedule_share,
+                          self.context, request_spec)
 
     def test_max_attempts(self):
         self.flags(scheduler_max_attempts=4)
@@ -101,6 +159,7 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         request_spec = {
             'share_type': {'name': 'iSCSI'},
             'share_properties': {'project_id': 1, 'size': 1},
+            'share_instance_properties': {},
         }
         filter_properties = {}
         sched._schedule_share(self.context, request_spec,
@@ -115,6 +174,7 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         request_spec = {
             'share_type': {'name': 'iSCSI'},
             'share_properties': {'project_id': 1, 'size': 1},
+            'share_instance_properties': {},
         }
         filter_properties = {}
         sched._schedule_share(self.context, request_spec,
@@ -129,6 +189,7 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         request_spec = {
             'share_type': {'name': 'iSCSI'},
             'share_properties': {'project_id': 1, 'size': 1},
+            'share_instance_properties': {},
         }
         retry = dict(num_attempts=1)
         filter_properties = dict(retry=retry)

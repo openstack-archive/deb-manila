@@ -25,6 +25,7 @@ from manila import test
 from manila.tests.share.drivers.hp import test_hp_3par_constants as constants
 
 from oslo_utils import units
+import six
 
 CLIENT_VERSION_MIN_OK = hp3parmediator.MIN_CLIENT_VERSION
 TEST_WSAPI_VERSION_STR = '30201292'
@@ -53,6 +54,8 @@ class HP3ParMediatorTestCase(test.TestCase):
 
         # Set the mediator to use in tests.
         self.mediator = hp3parmediator.HP3ParMediator(
+            hp3par_username=constants.USERNAME,
+            hp3par_password=constants.PASSWORD,
             hp3par_api_url=constants.API_URL,
             hp3par_debug=constants.EXPECTED_HP_DEBUG,
             hp3par_san_ip=constants.EXPECTED_IP_1234,
@@ -155,6 +158,34 @@ class HP3ParMediatorTestCase(test.TestCase):
         ]
         self.mock_client.assert_has_calls(expected_calls)
 
+    def test_mediator_client_login_error(self):
+        """Test exception during login."""
+        self.init_mediator()
+
+        self.mock_client.login.side_effect = constants.FAKE_EXCEPTION
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator._wsapi_login)
+
+        expected_calls = [mock.call.login(constants.USERNAME,
+                                          constants.PASSWORD)]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_mediator_client_logout_error(self):
+        """Test exception during logout."""
+        self.init_mediator()
+
+        mock_log = self.mock_object(hp3parmediator, 'LOG')
+        fake_exception = constants.FAKE_EXCEPTION
+        self.mock_client.http.unauthenticate.side_effect = fake_exception
+
+        self.mediator._wsapi_logout()
+
+        # Warning is logged (no exception thrown).
+        self.assertTrue(mock_log.warning.called)
+        expected_calls = [mock.call.http.unauthenticate()]
+        self.mock_client.assert_has_calls(expected_calls)
+
     def test_mediator_client_version_unsupported(self):
         """Try a client with version less than minimum."""
 
@@ -210,7 +241,7 @@ class HP3ParMediatorTestCase(test.TestCase):
                                             expected_share_id):
         expected_sharedir = expected_share_id
 
-        createfshare_kwargs = dict(comment='OpenStack Manila fshare',
+        createfshare_kwargs = dict(comment=mock.ANY,
                                    fpg=expected_fpg,
                                    sharedir=expected_sharedir,
                                    fstore=expected_project_id)
@@ -220,7 +251,7 @@ class HP3ParMediatorTestCase(test.TestCase):
             createfshare_kwargs['clientip'] = '127.0.0.1'
 
             # Options from extra-specs.
-            opt_string = extra_specs.get('hp_3par:nfs_options', [])
+            opt_string = extra_specs.get('hpe3par:nfs_options', [])
             opt_list = opt_string.split(',')
             # Options that the mediator adds.
             nfs_options = ['rw', 'no_root_squash', 'insecure']
@@ -232,7 +263,7 @@ class HP3ParMediatorTestCase(test.TestCase):
 
             expected_calls = [
                 mock.call.createfstore(expected_vfsname, expected_project_id,
-                                       comment='OpenStack Manila fstore',
+                                       comment=mock.ANY,
                                        fpg=expected_fpg),
                 mock.call.getfsquota(fpg=expected_fpg,
                                      vfs=expected_vfsname,
@@ -260,13 +291,14 @@ class HP3ParMediatorTestCase(test.TestCase):
                             hp3parmediator.CACHE)
 
             for smb_opt in smb_opts:
-                opt_value = extra_specs.get('hp_3par:smb_%s' % smb_opt)
+                opt_value = extra_specs.get('hpe3par:smb_%s' % smb_opt)
                 if opt_value:
-                    createfshare_kwargs[smb_opt] = opt_value
+                    opt_key = hp3parmediator.SMB_EXTRA_SPECS_MAP[smb_opt]
+                    createfshare_kwargs[opt_key] = opt_value
 
             expected_calls = [
                 mock.call.createfstore(expected_vfsname, expected_project_id,
-                                       comment='OpenStack Manila fstore',
+                                       comment=mock.ANY,
                                        fpg=expected_fpg),
                 mock.call.getfsquota(fpg=expected_fpg,
                                      vfs=expected_vfsname,
@@ -288,7 +320,7 @@ class HP3ParMediatorTestCase(test.TestCase):
     def _build_smb_extra_specs(**kwargs):
         extra_specs = {'driver_handles_share_servers': False}
         for k, v in kwargs.items():
-            extra_specs['hp_3par:smb_%s' % k] = v
+            extra_specs['hpe3par:smb_%s' % k] = v
         return extra_specs
 
     @ddt.data(((3, 2, 1), None, None, None),
@@ -352,7 +384,7 @@ class HP3ParMediatorTestCase(test.TestCase):
     def test_mediator_create_nfs_share_bad_options(self, nfs_options):
         self.init_mediator()
 
-        extra_specs = {'hp_3par:nfs_options': nfs_options}
+        extra_specs = {'hpe3par:nfs_options': nfs_options}
 
         self.assertRaises(exception.InvalidInput,
                           self.mediator.create_share,
@@ -379,7 +411,7 @@ class HP3ParMediatorTestCase(test.TestCase):
 
         self.mock_client.getfsquota.return_value = constants.GET_FSQUOTA
 
-        extra_specs = {'hp_3par:nfs_options': nfs_options}
+        extra_specs = {'hpe3par:nfs_options': nfs_options}
 
         location = self.mediator.create_share(constants.EXPECTED_PROJECT_ID,
                                               constants.EXPECTED_SHARE_ID,
@@ -855,7 +887,8 @@ class HP3ParMediatorTestCase(test.TestCase):
         self.assertTrue(mock_log.debug.called)
         self.assertTrue(mock_log.exception.called)
 
-    def test_mediator_get_capacity(self):
+    @ddt.data(six.text_type('volname.1'), ['volname.2', 'volname.3'])
+    def test_mediator_get_fpg_status(self, volume_name_or_list):
         """Mediator converts client stats to capacity result."""
         expected_capacity = constants.EXPECTED_SIZE_2
         expected_free = constants.EXPECTED_SIZE_1
@@ -866,22 +899,118 @@ class HP3ParMediatorTestCase(test.TestCase):
             'members': [
                 {
                     'capacityKiB': str(expected_capacity * units.Mi),
-                    'availCapacityKiB': str(expected_free * units.Mi)
+                    'availCapacityKiB': str(expected_free * units.Mi),
+                    'vvs': volume_name_or_list,
                 }
             ],
             'message': None,
         }
 
-        expected_result = {
-            'free_capacity_gb': expected_free,
-            'total_capacity_gb': expected_capacity,
+        self.mock_client.getfsquota.return_value = {
+            'total': 3,
+            'members': [
+                {'hardBlock': 1 * units.Ki},
+                {'hardBlock': 2 * units.Ki},
+                {'hardBlock': 3 * units.Ki},
+            ],
+            'message': None,
         }
 
-        result = self.mediator.get_capacity(constants.EXPECTED_FPG)
+        self.mock_client.getVolume.return_value = {
+            'provisioningType': hp3parmediator.DEDUPE}
+
+        expected_result = {
+            'free_capacity_gb': expected_free,
+            'hp3par_flash_cache': False,
+            'dedupe': True,
+            'thin_provisioning': True,
+            'total_capacity_gb': expected_capacity,
+            'provisioned_capacity_gb': 6,
+        }
+
+        result = self.mediator.get_fpg_status(constants.EXPECTED_FPG)
         self.assertEqual(expected_result, result)
         expected_calls = [
             mock.call.getfpg(constants.EXPECTED_FPG)
         ]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_mediator_get_fpg_status_exception(self):
+        """Exception during get_fpg_status call to getfpg."""
+        self.init_mediator()
+
+        self.mock_client.getfpg.side_effect = constants.FAKE_EXCEPTION
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.get_fpg_status,
+                          constants.EXPECTED_FPG)
+
+        expected_calls = [mock.call.getfpg(constants.EXPECTED_FPG)]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_mediator_get_fpg_status_error(self):
+        """Unexpected result from getfpg during get_fpg_status."""
+        self.init_mediator()
+
+        self.mock_client.getfpg.return_value = {'total': 0}
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.get_fpg_status,
+                          constants.EXPECTED_FPG)
+
+        expected_calls = [mock.call.getfpg(constants.EXPECTED_FPG)]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_mediator_get_fpg_status_bad_prov_type(self):
+        """Test get_fpg_status handling of unexpected provisioning type."""
+        self.init_mediator()
+
+        self.mock_client.getfpg.return_value = {
+            'total': 1,
+            'members': [
+                {
+                    'capacityKiB': '1',
+                    'availCapacityKiB': '1',
+                    'vvs': 'foo',
+                }
+            ],
+            'message': None,
+        }
+        self.mock_client.getVolume.return_value = {
+            'provisioningType': 'BOGUS'}
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.get_fpg_status,
+                          constants.EXPECTED_FPG)
+
+        expected_calls = [mock.call.getfpg(constants.EXPECTED_FPG)]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_mediator_get_provisioned_error(self):
+        """Test error during get provisioned GB."""
+        self.init_mediator()
+
+        error_return = {'message': 'Some error happened.'}
+        self.mock_client.getfsquota.return_value = error_return
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.get_provisioned_gb,
+                          constants.EXPECTED_FPG)
+
+        expected_calls = [mock.call.getfsquota(fpg=constants.EXPECTED_FPG)]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_mediator_get_provisioned_exception(self):
+        """Test exception during get provisioned GB."""
+        self.init_mediator()
+
+        self.mock_client.getfsquota.side_effect = constants.FAKE_EXCEPTION
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.get_provisioned_gb,
+                          constants.EXPECTED_FPG)
+
+        expected_calls = [mock.call.getfsquota(fpg=constants.EXPECTED_FPG)]
         self.mock_client.assert_has_calls(expected_calls)
 
     def test_mediator_allow_user_access_cifs(self):
@@ -1302,6 +1431,207 @@ class HP3ParMediatorTestCase(test.TestCase):
             fstore=constants.EXPECTED_PROJECT_ID)
 
         self.assertEqual(expected_result, result)
+
+    def test_fsip_exists(self):
+        self.init_mediator()
+
+        # Make the result member a superset of the fsip items.
+        fsip_plus = constants.EXPECTED_FSIP.copy()
+        fsip_plus.update({'k': 'v', 'k2': 'v2'})
+
+        self.mock_client.getfsip.return_value = {
+            'total': 3,
+            'members': [{'bogus1': 1}, fsip_plus, {'bogus2': '2'}]
+        }
+
+        self.assertTrue(self.mediator.fsip_exists(constants.EXPECTED_FSIP))
+
+        self.mock_client.getfsip.assert_called_once_with(
+            constants.EXPECTED_VFS,
+            fpg=constants.EXPECTED_FPG)
+
+    def test_fsip_does_not_exist(self):
+        self.init_mediator()
+
+        self.mock_client.getfsip.return_value = {
+            'total': 3,
+            'members': [{'bogus1': 1}, constants.OTHER_FSIP, {'bogus2': '2'}]
+        }
+
+        self.assertFalse(self.mediator.fsip_exists(constants.EXPECTED_FSIP))
+
+        self.mock_client.getfsip.assert_called_once_with(
+            constants.EXPECTED_VFS,
+            fpg=constants.EXPECTED_FPG)
+
+    def test_fsip_exists_exception(self):
+        self.init_mediator()
+
+        class FakeException(Exception):
+            pass
+
+        self.mock_client.getfsip.side_effect = FakeException()
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.fsip_exists,
+                          constants.EXPECTED_FSIP)
+
+        self.mock_client.getfsip.assert_called_once_with(
+            constants.EXPECTED_VFS,
+            fpg=constants.EXPECTED_FPG)
+
+    def test_create_fsip_success(self):
+        self.init_mediator()
+
+        # Make the result member a superset of the fsip items.
+        fsip_plus = constants.EXPECTED_FSIP.copy()
+        fsip_plus.update({'k': 'v', 'k2': 'v2'})
+
+        self.mock_client.getfsip.return_value = {
+            'total': 3,
+            'members': [{'bogus1': 1}, fsip_plus, {'bogus2': '2'}]
+        }
+
+        self.mediator.create_fsip(constants.EXPECTED_IP_1234,
+                                  constants.EXPECTED_SUBNET,
+                                  constants.EXPECTED_VLAN_TAG,
+                                  constants.EXPECTED_FPG,
+                                  constants.EXPECTED_VFS)
+
+        self.mock_client.getfsip.assert_called_once_with(
+            constants.EXPECTED_VFS,
+            fpg=constants.EXPECTED_FPG)
+
+        expected_calls = [
+            mock.call.createfsip(constants.EXPECTED_IP_1234,
+                                 constants.EXPECTED_SUBNET,
+                                 constants.EXPECTED_VFS,
+                                 fpg=constants.EXPECTED_FPG,
+                                 vlantag=constants.EXPECTED_VLAN_TAG),
+            mock.call.getfsip(constants.EXPECTED_VFS,
+                              fpg=constants.EXPECTED_FPG),
+        ]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_create_fsip_exception(self):
+        self.init_mediator()
+
+        class FakeException(Exception):
+            pass
+
+        self.mock_client.createfsip.side_effect = FakeException()
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.create_fsip,
+                          constants.EXPECTED_IP_1234,
+                          constants.EXPECTED_SUBNET,
+                          constants.EXPECTED_VLAN_TAG,
+                          constants.EXPECTED_FPG,
+                          constants.EXPECTED_VFS)
+
+        self.mock_client.createfsip.assert_called_once_with(
+            constants.EXPECTED_IP_1234,
+            constants.EXPECTED_SUBNET,
+            constants.EXPECTED_VFS,
+            fpg=constants.EXPECTED_FPG,
+            vlantag=constants.EXPECTED_VLAN_TAG)
+
+    def test_create_fsip_get_none(self):
+        self.init_mediator()
+
+        self.mock_client.getfsip.return_value = {'members': []}
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.create_fsip,
+                          constants.EXPECTED_IP_1234,
+                          constants.EXPECTED_SUBNET,
+                          constants.EXPECTED_VLAN_TAG,
+                          constants.EXPECTED_FPG,
+                          constants.EXPECTED_VFS)
+
+        expected_calls = [
+            mock.call.createfsip(constants.EXPECTED_IP_1234,
+                                 constants.EXPECTED_SUBNET,
+                                 constants.EXPECTED_VFS,
+                                 fpg=constants.EXPECTED_FPG,
+                                 vlantag=constants.EXPECTED_VLAN_TAG),
+            mock.call.getfsip(constants.EXPECTED_VFS,
+                              fpg=constants.EXPECTED_FPG),
+        ]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_remove_fsip_success(self):
+        self.init_mediator()
+
+        self.mock_client.getfsip.return_value = {
+            'members': [constants.OTHER_FSIP]
+        }
+
+        self.mediator.remove_fsip(constants.EXPECTED_IP_1234,
+                                  constants.EXPECTED_FPG,
+                                  constants.EXPECTED_VFS)
+
+        expected_calls = [
+            mock.call.removefsip(constants.EXPECTED_VFS,
+                                 constants.EXPECTED_IP_1234,
+                                 fpg=constants.EXPECTED_FPG),
+            mock.call.getfsip(constants.EXPECTED_VFS,
+                              fpg=constants.EXPECTED_FPG),
+        ]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    @ddt.data(('ip', None),
+              ('ip', ''),
+              (None, 'vfs'),
+              ('', 'vfs'),
+              (None, None),
+              ('', ''))
+    @ddt.unpack
+    def test_remove_fsip_without_ip_or_vfs(self, ip, vfs):
+        self.init_mediator()
+        self.mediator.remove_fsip(ip, constants.EXPECTED_FPG, vfs)
+        self.assertFalse(self.mock_client.removefsip.called)
+
+    def test_remove_fsip_not_gone(self):
+        self.init_mediator()
+
+        self.mock_client.getfsip.return_value = {
+            'members': [constants.EXPECTED_FSIP]
+        }
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.remove_fsip,
+                          constants.EXPECTED_IP_1234,
+                          constants.EXPECTED_FPG,
+                          constants.EXPECTED_VFS)
+
+        expected_calls = [
+            mock.call.removefsip(constants.EXPECTED_VFS,
+                                 constants.EXPECTED_IP_1234,
+                                 fpg=constants.EXPECTED_FPG),
+            mock.call.getfsip(constants.EXPECTED_VFS,
+                              fpg=constants.EXPECTED_FPG),
+        ]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_remove_fsip_exception(self):
+        self.init_mediator()
+
+        class FakeException(Exception):
+            pass
+
+        self.mock_client.removefsip.side_effect = FakeException()
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.remove_fsip,
+                          constants.EXPECTED_IP_1234,
+                          constants.EXPECTED_FPG,
+                          constants.EXPECTED_VFS)
+
+        self.mock_client.removefsip.assert_called_once_with(
+            constants.EXPECTED_VFS,
+            constants.EXPECTED_IP_1234,
+            fpg=constants.EXPECTED_FPG)
 
 
 class OptionMatcher(object):

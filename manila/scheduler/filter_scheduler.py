@@ -102,10 +102,12 @@ class FilterScheduler(driver.Scheduler):
         # context is not serializable
         filter_properties.pop('context', None)
 
-        self.share_rpcapi.create_share(context, updated_share, host,
-                                       request_spec=request_spec,
-                                       filter_properties=filter_properties,
-                                       snapshot_id=snapshot_id)
+        self.share_rpcapi.create_share_instance(
+            context, updated_share.instance, host,
+            request_spec=request_spec,
+            filter_properties=filter_properties,
+            snapshot_id=snapshot_id
+        )
 
     def _schedule_share(self, context, request_spec, filter_properties=None):
         """Returns a list of hosts that meet the required specs.
@@ -120,16 +122,23 @@ class FilterScheduler(driver.Scheduler):
         # 'volume_XX' to 'resource_XX' will make both filters happy.
         resource_properties = share_properties.copy()
         share_type = request_spec.get("share_type", {})
+        if not share_type:
+            msg = _("You must create a share type in advance,"
+                    " and specify in request body or"
+                    " set default_share_type in manila.conf.")
+            LOG.error(msg)
+            raise exception.InvalidParameterValue(err=msg)
 
         extra_specs = share_type.get('extra_specs', {})
 
         if extra_specs:
-            for extra_spec_name in share_types.get_required_extra_specs():
+            for extra_spec_name in share_types.get_boolean_extra_specs():
                 extra_spec = extra_specs.get(extra_spec_name)
 
                 if extra_spec is not None:
-                    share_type['extra_specs'][extra_spec_name] = (
-                        "<is> %s" % extra_spec)
+                    if not extra_spec.startswith("<is>"):
+                        extra_spec = "<is> %s" % extra_spec
+                    share_type['extra_specs'][extra_spec_name] = extra_spec
 
         resource_type = request_spec.get("share_type") or {}
         request_spec.update({'resource_properties': resource_properties})
@@ -238,7 +247,10 @@ class FilterScheduler(driver.Scheduler):
         Can be overridden in a subclass to add more data.
         """
         shr = request_spec['share_properties']
+        inst = request_spec['share_instance_properties']
         filter_properties['size'] = shr['size']
-        filter_properties['availability_zone'] = shr.get('availability_zone')
+        filter_properties['availability_zone_id'] = (
+            inst.get('availability_zone_id')
+        )
         filter_properties['user_id'] = shr.get('user_id')
         filter_properties['metadata'] = shr.get('metadata')

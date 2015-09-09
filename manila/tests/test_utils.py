@@ -14,7 +14,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import __builtin__
 import datetime
 import errno
 import os
@@ -29,6 +28,7 @@ import mock
 from oslo_config import cfg
 from oslo_utils import timeutils
 import paramiko
+from six.moves import builtins
 
 import manila
 from manila import exception
@@ -193,6 +193,7 @@ class GetFromPathTestCase(test.TestCase):
         self.assertEqual(['b_1'], f(input, "a/b"))
 
 
+@ddt.ddt
 class GenericUtilsTestCase(test.TestCase):
     def test_read_cached_file(self):
         cache_data = {"data": 1123, "mtime": 1}
@@ -210,7 +211,7 @@ class GenericUtilsTestCase(test.TestCase):
             fake_context_manager.__enter__ = mock.Mock(return_value=fake_file)
             fake_context_manager.__exit__ = mock.Mock()
             with mock.patch.object(
-                    __builtin__, 'open',
+                    builtins, 'open',
                     mock.Mock(return_value=fake_context_manager)):
                 cache_data = {"data": 1123, "mtime": 1}
                 self.reload_called = False
@@ -226,7 +227,7 @@ class GenericUtilsTestCase(test.TestCase):
                 self.assertTrue(self.reload_called)
                 fake_file.read.assert_called_once_with()
                 fake_context_manager.__enter__.assert_any_call()
-                __builtin__.open.assert_called_once_with("/this/is/a/fake")
+                builtins.open.assert_called_once_with("/this/is/a/fake")
                 os.path.getmtime.assert_called_once_with("/this/is/a/fake")
 
     def test_read_file_as_root(self):
@@ -288,8 +289,8 @@ class GenericUtilsTestCase(test.TestCase):
     def test_is_ipv6_configured0(self):
         fake_fd = mock.Mock()
         fake_fd.read.return_value = 'test'
-        with mock.patch(
-                '__builtin__.open', mock.Mock(return_value=fake_fd)) as open:
+        with mock.patch('six.moves.builtins.open',
+                        mock.Mock(return_value=fake_fd)) as open:
             self.assertTrue(utils.is_ipv6_configured())
 
             open.assert_called_once_with('/proc/net/if_inet6')
@@ -299,17 +300,19 @@ class GenericUtilsTestCase(test.TestCase):
         fake_fd = mock.Mock()
         fake_fd.read.return_value = ''
         with mock.patch(
-                '__builtin__.open', mock.Mock(return_value=fake_fd)):
+                'six.moves.builtins.open', mock.Mock(return_value=fake_fd)):
             self.assertFalse(utils.is_ipv6_configured())
 
     def test_is_ipv6_configured2(self):
-        with mock.patch('__builtin__.open', mock.Mock(side_effect=IOError(
-                errno.ENOENT, 'Fake no such file error.'))):
+        with mock.patch('six.moves.builtins.open',
+                        mock.Mock(side_effect=IOError(
+                            errno.ENOENT, 'Fake no such file error.'))):
             self.assertFalse(utils.is_ipv6_configured())
 
     def test_is_ipv6_configured3(self):
-        with mock.patch('__builtin__.open', mock.Mock(side_effect=IOError(
-                errno.EPERM, 'Fake no such file error.'))):
+        with mock.patch('six.moves.builtins.open',
+                        mock.Mock(side_effect=IOError(
+                            errno.EPERM, 'Fake no such file error.'))):
             self.assertRaises(IOError, utils.is_ipv6_configured)
 
     def test_is_eventlet_bug105(self):
@@ -329,6 +332,26 @@ class GenericUtilsTestCase(test.TestCase):
                 'eventlet.support.greendns': fake_dns}):
             self.assertFalse(utils.is_eventlet_bug105())
             fake_dns.getaddrinfo.assert_called_once_with('::1', 80)
+
+    @ddt.data(['ssh', '-D', 'my_name@name_of_remote_computer'],
+              ['echo', '"quoted arg with space"'],
+              ['echo', "'quoted arg with space'"])
+    def test_check_ssh_injection(self, cmd):
+        cmd_list = cmd
+        self.assertIsNone(utils.check_ssh_injection(cmd_list))
+
+    @ddt.data(['ssh', 'my_name@      name_of_remote_computer'],
+              ['||', 'my_name@name_of_remote_computer'],
+              ['cmd', 'virus;ls'],
+              ['cmd', '"arg\"withunescaped"'],
+              ['cmd', 'virus;"quoted argument"'],
+              ['echo', '"quoted argument";rm -rf'],
+              ['echo', "'quoted argument `rm -rf`'"],
+              ['echo', '"quoted";virus;"quoted"'],
+              ['echo', '"quoted";virus;\'quoted\''])
+    def test_check_ssh_injection_on_error0(self, cmd):
+        self.assertRaises(exception.SSHInjectionThreat,
+                          utils.check_ssh_injection, cmd)
 
 
 class MonkeyPatchTestCase(test.TestCase):
@@ -598,6 +621,56 @@ class IsValidIPVersion(test.TestCase):
     def test_provided_invalid_v4_address(self, addr):
         for vers in (4, '4'):
             self.assertFalse(utils.is_valid_ip_address(addr, vers))
+
+
+class Comparable(utils.ComparableMixin):
+    def __init__(self, value):
+        self.value = value
+
+    def _cmpkey(self):
+        return self.value
+
+
+class TestComparableMixin(test.TestCase):
+
+    def setUp(self):
+        super(TestComparableMixin, self).setUp()
+        self.one = Comparable(1)
+        self.two = Comparable(2)
+
+    def test_lt(self):
+        self.assertTrue(self.one < self.two)
+        self.assertFalse(self.two < self.one)
+        self.assertFalse(self.one < self.one)
+
+    def test_le(self):
+        self.assertTrue(self.one <= self.two)
+        self.assertFalse(self.two <= self.one)
+        self.assertTrue(self.one <= self.one)
+
+    def test_eq(self):
+        self.assertFalse(self.one == self.two)
+        self.assertFalse(self.two == self.one)
+        self.assertTrue(self.one == self.one)
+
+    def test_ge(self):
+        self.assertFalse(self.one >= self.two)
+        self.assertTrue(self.two >= self.one)
+        self.assertTrue(self.one >= self.one)
+
+    def test_gt(self):
+        self.assertFalse(self.one > self.two)
+        self.assertTrue(self.two > self.one)
+        self.assertFalse(self.one > self.one)
+
+    def test_ne(self):
+        self.assertTrue(self.one != self.two)
+        self.assertTrue(self.two != self.one)
+        self.assertFalse(self.one != self.one)
+
+    def test_compare(self):
+        self.assertEqual(NotImplemented,
+                         self.one._compare(1, self.one._cmpkey))
 
 
 class TestRetryDecorator(test.TestCase):

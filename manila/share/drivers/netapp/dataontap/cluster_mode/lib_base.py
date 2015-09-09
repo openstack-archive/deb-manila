@@ -20,6 +20,7 @@ single-SVM or multi-SVM functionality needed by the cDOT Manila drivers.
 """
 
 import copy
+import math
 import socket
 import time
 
@@ -66,6 +67,7 @@ class NetAppCmodeFileStorageLibrary(object):
 
         self.driver_name = driver_name
 
+        self.private_storage = kwargs['private_storage']
         self.configuration = kwargs['configuration']
         self.configuration.append_config_values(na_opts.netapp_connection_opts)
         self.configuration.append_config_values(na_opts.netapp_basicauth_opts)
@@ -479,7 +481,26 @@ class NetAppCmodeFileStorageLibrary(object):
 
         string_args = self._get_string_provisioning_options(
             specs, self.STRING_QUALIFIED_EXTRA_SPECS_MAP)
-        return dict(boolean_args.items() + string_args.items())
+        result = boolean_args.copy()
+        result.update(string_args)
+        return result
+
+    @na_utils.trace
+    def _check_aggregate_extra_specs_validity(self, aggregate_name, specs):
+
+        for specs_key in ('netapp_disk_type', 'netapp_raid_type'):
+            aggr_value = self._ssc_stats.get(aggregate_name, {}).get(specs_key)
+            specs_value = specs.get(specs_key)
+
+            if aggr_value and specs_value and aggr_value != specs_value:
+                msg = _('Invalid value "%(value)s" for extra_spec "%(key)s" '
+                        'in aggregate %(aggr)s.')
+                msg_args = {
+                    'value': specs_value,
+                    'key': specs_key,
+                    'aggr': aggregate_name
+                }
+                raise exception.NetAppException(msg % msg_args)
 
     @na_utils.trace
     def _allocate_container_from_snapshot(self, share, snapshot,
@@ -617,7 +638,7 @@ class NetAppCmodeFileStorageLibrary(object):
 
         # Wait for clone dependency to clear.
         retry_interval = 3  # seconds
-        for retry in range(wait_seconds / retry_interval):
+        for retry in range(int(wait_seconds / retry_interval)):
             LOG.debug('Snapshot %(snap)s for share %(share)s is busy, waiting '
                       'for volume clone dependency to clear.',
                       {'snap': snapshot_name, 'share': share_name})
@@ -628,6 +649,121 @@ class NetAppCmodeFileStorageLibrary(object):
                 return
 
         raise exception.ShareSnapshotIsBusy(snapshot_name=snapshot_name)
+
+    @na_utils.trace
+    def manage_existing(self, share, driver_options):
+        vserver, vserver_client = self._get_vserver(share_server=None)
+        share_size = self._manage_container(share, vserver_client)
+        export_locations = self._create_export(share, vserver, vserver_client)
+        return {'size': share_size, 'export_locations': export_locations}
+
+    @na_utils.trace
+    def unmanage(self, share):
+        pass
+
+    @na_utils.trace
+    def _manage_container(self, share, vserver_client):
+        """Bring existing volume under management as a share."""
+
+        protocol_helper = self._get_helper(share)
+        protocol_helper.set_client(vserver_client)
+
+        volume_name = protocol_helper.get_share_name_for_share(share)
+        if not volume_name:
+            msg = _('Volume could not be determined from export location '
+                    '%(export)s.')
+            msg_args = {'export': share['export_location']}
+            raise exception.ManageInvalidShare(reason=msg % msg_args)
+
+        share_name = self._get_valid_share_name(share['id'])
+        aggregate_name = share_utils.extract_host(share['host'], level='pool')
+
+        # Get existing volume info
+        volume = vserver_client.get_volume_to_manage(aggregate_name,
+                                                     volume_name)
+        if not volume:
+            msg = _('Volume %(volume)s not found on aggregate %(aggr)s.')
+            msg_args = {'volume': volume_name, 'aggr': aggregate_name}
+            raise exception.ManageInvalidShare(reason=msg % msg_args)
+
+        # Ensure volume is manageable
+        self._validate_volume_for_manage(volume, vserver_client)
+
+        # Validate extra specs
+        extra_specs = share_types.get_extra_specs_from_share(share)
+        try:
+            self._check_extra_specs_validity(share, extra_specs)
+            self._check_aggregate_extra_specs_validity(aggregate_name,
+                                                       extra_specs)
+        except exception.ManilaException as ex:
+            raise exception.ManageExistingShareTypeMismatch(
+                reason=six.text_type(ex))
+        provisioning_options = self._get_provisioning_options(extra_specs)
+
+        debug_args = {
+            'share': share_name,
+            'aggr': aggregate_name,
+            'options': provisioning_options
+        }
+        LOG.debug('Managing share %(share)s on aggregate %(aggr)s with '
+                  'provisioning options %(options)s', debug_args)
+
+        # Rename & remount volume on new path
+        vserver_client.unmount_volume(volume_name)
+        vserver_client.set_volume_name(volume_name, share_name)
+        vserver_client.mount_volume(share_name)
+
+        # Modify volume to match extra specs
+        vserver_client.manage_volume(aggregate_name, share_name,
+                                     **provisioning_options)
+
+        # Save original volume info to private storage
+        original_data = {
+            'original_name': volume['name'],
+            'original_junction_path': volume['junction-path']
+        }
+        self.private_storage.update(share['id'], original_data)
+
+        # When calculating the size, round up to the next GB.
+        return int(math.ceil(float(volume['size']) / units.Gi))
+
+    @na_utils.trace
+    def _validate_volume_for_manage(self, volume, vserver_client):
+        """Ensure volume is a candidate for becoming a share."""
+
+        # Check volume info, extra specs validity
+        if volume['type'] != 'rw' or volume['style'] != 'flex':
+            msg = _('Volume %(volume)s must be a read-write flexible volume.')
+            msg_args = {'volume': volume['name']}
+            raise exception.ManageInvalidShare(reason=msg % msg_args)
+
+        if vserver_client.volume_has_luns(volume['name']):
+            msg = _('Volume %(volume)s must not contain LUNs.')
+            msg_args = {'volume': volume['name']}
+            raise exception.ManageInvalidShare(reason=msg % msg_args)
+
+        if vserver_client.volume_has_junctioned_volumes(volume['name']):
+            msg = _('Volume %(volume)s must not have junctioned volumes.')
+            msg_args = {'volume': volume['name']}
+            raise exception.ManageInvalidShare(reason=msg % msg_args)
+
+    @na_utils.trace
+    def extend_share(self, share, new_size, share_server=None):
+        """Extends size of existing share."""
+        vserver, vserver_client = self._get_vserver(share_server=share_server)
+        share_name = self._get_valid_share_name(share['id'])
+        LOG.debug('Extending share %(name)s to %(size)s GB.',
+                  {'name': share_name, 'size': new_size})
+        vserver_client.set_volume_size(share_name, new_size)
+
+    @na_utils.trace
+    def shrink_share(self, share, new_size, share_server=None):
+        """Shrinks size of existing share."""
+        vserver, vserver_client = self._get_vserver(share_server=share_server)
+        share_name = self._get_valid_share_name(share['id'])
+        LOG.debug('Shrinking share %(name)s to %(size)s GB.',
+                  {'name': share_name, 'size': new_size})
+        vserver_client.set_volume_size(share_name, new_size)
 
     @na_utils.trace
     def allow_access(self, context, share, access, share_server=None):

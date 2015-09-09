@@ -152,6 +152,7 @@ class ServiceInstanceManager(object):
     3. delete_service_instance: removes service instance and network
        infrastructure.
     """
+    _INSTANCE_CONNECTION_PROTO = "SSH"
 
     def get_config_option(self, key):
         """Returns value of config option.
@@ -216,8 +217,15 @@ class ServiceInstanceManager(object):
         if self.get_config_option("driver_handles_share_servers"):
             self.path_to_public_key = self.get_config_option(
                 "path_to_public_key")
-            self.network_helper = self._get_network_helper()
-            self.network_helper.setup_connectivity_with_service_instances()
+            self._network_helper = None
+
+    @property
+    @utils.synchronized("instantiate_network_helper")
+    def network_helper(self):
+        if not self._network_helper:
+            self._network_helper = self._get_network_helper()
+            self._network_helper.setup_connectivity_with_service_instances()
+        return self._network_helper
 
     def get_common_server(self):
         data = {
@@ -390,6 +398,19 @@ class ServiceInstanceManager(object):
         instance_name = network_info['server_id']
         server = self._create_service_instance(
             context, instance_name, network_info)
+        instance_details = self._get_new_instance_details(server)
+
+        if not self._check_server_availability(instance_details):
+            raise exception.ServiceInstanceException(
+                _('%(conn_proto)s connection has not been '
+                  'established to %(server)s in %(time)ss. Giving up.') % {
+                      'conn_proto': self._INSTANCE_CONNECTION_PROTO,
+                      'server': server['ip'],
+                      'time': self.max_time_to_build_instance})
+
+        return instance_details
+
+    def _get_new_instance_details(self, server):
         instance_details = {
             'instance_id': server['id'],
             'ip': server['ip'],
@@ -408,14 +429,6 @@ class ServiceInstanceManager(object):
         for key in ('password', 'pk_path', 'subnet_id'):
             if not instance_details[key]:
                 instance_details.pop(key)
-
-        if not self._check_server_availability(server):
-            raise exception.ServiceInstanceException(
-                _('SSH connection has not been '
-                  'established to %(server)s in %(time)ss. Giving up.') % {
-                      'server': server['ip'],
-                      'time': self.max_time_to_build_instance})
-
         return instance_details
 
     @utils.synchronized("service_instance_get_key", external=True)
@@ -495,40 +508,22 @@ class ServiceInstanceManager(object):
             fail_safe_data['public_port_id'] = (
                 network_data['public_port']['id'])
         try:
+            create_kwargs = self._get_service_instance_create_kwargs()
             service_instance = self.compute_api.server_create(
                 context,
                 name=instance_name,
                 image=service_image_id,
                 flavor=self.get_config_option("service_instance_flavor_id"),
                 key_name=key_name,
-                nics=network_data['nics'])
+                nics=network_data['nics'],
+                availability_zone=CONF.storage_availability_zone,
+                **create_kwargs)
 
             fail_safe_data['instance_id'] = service_instance['id']
 
-            t = time.time()
-            while time.time() - t < self.max_time_to_build_instance:
-                # NOTE(vponomaryov): emptiness of 'networks' field checked as
-                #                    workaround for nova/neutron bug #1210483.
-                if (service_instance['status'] == 'ACTIVE' and
-                        service_instance.get('networks', {})):
-                    break
-                if service_instance['status'] == 'ERROR':
-                    raise exception.ServiceInstanceException(
-                        _("Failed to build service instance '%s'.") %
-                        service_instance['id'])
-                time.sleep(1)
-                try:
-                    service_instance = self.compute_api.server_get(
-                        context,
-                        service_instance['id'])
-                except exception.InstanceNotFound as e:
-                    LOG.debug(e)
-            else:
-                raise exception.ServiceInstanceException(
-                    _("Instance '%(ins)s' has not been spawned in %(timeout)s "
-                      "seconds. Giving up.") % dict(
-                          ins=service_instance['id'],
-                          timeout=self.max_time_to_build_instance))
+            service_instance = self.wait_for_instance_to_be_active(
+                service_instance['id'],
+                self.max_time_to_build_instance)
 
             security_group = self._get_or_create_security_group(context)
             if security_group:
@@ -569,20 +564,35 @@ class ServiceInstanceManager(object):
 
         return service_instance
 
-    def _check_server_availability(self, server):
+    def _get_service_instance_create_kwargs(self):
+        """Specify extra arguments used when creating the service instance.
+
+        Classes inheriting the service instance manager can use this to easily
+        pass extra arguments such as user data or metadata.
+        """
+        return {}
+
+    def _check_server_availability(self, instance_details):
         t = time.time()
         while time.time() - t < self.max_time_to_build_instance:
-            LOG.debug('Checking service VM availability.')
-            try:
-                socket.socket().connect((server['ip'], 22))
-                LOG.debug('Service VM is available via SSH.')
-                return True
-            except socket.error as e:
-                LOG.debug(e)
-                LOG.debug("Server %s is not available via SSH. Waiting...",
-                          server['ip'])
+            LOG.debug('Checking server availability.')
+            if not self._test_server_connection(instance_details):
                 time.sleep(5)
+            else:
+                return True
         return False
+
+    def _test_server_connection(self, server):
+        try:
+            socket.socket().connect((server['ip'], 22))
+            LOG.debug('Server %s is available via SSH.',
+                      server['ip'])
+            return True
+        except socket.error as e:
+            LOG.debug(e)
+            LOG.debug("Server %s is not available via SSH. Waiting...",
+                      server['ip'])
+            return False
 
     def delete_service_instance(self, context, server_details):
         """Removes share infrastructure.
@@ -592,6 +602,45 @@ class ServiceInstanceManager(object):
         instance_id = server_details.get("instance_id")
         self._delete_server(context, instance_id)
         self.network_helper.teardown_network(server_details)
+
+    def wait_for_instance_to_be_active(self, instance_id, timeout):
+        t = time.time()
+        while time.time() - t < timeout:
+            try:
+                service_instance = self.compute_api.server_get(
+                    self.admin_context,
+                    instance_id)
+            except exception.InstanceNotFound as e:
+                LOG.debug(e)
+                time.sleep(1)
+                continue
+
+            instance_status = service_instance['status']
+            # NOTE(vponomaryov): emptiness of 'networks' field checked as
+            #                    workaround for nova/neutron bug #1210483.
+            if (instance_status == 'ACTIVE' and
+                    service_instance.get('networks', {})):
+                return service_instance
+            elif service_instance['status'] == 'ERROR':
+                break
+
+            LOG.debug("Waiting for instance %(instance_id)s to be active. "
+                      "Current status: %(instance_status)s." %
+                      dict(instance_id=instance_id,
+                           instance_status=instance_status))
+            time.sleep(1)
+        raise exception.ServiceInstanceException(
+            _("Instance %(instance_id)s failed to reach active state "
+              "in %(timeout)s seconds. "
+              "Current status: %(instance_status)s.") %
+            dict(instance_id=instance_id,
+                 timeout=timeout,
+                 instance_status=instance_status))
+
+    def reboot_server(self, server, soft_reboot=False):
+        self.compute_api.server_reboot(self.admin_context,
+                                       server['instance_id'],
+                                       soft_reboot)
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -630,14 +679,14 @@ class NeutronNetworkHelper(BaseNetworkhelper):
             self.get_config_option("interface_driver"))()
 
         if service_instance_manager.driver_config:
-            network_config_group = (
+            self._network_config_group = (
                 service_instance_manager.driver_config.network_config_group or
                 service_instance_manager.driver_config.config_group)
         else:
-            network_config_group = None
+            self._network_config_group = None
 
-        self.neutron_api = neutron.API(config_group_name=network_config_group)
-        self.service_network_id = self.get_service_network_id()
+        self._neutron_api = None
+        self._service_network_id = None
         self.connect_share_server_to_tenant_network = (
             self.get_config_option('connect_share_server_to_tenant_network'))
 
@@ -649,13 +698,28 @@ class NeutronNetworkHelper(BaseNetworkhelper):
     def admin_project_id(self):
         return self.neutron_api.admin_project_id
 
+    @property
+    @utils.synchronized("instantiate_neutron_api_neutron_net_helper")
+    def neutron_api(self):
+        if not self._neutron_api:
+            self._neutron_api = neutron.API(
+                config_group_name=self._network_config_group)
+        return self._neutron_api
+
+    @property
+    @utils.synchronized("service_network_id_neutron_net_helper")
+    def service_network_id(self):
+        if not self._service_network_id:
+            self._service_network_id = self._get_service_network_id()
+        return self._service_network_id
+
     def get_network_name(self, network_info):
         """Returns name of network for service instance."""
         net = self.neutron_api.get_network(network_info['neutron_net_id'])
         return net['name']
 
     @utils.synchronized("service_instance_get_service_network", external=True)
-    def get_service_network_id(self):
+    def _get_service_network_id(self):
         """Finds existing or creates new service network."""
         service_network_name = self.get_config_option("service_network_name")
         networks = []

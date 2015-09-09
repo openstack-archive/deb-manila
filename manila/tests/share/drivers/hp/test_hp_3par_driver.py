@@ -14,6 +14,7 @@
 
 import sys
 
+import ddt
 import mock
 if 'hp3parclient' not in sys.modules:
     sys.modules['hp3parclient'] = mock.Mock()
@@ -25,6 +26,7 @@ from manila import test
 from manila.tests.share.drivers.hp import test_hp_3par_constants as constants
 
 
+@ddt.ddt
 class HP3ParDriverTestCase(test.TestCase):
 
     def setUp(self):
@@ -32,8 +34,10 @@ class HP3ParDriverTestCase(test.TestCase):
 
         # Create a mock configuration with attributes and a safe_get()
         self.conf = mock.Mock()
-        self.conf.driver_handles_share_servers = False
+        self.conf.driver_handles_share_servers = True
         self.conf.hp3par_debug = constants.EXPECTED_HP_DEBUG
+        self.conf.hp3par_username = constants.USERNAME
+        self.conf.hp3par_password = constants.PASSWORD
         self.conf.hp3par_api_url = constants.API_URL
         self.conf.hp3par_san_login = constants.SAN_LOGIN
         self.conf.hp3par_san_password = constants.SAN_PASSWORD
@@ -41,7 +45,7 @@ class HP3ParDriverTestCase(test.TestCase):
         self.conf.hp3par_fpg = constants.EXPECTED_FPG
         self.conf.hp3par_san_ssh_port = constants.PORT
         self.conf.ssh_conn_timeout = constants.TIMEOUT
-        self.conf.hp3par_share_ip_address = constants.EXPECTED_IP_10203040
+        self.conf.hp3par_share_ip_address = None
         self.conf.hp3par_fstore_per_share = False
         self.conf.network_config_group = 'test_network_config_group'
 
@@ -70,9 +74,11 @@ class HP3ParDriverTestCase(test.TestCase):
         self.mock_mediator_constructor.assert_has_calls([
             mock.call(hp3par_san_ssh_port=conf.hp3par_san_ssh_port,
                       hp3par_san_password=conf.hp3par_san_password,
+                      hp3par_username=conf.hp3par_username,
                       hp3par_san_login=conf.hp3par_san_login,
                       hp3par_debug=conf.hp3par_debug,
                       hp3par_api_url=conf.hp3par_api_url,
+                      hp3par_password=conf.hp3par_password,
                       hp3par_san_ip=conf.hp3par_san_ip,
                       hp3par_fstore_per_share=conf.hp3par_fstore_per_share,
                       ssh_conn_timeout=conf.ssh_conn_timeout)])
@@ -82,6 +88,21 @@ class HP3ParDriverTestCase(test.TestCase):
             mock.call.get_vfs_name(conf.hp3par_fpg)])
 
         self.assertEqual(constants.EXPECTED_VFS, self.driver.vfs)
+
+    def test_driver_setup_no_dhss_success(self):
+        """Driver do_setup without any errors with dhss=False."""
+
+        self.conf.driver_handles_share_servers = False
+        self.conf.hp3par_share_ip_address = constants.EXPECTED_IP_10203040
+
+        self.test_driver_setup_success()
+
+    def test_driver_setup_no_ss_no_ip(self):
+        """Configured IP address is required for dhss=False."""
+
+        self.conf.driver_handles_share_servers = False
+        self.assertRaises(exception.HP3ParInvalid,
+                          self.driver.do_setup, None)
 
     def test_driver_with_setup_error(self):
         """Driver do_setup when the mediator setup fails."""
@@ -96,9 +117,11 @@ class HP3ParDriverTestCase(test.TestCase):
         self.mock_mediator_constructor.assert_has_calls([
             mock.call(hp3par_san_ssh_port=conf.hp3par_san_ssh_port,
                       hp3par_san_password=conf.hp3par_san_password,
+                      hp3par_username=conf.hp3par_username,
                       hp3par_san_login=conf.hp3par_san_login,
                       hp3par_debug=conf.hp3par_debug,
                       hp3par_api_url=conf.hp3par_api_url,
+                      hp3par_password=conf.hp3par_password,
                       hp3par_san_ip=conf.hp3par_san_ip,
                       hp3par_fstore_per_share=conf.hp3par_fstore_per_share,
                       ssh_conn_timeout=conf.ssh_conn_timeout)])
@@ -118,9 +141,11 @@ class HP3ParDriverTestCase(test.TestCase):
         self.mock_mediator_constructor.assert_has_calls([
             mock.call(hp3par_san_ssh_port=conf.hp3par_san_ssh_port,
                       hp3par_san_password=conf.hp3par_san_password,
+                      hp3par_username=conf.hp3par_username,
                       hp3par_san_login=conf.hp3par_san_login,
                       hp3par_debug=conf.hp3par_debug,
                       hp3par_api_url=conf.hp3par_api_url,
+                      hp3par_password=conf.hp3par_password,
                       hp3par_san_ip=conf.hp3par_san_ip,
                       hp3par_fstore_per_share=conf.hp3par_fstore_per_share,
                       ssh_conn_timeout=conf.ssh_conn_timeout)])
@@ -135,7 +160,6 @@ class HP3ParDriverTestCase(test.TestCase):
         self.driver._hp3par = self.mock_mediator
         self.driver.vfs = constants.EXPECTED_VFS
         self.driver.fpg = constants.EXPECTED_FPG
-        self.driver.share_ip_address = self.conf.hp3par_share_ip_address
         self.mock_object(hp3pardriver, 'share_types')
         get_extra_specs = hp3pardriver.share_types.get_extra_specs_from_share
         get_extra_specs.return_value = constants.EXPECTED_EXTRA_SPECS
@@ -144,8 +168,11 @@ class HP3ParDriverTestCase(test.TestCase):
                         expected_share_id, expected_size):
         """Re-usable code for create share."""
         context = None
-        share_server = None
+        share_server = {
+            'backend_details': {'ip': constants.EXPECTED_IP_10203040}}
         share = {
+            'display_name': constants.EXPECTED_SHARE_NAME,
+            'host': constants.EXPECTED_HOST,
             'project_id': expected_project_id,
             'id': expected_share_id,
             'share_proto': protocol,
@@ -163,8 +190,14 @@ class HP3ParDriverTestCase(test.TestCase):
                                       expected_size):
         """Re-usable code for create share from snapshot."""
         context = None
-        share_server = None
+        share_server = {
+            'backend_details': {
+                'ip': constants.EXPECTED_IP_10203040,
+            },
+        }
         share = {
+            'display_name': constants.EXPECTED_SHARE_NAME,
+            'host': constants.EXPECTED_HOST,
             'id': expected_share_id,
             'share_proto': protocol,
             'share_type_id': share_type_id,
@@ -227,6 +260,7 @@ class HP3ParDriverTestCase(test.TestCase):
             constants.EXPECTED_EXTRA_SPECS,
             constants.EXPECTED_FPG,
             constants.EXPECTED_VFS,
+            comment=mock.ANY,
             size=constants.EXPECTED_SIZE_2)]
         self.mock_mediator.assert_has_calls(expected_calls)
 
@@ -253,6 +287,7 @@ class HP3ParDriverTestCase(test.TestCase):
                                    constants.EXPECTED_EXTRA_SPECS,
                                    constants.EXPECTED_FPG,
                                    constants.EXPECTED_VFS,
+                                   comment=mock.ANY,
                                    size=constants.EXPECTED_SIZE_1)]
 
         self.mock_mediator.assert_has_calls(expected_calls)
@@ -284,7 +319,8 @@ class HP3ParDriverTestCase(test.TestCase):
                 constants.NFS,
                 constants.EXPECTED_SNAP_ID,
                 constants.EXPECTED_FPG,
-                constants.EXPECTED_VFS),
+                constants.EXPECTED_VFS,
+                comment=mock.ANY),
         ]
         self.mock_mediator.assert_has_calls(expected_calls)
 
@@ -315,7 +351,8 @@ class HP3ParDriverTestCase(test.TestCase):
                 constants.NFS,
                 constants.EXPECTED_SNAP_ID,
                 constants.EXPECTED_FPG,
-                constants.EXPECTED_VFS)
+                constants.EXPECTED_VFS,
+                comment=mock.ANY),
         ]
 
         self.mock_mediator.assert_has_calls(expected_calls)
@@ -418,6 +455,37 @@ class HP3ParDriverTestCase(test.TestCase):
         ]
         self.mock_mediator.assert_has_calls(expected_calls)
 
+    def test_driver_get_share_stats_not_ready(self):
+        """Protect against stats update before driver is ready."""
+
+        self.mock_object(hp3pardriver, 'LOG')
+
+        expected_result = {
+            'driver_handles_share_servers': True,
+            'QoS_support': False,
+            'driver_version': self.driver.VERSION,
+            'free_capacity_gb': 0,
+            'max_over_subscription_ratio': None,
+            'reserved_percentage': 0,
+            'provisioned_capacity_gb': 0,
+            'share_backend_name': 'HP_3PAR',
+            'snapshot_support': True,
+            'storage_protocol': 'NFS_CIFS',
+            'thin_provisioning': True,
+            'total_capacity_gb': 0,
+            'vendor_name': 'HP',
+            'pools': None,
+        }
+
+        result = self.driver.get_share_stats(refresh=True)
+        self.assertEqual(expected_result, result)
+
+        expected_calls = [
+            mock.call.info('Skipping capacity and capabilities update. '
+                           'Setup has not completed.')
+        ]
+        hp3pardriver.LOG.assert_has_calls(expected_calls)
+
     def test_driver_get_share_stats_no_refresh(self):
         """Driver does not call mediator when refresh=False."""
 
@@ -437,28 +505,178 @@ class HP3ParDriverTestCase(test.TestCase):
         expected_capacity = constants.EXPECTED_SIZE_2
         expected_version = self.driver.VERSION
 
-        self.mock_mediator.get_capacity.return_value = {
+        self.mock_mediator.get_fpg_status.return_value = {
             'free_capacity_gb': expected_free,
-            'total_capacity_gb': expected_capacity
+            'total_capacity_gb': expected_capacity,
+            'thin_provisioning': True,
+            'dedupe': False,
+            'hpe3par_flash_cache': False,
         }
 
         expected_result = {
-            'driver_handles_share_servers': False,
+            'driver_handles_share_servers': True,
             'QoS_support': False,
             'driver_version': expected_version,
             'free_capacity_gb': expected_free,
+            'max_over_subscription_ratio': None,
+            'pools': None,
+            'provisioned_capacity_gb': 0,
             'reserved_percentage': 0,
             'share_backend_name': 'HP_3PAR',
             'storage_protocol': 'NFS_CIFS',
             'total_capacity_gb': expected_capacity,
             'vendor_name': 'HP',
-            'pools': None,
+            'thin_provisioning': True,
+            'dedupe': False,
+            'hpe3par_flash_cache': False,
+            'snapshot_support': True,
         }
 
         result = self.driver.get_share_stats(refresh=True)
         self.assertEqual(expected_result, result)
 
         expected_calls = [
-            mock.call.get_capacity(constants.EXPECTED_FPG)
+            mock.call.get_fpg_status(constants.EXPECTED_FPG)
+        ]
+        self.mock_mediator.assert_has_calls(expected_calls)
+        self.assertTrue(self.mock_mediator.get_fpg_status.called)
+
+    def test_driver_get_share_stats_premature(self):
+        """Driver init stats before init_driver completed."""
+
+        expected_version = self.driver.VERSION
+
+        self.mock_mediator.get_fpg_status.return_value = {'not_called': 1}
+
+        expected_result = {
+            'QoS_support': False,
+            'driver_handles_share_servers': True,
+            'driver_version': expected_version,
+            'free_capacity_gb': 0,
+            'max_over_subscription_ratio': None,
+            'pools': None,
+            'provisioned_capacity_gb': 0,
+            'reserved_percentage': 0,
+            'share_backend_name': 'HP_3PAR',
+            'storage_protocol': 'NFS_CIFS',
+            'thin_provisioning': True,
+            'total_capacity_gb': 0,
+            'vendor_name': 'HP',
+            'snapshot_support': True,
+        }
+
+        result = self.driver.get_share_stats(refresh=True)
+        self.assertEqual(expected_result, result)
+        self.assertFalse(self.mock_mediator.get_fpg_status.called)
+
+    @ddt.data(('test"dquote', 'test_dquote'),
+              ("test'squote", "test_squote"),
+              ('test-:;,.punc', 'test-:_punc'),
+              ('test with spaces ', 'test with spaces '),
+              ('x' * 300, 'x' * 300))
+    @ddt.unpack
+    def test_build_comment(self, display_name, clean_name):
+
+        host = 'test-stack1@backend#pool'
+        share = {
+            'host': host,
+            'display_name': display_name
+        }
+        comment = self.driver.build_share_comment(share)
+
+        cleaned = {
+            'host': host,
+            'clean_name': clean_name
+        }
+
+        expected = ("OpenStack Manila - host=%(host)s  "
+                    "orig_name=%(clean_name)s created=" % cleaned)[:254]
+
+        self.assertLess(len(comment), 255)
+        self.assertTrue(comment.startswith(expected))
+
+        # Test for some chars that are not allowed.
+        # Don't test with same regex as the code uses.
+        for c in "'\".,;":
+            self.assertNotIn(c, comment)
+
+    def test_get_network_allocations_number(self):
+        self.assertEqual(1, self.driver.get_network_allocations_number())
+
+    def test_build_export_location_bad_protocol(self):
+        self.assertRaises(exception.InvalidInput,
+                          self.driver._build_export_location,
+                          "BOGUS",
+                          constants.EXPECTED_IP_1234,
+                          constants.EXPECTED_SHARE_PATH)
+
+    def test_build_export_location_bad_ip(self):
+        self.assertRaises(exception.InvalidInput,
+                          self.driver._build_export_location,
+                          constants.NFS,
+                          None,
+                          None)
+
+    def test_build_export_location_bad_path(self):
+        self.assertRaises(exception.InvalidInput,
+                          self.driver._build_export_location,
+                          constants.NFS,
+                          constants.EXPECTED_IP_1234,
+                          None)
+
+    def test_setup_server(self):
+        """Setup server by creating a new FSIP."""
+
+        self.init_driver()
+
+        network_info = {
+            'network_allocations': [
+                {'ip_address': constants.EXPECTED_IP_1234}],
+            'cidr': '/'.join((constants.EXPECTED_IP_1234,
+                              constants.CIDR_PREFIX)),
+            'network_type': constants.EXPECTED_VLAN_TYPE,
+            'segmentation_id': constants.EXPECTED_VLAN_TAG,
+            'server_id': constants.EXPECTED_SERVER_ID,
+        }
+
+        expected_result = {
+            'share_server_name': constants.EXPECTED_SERVER_ID,
+            'share_server_id': constants.EXPECTED_SERVER_ID,
+            'ip': constants.EXPECTED_IP_1234,
+            'subnet': constants.EXPECTED_SUBNET,
+            'vlantag': constants.EXPECTED_VLAN_TAG,
+            'fpg': constants.EXPECTED_FPG,
+            'vfs': constants.EXPECTED_VFS,
+        }
+
+        result = self.driver._setup_server(network_info)
+
+        expected_calls = [
+            mock.call.create_fsip(constants.EXPECTED_IP_1234,
+                                  constants.EXPECTED_SUBNET,
+                                  constants.EXPECTED_VLAN_TAG,
+                                  constants.EXPECTED_FPG,
+                                  constants.EXPECTED_VFS)
+        ]
+        self.mock_mediator.assert_has_calls(expected_calls)
+
+        self.assertEqual(expected_result, result)
+
+    def test_teardown_server(self):
+
+        self.init_driver()
+
+        server_details = {
+            'ip': constants.EXPECTED_IP_1234,
+            'fpg': constants.EXPECTED_FPG,
+            'vfs': constants.EXPECTED_VFS,
+        }
+
+        self.driver._teardown_server(server_details)
+
+        expected_calls = [
+            mock.call.remove_fsip(constants.EXPECTED_IP_1234,
+                                  constants.EXPECTED_FPG,
+                                  constants.EXPECTED_VFS)
         ]
         self.mock_mediator.assert_has_calls(expected_calls)
