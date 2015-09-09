@@ -1,5 +1,5 @@
-manila (1.0.0~b2-1) unstable; urgency=medium
+manila (1.0.0~b3-1) experimental; urgency=medium
 
   * Initial release (Closes: #789660).
 
- -- Malihe Asemani <ml.asemani@gmail.com>  Thu, 07 May 2015 10:04:28 +0000
+ -- Thomas Goirand <zigo@debian.org>  Wed, 09 Sep 2015 11:02:32 +0200
