@@ -54,19 +54,22 @@ import manila.share.drivers.emc.driver
 import manila.share.drivers.emc.plugins.isilon.isilon
 import manila.share.drivers.generic
 import manila.share.drivers.glusterfs
-import manila.share.drivers.glusterfs_native
+import manila.share.drivers.glusterfs.common
+import manila.share.drivers.glusterfs.layout
+import manila.share.drivers.glusterfs.layout_directory
+import manila.share.drivers.glusterfs.layout_volume
 import manila.share.drivers.hdfs.hdfs_native
-import manila.share.drivers.hds.sop
 import manila.share.drivers.hitachi.hds_hnas
 import manila.share.drivers.hp.hp_3par_driver
 import manila.share.drivers.huawei.huawei_nas
-import manila.share.drivers.ibm.gpfs
 import manila.share.drivers.netapp.options
 import manila.share.drivers.quobyte.quobyte
 import manila.share.drivers.service_instance
+import manila.share.drivers.windows.service_instance
 import manila.share.drivers.windows.winrm_helper
 import manila.share.drivers.zfssa.zfssashare
 import manila.share.drivers_private_data
+import manila.share.hook
 import manila.share.manager
 import manila.volume
 import manila.volume.cinder
@@ -110,14 +113,16 @@ _global_opt_lists = [
     manila.share.drivers_private_data.private_data_opts,
     manila.share.drivers.emc.driver.EMC_NAS_OPTS,
     manila.share.drivers.generic.share_opts,
+    manila.share.drivers.glusterfs.common.glusterfs_common_opts,
     manila.share.drivers.glusterfs.GlusterfsManilaShare_opts,
-    manila.share.drivers.glusterfs_native.glusterfs_native_manila_share_opts,
+    manila.share.drivers.glusterfs.layout.glusterfs_share_layout_opts,
+    manila.share.drivers.glusterfs.layout_directory.
+    glusterfs_directory_mapped_opts,
+    manila.share.drivers.glusterfs.layout_volume.glusterfs_volume_mapped_opts,
     manila.share.drivers.hdfs.hdfs_native.hdfs_native_share_opts,
-    manila.share.drivers.hds.sop.hdssop_share_opts,
     manila.share.drivers.hitachi.hds_hnas.hds_hnas_opts,
     manila.share.drivers.hp.hp_3par_driver.HP3PAR_OPTS,
     manila.share.drivers.huawei.huawei_nas.huawei_opts,
-    manila.share.drivers.ibm.gpfs.gpfs_share_opts,
     manila.share.drivers.netapp.options.netapp_proxy_opts,
     manila.share.drivers.netapp.options.netapp_connection_opts,
     manila.share.drivers.netapp.options.netapp_transport_opts,
@@ -127,8 +132,10 @@ _global_opt_lists = [
     manila.share.drivers.service_instance.common_opts,
     manila.share.drivers.service_instance.no_share_servers_handling_mode_opts,
     manila.share.drivers.service_instance.share_servers_handling_mode_opts,
+    manila.share.drivers.windows.service_instance.windows_share_server_opts,
     manila.share.drivers.windows.winrm_helper.winrm_opts,
     manila.share.drivers.zfssa.zfssashare.ZFSSA_OPTS,
+    manila.share.hook.hook_options,
     manila.share.manager.share_manager_opts,
     manila.volume._volume_opts,
     manila.volume.cinder.cinder_opts,

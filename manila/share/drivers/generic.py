@@ -24,7 +24,6 @@ from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import excutils
 from oslo_utils import importutils
-from oslo_utils import strutils
 from oslo_utils import units
 import retrying
 import six
@@ -39,7 +38,6 @@ from manila.i18n import _LI
 from manila.i18n import _LW
 from manila.share import driver
 from manila.share.drivers import service_instance
-from manila.share import share_types
 from manila import utils
 from manila import volume
 
@@ -108,7 +106,7 @@ def ensure_server(f):
                 raise exception.ManilaException(
                     _("Share server handling is not available. "
                       "But 'share_server' was provided. '%s'. "
-                      "Share network should not be used.") % server['id'])
+                      "Share network should not be used.") % server.get('id'))
         elif not server:
             raise exception.ManilaException(
                 _("Share server handling is enabled. But 'share_server' "
@@ -195,6 +193,16 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.ManilaException(
                 "No protocol helpers selected for Generic Driver. "
                 "Please specify using config option 'share_helpers'.")
+
+    def _get_access_rule_for_data_copy(self, context, share, share_server):
+        if not self.driver_handles_share_servers:
+            service_ip = self.configuration.safe_get(
+                'migration_data_copy_node_ip')
+        else:
+            service_ip = share_server['backend_details']['service_ip']
+        return {'access_type': 'ip',
+                'access_level': 'rw',
+                'access_to': service_ip}
 
     @ensure_server
     def create_share(self, context, share, share_server=None):
@@ -514,7 +522,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                    volume_size=volume['size']))
                 else:
                     break
-            elif volume['status'] == const.STATUS_ERROR:
+            elif 'error' in volume['status'].lower():
                 raise exception.ManilaException(msg_error)
             time.sleep(1)
             volume = self.volume_api.get(self.admin_context, volume['id'])
@@ -556,7 +564,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         data = dict(
             share_backend_name=self.backend_name,
             storage_protocol='NFS_CIFS',
-            reserved_percentage=(self.configuration.reserved_share_percentage))
+            reserved_percentage=self.configuration.reserved_share_percentage,
+            consistency_group_support='pool',
+        )
         super(GenericShareDriver, self)._update_share_stats(data)
 
     @ensure_server
@@ -819,22 +829,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         :param driver_options: Empty dict or dict with 'volume_id' option.
         :return: dict with share size, example: {'size': 1}
         """
-        if self.driver_handles_share_servers:
-            msg = _('Operation "manage" for shares is supported only when '
-                    'driver does not handle share servers.')
-            raise exception.InvalidDriverMode(msg)
-
         helper = self._get_helper(share)
-        driver_mode = share_types.get_share_type_extra_specs(
-            share['share_type_id'],
-            const.ExtraSpecs.DRIVER_HANDLES_SHARE_SERVERS)
-
-        if strutils.bool_from_string(driver_mode):
-            msg = _("%(mode)s != False") % {
-                'mode': const.ExtraSpecs.DRIVER_HANDLES_SHARE_SERVERS
-            }
-            raise exception.ManageExistingShareTypeMismatch(reason=msg)
-
         share_server = self.service_instance_manager.get_common_server()
         server_details = share_server['backend_details']
 
@@ -941,6 +936,180 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.InvalidShare(reason=msg)
 
         return size
+
+    @ensure_server
+    def create_consistency_group(self, context, cg_dict, share_server=None):
+        """Creates a consistency group.
+
+        Since we are faking the CG object, apart from verifying if the
+        share_server is valid, we do nothing else here.
+        """
+
+        LOG.debug('Created a Consistency Group with ID: %s.', cg_dict['id'])
+
+        msg = _LW('The Generic driver has no means to guarantee consistency '
+                  'group snapshots are actually consistent. This '
+                  'implementation is for reference and testing purposes only.')
+        LOG.warning(msg)
+
+    def delete_consistency_group(self, context, cg_dict, share_server=None):
+        """Deletes a consistency group.
+
+        Since we are faking the CG object we do nothing here.
+        """
+
+        LOG.debug('Deleted the consistency group with ID %s.', cg_dict['id'])
+
+    def _cleanup_cg_share_snapshot(self, context, share_snapshot,
+                                   share_server):
+        """Deletes the snapshot of a share belonging to a consistency group."""
+
+        try:
+            self.delete_snapshot(context, share_snapshot, share_server)
+        except exception.ManilaException:
+            msg = _LE('Could not delete CG Snapshot %(snap)s '
+                      'for share %(share)s.')
+            LOG.error(msg % {
+                'snap': share_snapshot['id'],
+                'share': share_snapshot['share_id'],
+            })
+            raise
+
+    @ensure_server
+    def create_cgsnapshot(self, context, snap_dict, share_server=None):
+        """Creates a consistency group snapshot one or more shares."""
+
+        LOG.debug('Attempting to create a CG snapshot %s.' % snap_dict['id'])
+
+        msg = _LW('The Consistency Group Snapshot being created is '
+                  'not expected to be consistent. This implementation is '
+                  'for reference and testing purposes only.')
+        LOG.warning(msg)
+
+        cg_members = snap_dict.get('cgsnapshot_members', [])
+        if not cg_members:
+            LOG.warning(_LW('No shares in Consistency Group to Create CG '
+                            'snapshot.'))
+        else:
+            share_snapshots = []
+            for member in cg_members:
+                share_snapshot = {
+                    'share_id': member['share_id'],
+                    'id': member['id'],
+                }
+                try:
+                    self.create_snapshot(context, share_snapshot, share_server)
+                    share_snapshots.append(share_snapshot)
+                except exception.ManilaException as e:
+                    msg = _LE('Could not create CG Snapshot. Failed '
+                              'to create share snapshot %(snap)s for '
+                              'share %(share)s.')
+                    LOG.exception(msg % {
+                        'snap': share_snapshot['id'],
+                        'share': share_snapshot['share_id']
+                    })
+
+                    # clean up any share snapshots previously created
+                    LOG.debug('Attempting to clean up snapshots due to '
+                              'failure...')
+                    for share_snapshot in share_snapshots:
+                        self._cleanup_cg_share_snapshot(context,
+                                                        share_snapshot,
+                                                        share_server)
+                    raise e
+
+            LOG.debug('Successfully created CG snapshot %s.' % snap_dict['id'])
+
+        return None, None
+
+    @ensure_server
+    def delete_cgsnapshot(self, context, snap_dict, share_server=None):
+        """Deletes a consistency group snapshot."""
+
+        cg_members = snap_dict.get('cgsnapshot_members', [])
+
+        LOG.debug('Deleting CG snapshot %s.' % snap_dict['id'])
+
+        for member in cg_members:
+            share_snapshot = {
+                'share_id': member['share_id'],
+                'id': member['id'],
+            }
+
+            self._cleanup_cg_share_snapshot(context,
+                                            share_snapshot,
+                                            share_server)
+
+        LOG.debug('Deleted CG snapshot %s.' % snap_dict['id'])
+
+        return None, None
+
+    @ensure_server
+    def create_consistency_group_from_cgsnapshot(self, context, cg_dict,
+                                                 cgsnapshot_dict,
+                                                 share_server=None):
+        """Creates a consistency group from an existing CG snapshot."""
+
+        # Ensure that the consistency group snapshot has members
+        if not cgsnapshot_dict['cgsnapshot_members']:
+            return None, None
+
+        clone_list = self._collate_cg_snapshot_info(cg_dict, cgsnapshot_dict)
+        share_update_list = list()
+
+        LOG.debug('Creating consistency group from CG snapshot %s.',
+                  cgsnapshot_dict['id'])
+
+        for clone in clone_list:
+
+            kwargs = {}
+            if self.driver_handles_share_servers:
+                kwargs['share_server'] = share_server
+            export_location = (
+                self.create_share_from_snapshot(
+                    context,
+                    clone['share'],
+                    clone['snapshot'],
+                    **kwargs))
+
+            share_update_list.append({
+                'id': clone['share']['id'],
+                'export_locations': export_location,
+            })
+
+        return None, share_update_list
+
+    def _collate_cg_snapshot_info(self, cg_dict, cgsnapshot_dict):
+        """Collate the data for a clone of the CG snapshot.
+
+        Given two data structures, a CG snapshot (cgsnapshot_dict) and a new
+        CG to be cloned from the snapshot (cg_dict), match up both
+        structures into a list of dicts (share & snapshot) suitable for use
+        by existing method that clones individual share snapshots.
+        """
+
+        clone_list = list()
+
+        for share in cg_dict['shares']:
+
+            clone_info = {'share': share}
+
+            for cgsnapshot_member in cgsnapshot_dict['cgsnapshot_members']:
+                if (share['source_cgsnapshot_member_id'] ==
+                        cgsnapshot_member['id']):
+                    clone_info['snapshot'] = {
+                        'id': cgsnapshot_member['id'],
+                    }
+                    break
+
+            if len(clone_info) != 2:
+                msg = _("Invalid data supplied for creating consistency "
+                        "group from CG snapshot %s.") % cgsnapshot_dict['id']
+                raise exception.InvalidConsistencyGroup(reason=msg)
+
+            clone_list.append(clone_info)
+
+        return clone_list
 
 
 class NASHelperBase(object):

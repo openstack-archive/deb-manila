@@ -18,14 +18,17 @@ Drivers for shares.
 
 """
 
+import re
 import time
 
 from oslo_config import cfg
 from oslo_log import log
+import six
 
 from manila import exception
-from manila.i18n import _LE
+from manila.i18n import _, _LE
 from manila import network
+from manila.share import utils as share_utils
 from manila import utils
 
 LOG = log.getLogger(__name__)
@@ -72,6 +75,47 @@ share_opts = [
              'total physical capacity. A ratio of 1.0 means '
              'provisioned capacity cannot exceed the total physical '
              'capacity. A ratio lower than 1.0 is invalid.'),
+    cfg.StrOpt(
+        'migration_tmp_location',
+        default='/tmp/',
+        help="Temporary path to create and mount shares during migration."),
+    cfg.ListOpt(
+        'migration_ignore_files',
+        default=['lost+found'],
+        help="List of files and folders to be ignored when migrating shares. "
+             "Items should be names (not including any path)."),
+    cfg.IntOpt(
+        'migration_wait_access_rules_timeout',
+        default=90,
+        help="Time to wait for access rules to be allowed/denied on backends "
+             "when migrating shares using generic approach (seconds)."),
+    cfg.IntOpt(
+        'migration_create_delete_share_timeout',
+        default=300,
+        help='Timeout for creating and deleting share instances '
+             'when performing share migration (seconds).'),
+    cfg.StrOpt(
+        'migration_mounting_backend_ip',
+        default=None,
+        help="Backend IP in admin network to use for mounting "
+             "shares during migration."),
+    cfg.StrOpt(
+        'migration_data_copy_node_ip',
+        default=None,
+        help="The IP of the node responsible for copying data during "
+             "migration, such as the data copy service node, reachable by "
+             "the backend."),
+    cfg.StrOpt(
+        'migration_protocol_mount_command',
+        default=None,
+        help="The command for mounting shares for this backend. Must specify"
+             "the executable and all necessary parameters for the protocol "
+             "supported. It is advisable to separate protocols per backend."),
+    cfg.BoolOpt(
+        'migration_readonly_support',
+        default=True,
+        help="Specify whether read only access mode is supported in this"
+             "backend."),
 ]
 
 ssh_opts = [
@@ -96,14 +140,6 @@ ganesha_opts = [
     cfg.StrOpt('ganesha_config_path',
                default='$ganesha_config_dir/ganesha.conf',
                help='Path to main Ganesha config file.'),
-    cfg.StrOpt('ganesha_nfs_export_options',
-               default='maxread = 65536, prefread = 65536',
-               help='Options to use when exporting a share using ganesha '
-                    'NFS server. Note that these defaults can be overridden '
-                    'when a share is created by passing metadata with key '
-                    'name export_options.  Also note the complete set of '
-                    'default ganesha export options is specified in '
-                    'ganesha_utils. (GPFS only.)'),
     cfg.StrOpt('ganesha_service_name',
                default='ganesha.nfsd',
                help='Name of the ganesha nfs service.'),
@@ -238,6 +274,260 @@ class ShareDriver(object):
                 {'actual': self.driver_handles_share_servers,
                  'allowed': driver_handles_share_servers})
 
+    def migrate_share(self, context, share_ref, host,
+                      dest_driver_migration_info):
+        """Is called to perform driver migration.
+
+        Driver should implement this method if willing to perform migration
+        in an optimized way, useful for when driver understands destination
+        backend.
+        :param context: The 'context.RequestContext' object for the request.
+        :param share_ref: Reference to the share being migrated.
+        :param host: Destination host and its capabilities.
+        :param dest_driver_migration_info: Migration information provided by
+        destination host.
+        :returns: Boolean value indicating if driver migration succeeded.
+        :returns: Dictionary containing a model update.
+        """
+        return None, None
+
+    def get_driver_migration_info(self, context, share_instance, share_server):
+        """Is called to provide necessary driver migration logic."""
+        return None
+
+    def get_migration_info(self, context, share_instance, share_server):
+        """Is called to provide necessary generic migration logic."""
+
+        mount_cmd = self._get_mount_command(context, share_instance,
+                                            share_server)
+
+        umount_cmd = self._get_unmount_command(context, share_instance,
+                                               share_server)
+
+        access = self._get_access_rule_for_data_copy(
+            context, share_instance, share_server)
+        return {'mount': mount_cmd,
+                'umount': umount_cmd,
+                'access': access}
+
+    def _get_mount_command(self, context, share_instance, share_server):
+        """Is called to delegate mounting share logic."""
+        mount_cmd = self._get_mount_command_protocol(share_instance,
+                                                     share_server)
+
+        mount_ip = self._get_mount_ip(share_instance, share_server)
+        mount_cmd.append(mount_ip)
+
+        mount_path = self.configuration.safe_get(
+            'migration_tmp_location') + share_instance['id']
+        mount_cmd.append(mount_path)
+
+        return mount_cmd
+
+    def _get_mount_command_protocol(self, share_instance, share_server):
+        mount_cmd = self.configuration.safe_get(
+            'migration_protocol_mount_command')
+        if mount_cmd:
+            return mount_cmd.split()
+        else:
+            return ['mount', '-t', share_instance['share_proto'].lower()]
+
+    def _get_mount_ip(self, share_instance, share_server):
+        # Note(ganso): DHSS = true drivers may need to override this method
+        # and use information saved in share_server structure.
+        mount_ip = self.configuration.safe_get('migration_mounting_backend_ip')
+        old_ip = share_instance['export_locations'][0]['path']
+        if mount_ip:
+            # NOTE(ganso): Does not currently work with hostnames and ipv6.
+            p = re.compile("\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}")
+            new_ip = p.sub(mount_ip, old_ip)
+            return new_ip
+        else:
+            return old_ip
+
+    def _get_unmount_command(self, context, share_instance, share_server):
+        return ['umount',
+                self.configuration.safe_get('migration_tmp_location')
+                + share_instance['id']]
+
+    def _get_access_rule_for_data_copy(
+            self, context, share_instance, share_server):
+        """Is called to obtain access rule so data copy node can mount."""
+        # Note(ganso): The current method implementation is intended to work
+        # with Data Copy Service approach. If Manila Node is used for copying,
+        # then DHSS = true drivers may need to override this method.
+        service_ip = self.configuration.safe_get('migration_data_copy_node_ip')
+        return {'access_type': 'ip',
+                'access_level': 'rw',
+                'access_to': service_ip}
+
+    def copy_share_data(self, context, helper, share, share_instance,
+                        share_server, new_share_instance, new_share_server,
+                        migration_info_src, migration_info_dest):
+
+        # NOTE(ganso): This method is here because it is debatable if it can
+        # be overridden by a driver or not. Personally I think it should not,
+        # else it would be possible to lose compatibility with generic
+        # migration between backends, but allows the driver to use it on its
+        # own implementation if it wants to.
+
+        migrated = False
+
+        mount_path = self.configuration.safe_get('migration_tmp_location')
+
+        src_access = migration_info_src['access']
+        dest_access = migration_info_dest['access']
+
+        if None in (src_access['access_to'], dest_access['access_to']):
+            msg = _("Access rules not appropriate for mounting share instances"
+                    " for migration of share %(share_id)s,"
+                    " source share access: %(src_ip)s, destination share"
+                    " access: %(dest_ip)s. Aborting.") % {
+                'src_ip': src_access['access_to'],
+                'dest_ip': dest_access['access_to'],
+                'share_id': share['id']}
+            raise exception.ShareMigrationFailed(reason=msg)
+
+        # NOTE(ganso): Removing any previously conflicting access rules, which
+        # would cause the following access_allow to fail for one instance.
+        helper.deny_migration_access(None, src_access, False)
+        helper.deny_migration_access(None, dest_access, False)
+
+        # NOTE(ganso): I would rather allow access to instances separately,
+        # but I require an access_id since it is a new access rule and
+        # destination manager must receive an access_id. I can either move
+        # this code to manager code so I can create the rule in DB manually,
+        # or ignore duplicate access rule errors for some specific scenarios.
+
+        try:
+            src_access_ref = helper.allow_migration_access(src_access)
+        except Exception as e:
+            LOG.error(_LE("Share migration failed attempting to allow "
+                          "access of %(access_to)s to share "
+                          "instance %(instance_id)s.") % {
+                'access_to': src_access['access_to'],
+                'instance_id': share_instance['id']})
+            msg = six.text_type(e)
+            LOG.exception(msg)
+            raise exception.ShareMigrationFailed(reason=msg)
+
+        try:
+            dest_access_ref = helper.allow_migration_access(dest_access)
+        except Exception as e:
+            LOG.error(_LE("Share migration failed attempting to allow "
+                          "access of %(access_to)s to share "
+                          "instance %(instance_id)s.") % {
+                'access_to': dest_access['access_to'],
+                'instance_id': new_share_instance['id']})
+            msg = six.text_type(e)
+            LOG.exception(msg)
+            helper.cleanup_migration_access(src_access_ref, src_access)
+            raise exception.ShareMigrationFailed(reason=msg)
+
+        # NOTE(ganso): From here we have the possibility of not cleaning
+        # anything when facing an error. At this moment, we have the
+        # destination instance in "inactive" state, while we are performing
+        # operations on the source instance. I think it is best to not clean
+        # the instance, leave it in "inactive" state, but try to clean
+        # temporary access rules, mounts, folders, etc, since no additional
+        # harm is done.
+
+        def _mount_for_migration(migration_info):
+
+            try:
+                utils.execute(*migration_info['mount'], run_as_root=True)
+            except Exception:
+                LOG.error(_LE("Failed to mount temporary folder for "
+                              "migration of share instance "
+                              "%(share_instance_id)s "
+                              "to %(new_share_instance_id)s") % {
+                    'share_instance_id': share_instance['id'],
+                    'new_share_instance_id': new_share_instance['id']})
+                helper.cleanup_migration_access(
+                    src_access_ref, src_access)
+                helper.cleanup_migration_access(
+                    dest_access_ref, dest_access)
+                raise
+
+        utils.execute('mkdir', '-p',
+                      ''.join((mount_path, share_instance['id'])))
+
+        utils.execute('mkdir', '-p',
+                      ''.join((mount_path, new_share_instance['id'])))
+
+        # NOTE(ganso): mkdir command sometimes returns faster than it
+        # actually runs, so we better sleep for 1 second.
+
+        time.sleep(1)
+
+        try:
+            _mount_for_migration(migration_info_src)
+        except Exception as e:
+            LOG.error(_LE("Share migration failed attempting to mount "
+                          "share instance %s.") % share_instance['id'])
+            msg = six.text_type(e)
+            LOG.exception(msg)
+            helper.cleanup_temp_folder(share_instance, mount_path)
+            helper.cleanup_temp_folder(new_share_instance, mount_path)
+            raise exception.ShareMigrationFailed(reason=msg)
+
+        try:
+            _mount_for_migration(migration_info_dest)
+        except Exception as e:
+            LOG.error(_LE("Share migration failed attempting to mount "
+                          "share instance %s.") % new_share_instance['id'])
+            msg = six.text_type(e)
+            LOG.exception(msg)
+            helper.cleanup_unmount_temp_folder(share_instance,
+                                               migration_info_src)
+            helper.cleanup_temp_folder(share_instance, mount_path)
+            helper.cleanup_temp_folder(new_share_instance, mount_path)
+            raise exception.ShareMigrationFailed(reason=msg)
+
+        try:
+            ignore_list = self.configuration.safe_get('migration_ignore_files')
+            copy = share_utils.Copy(mount_path + share_instance['id'],
+                                    mount_path + new_share_instance['id'],
+                                    ignore_list)
+            copy.run()
+            if copy.get_progress()['total_progress'] == 100:
+                migrated = True
+
+        except Exception as e:
+            LOG.exception(six.text_type(e))
+            LOG.error(_LE("Failed to copy files for "
+                          "migration of share instance %(share_instance_id)s "
+                          "to %(new_share_instance_id)s") % {
+                'share_instance_id': share_instance['id'],
+                'new_share_instance_id': new_share_instance['id']})
+
+        # NOTE(ganso): For some reason I frequently get AMQP errors after
+        # copying finishes, which seems like is the service taking too long to
+        # copy while not replying heartbeat messages, so AMQP closes the
+        # socket. There is no impact, it just shows a big trace and AMQP
+        # reconnects after, although I would like to prevent this situation
+        # without the use of additional threads. Suggestions welcome.
+
+        utils.execute(*migration_info_src['umount'], run_as_root=True)
+        utils.execute(*migration_info_dest['umount'], run_as_root=True)
+
+        utils.execute('rmdir', ''.join((mount_path, share_instance['id'])),
+                      check_exit_code=False)
+        utils.execute('rmdir', ''.join((mount_path, new_share_instance['id'])),
+                      check_exit_code=False)
+
+        helper.deny_migration_access(src_access_ref, src_access)
+        helper.deny_migration_access(dest_access_ref, dest_access)
+
+        if not migrated:
+            msg = ("Copying from share instance %(instance_id)s "
+                   "to %(new_instance_id)s did not succeed." % {
+                       'instance_id': share_instance['id'],
+                       'new_instance_id': new_share_instance['id']})
+            raise exception.ShareMigrationFailed(reason=msg)
+
+        LOG.debug("Copying completed in migration for share %s." % share['id'])
+
     def create_share(self, context, share, share_server=None):
         """Is called to create share."""
         raise NotImplementedError()
@@ -344,7 +634,8 @@ class ShareDriver(object):
             self.network_api.deallocate_network(context, share_server_id)
 
     def choose_share_server_compatible_with_share(self, context, share_servers,
-                                                  share, snapshot=None):
+                                                  share, snapshot=None,
+                                                  consistency_group=None):
         """Method that allows driver to choose share server for provided share.
 
         If compatible share-server is not found, method should return None.
@@ -353,8 +644,22 @@ class ShareDriver(object):
         :param share_servers: list with share-server models
         :param share:  share model
         :param snapshot: snapshot model
+        :param consistency_group: ConsistencyGroup model with shares
         :returns: share-server or None
         """
+        # If creating in a consistency group, use its share server
+        if consistency_group:
+            for share_server in share_servers:
+                if (consistency_group.get('share_server_id') ==
+                        share_server['id']):
+                    return share_server
+            return None
+
+        return share_servers[0] if share_servers else None
+
+    def choose_share_server_compatible_with_cg(self, context, share_servers,
+                                               cg_ref, cgsnapshot=None):
+
         return share_servers[0] if share_servers else None
 
     def setup_server(self, *args, **kwargs):
@@ -449,15 +754,9 @@ class ShareDriver(object):
         """Returns boolean as a result of methods presence and redefinition."""
         if not isinstance(methods, (set, list, tuple)):
             methods = (methods, )
-        parent = super(self.__class__, self)
-        for method in methods:
-            # NOTE(vponomaryov): criteria:
-            # - If parent does not have such attr, then was called method of
-            #   this class which has no implementation.
-            # - If parent's method is equal to child's method then child did
-            #   not redefine it and has no implementation.
-            if (not hasattr(parent, method) or
-                    getattr(self, method) == getattr(parent, method)):
+        for method_name in methods:
+            method = getattr(type(self), method_name, None)
+            if (not method or method == getattr(ShareDriver, method_name)):
                 return False
         return True
 
@@ -494,8 +793,8 @@ class ShareDriver(object):
             vendor_name='Open Source',
             driver_version='1.0',
             storage_protocol=None,
-            total_capacity_gb='infinite',
-            free_capacity_gb='infinite',
+            total_capacity_gb='unknown',
+            free_capacity_gb='unknown',
             reserved_percentage=0,
             QoS_support=False,
             pools=self.pools or None,
@@ -511,3 +810,246 @@ class ShareDriver(object):
         :param share_server: ShareServer class instance.
         """
         return []
+
+    def create_consistency_group(self, context, cg_dict, share_server=None):
+        """Create a consistency group.
+
+        :param context:
+        :param cg_dict: The consistency group details
+            EXAMPLE:
+            {
+            'status': 'creating',
+            'project_id': '13c0be6290934bd98596cfa004650049',
+            'user_id': 'a0314a441ca842019b0952224aa39192',
+            'description': None,
+            'deleted': 'False',
+            'created_at': datetime.datetime(2015, 8, 10, 15, 14, 6),
+            'updated_at': None,
+            'source_cgsnapshot_id': 'f6aa3b59-57eb-421e-965c-4e182538e36a',
+            'host': 'openstack2@cmodeSSVMNFS',
+            'deleted_at': None,
+            'share_types': [<models.ConsistencyGroupShareTypeMapping>],
+            'id': 'eda52174-0442-476d-9694-a58327466c14',
+            'name': None
+            }
+        :returns: (cg_model_update, share_update_list)
+            cg_model_update - a dict containing any values to be updated
+            for the CG in the database. This value may be None.
+
+        """
+        raise NotImplementedError()
+
+    def create_consistency_group_from_cgsnapshot(self, context, cg_dict,
+                                                 cgsnapshot_dict,
+                                                 share_server=None):
+        """Create a consistency group from a cgsnapshot.
+
+        :param context:
+        :param cg_dict: The consistency group details
+            EXAMPLE:
+            .. code::
+
+                {
+                'status': 'creating',
+                'project_id': '13c0be6290934bd98596cfa004650049',
+                'user_id': 'a0314a441ca842019b0952224aa39192',
+                'description': None,
+                'deleted': 'False',
+                'created_at': datetime.datetime(2015, 8, 10, 15, 14, 6),
+                'updated_at': None,
+                'source_cgsnapshot_id': 'f6aa3b59-57eb-421e-965c-4e182538e36a',
+                'host': 'openstack2@cmodeSSVMNFS',
+                'deleted_at': None,
+                'shares': [<models.Share>], # The new shares being created
+                'share_types': [<models.ConsistencyGroupShareTypeMapping>],
+                'id': 'eda52174-0442-476d-9694-a58327466c14',
+                'name': None
+                }
+        :param cgsnapshot_dict: The cgsnapshot details
+            EXAMPLE:
+            .. code::
+
+                {
+                'status': 'available',
+                'project_id': '13c0be6290934bd98596cfa004650049',
+                'user_id': 'a0314a441ca842019b0952224aa39192',
+                'description': None,
+                'deleted': '0',
+                'created_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                'updated_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                'consistency_group_id': '4b04fdc3-00b9-4909-ba1a-06e9b3f88b67',
+                'cgsnapshot_members': [
+                    {
+                     'status': 'available',
+                     'share_type_id': '1a9ed31e-ee70-483d-93ba-89690e028d7f',
+                     'user_id': 'a0314a441ca842019b0952224aa39192',
+                     'deleted': 'False',
+                     'created_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                     'share': <models.Share>,
+                     'updated_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                     'share_proto': 'NFS',
+                     'project_id': '13c0be6290934bd98596cfa004650049',
+                     'cgsnapshot_id': 'f6aa3b59-57eb-421e-965c-4e182538e36a',
+                     'deleted_at': None,
+                     'id': '6813e06b-a8f5-4784-b17d-f3e91afa370e',
+                     'size': 1
+                    }
+                ],
+                'deleted_at': None,
+                'id': 'f6aa3b59-57eb-421e-965c-4e182538e36a',
+                'name': None
+                }
+        :return: (cg_model_update, share_update_list)
+            cg_model_update - a dict containing any values to be updated
+            for the CG in the database. This value may be None.
+
+            share_update_list - a list of dictionaries containing dicts for
+            every share created in the CG. Any share dicts should at a minimum
+            contain the 'id' key and 'export_locations'. Export locations
+            should be in the same format as returned by a share_create. This
+            list may be empty or None.
+            EXAMPLE:
+            .. code::
+
+                [{'id': 'uuid', 'export_locations': ['export_path']}]
+        """
+        raise NotImplementedError()
+
+    def delete_consistency_group(self, context, cg_dict, share_server=None):
+        """Delete a consistency group
+
+        :param context: The request context
+        :param cg_dict: The consistency group details
+            EXAMPLE:
+            .. code::
+
+                {
+                'status': 'creating',
+                'project_id': '13c0be6290934bd98596cfa004650049',
+                'user_id': 'a0314a441ca842019b0952224aa39192',
+                'description': None,
+                'deleted': 'False',
+                'created_at': datetime.datetime(2015, 8, 10, 15, 14, 6),
+                'updated_at': None,
+                'source_cgsnapshot_id': 'f6aa3b59-57eb-421e-965c-4e182538e36a',
+                'host': 'openstack2@cmodeSSVMNFS',
+                'deleted_at': None,
+                'shares': [<models.Share>], # The new shares being created
+                'share_types': [<models.ConsistencyGroupShareTypeMapping>],
+                'id': 'eda52174-0442-476d-9694-a58327466c14',
+                'name': None
+                }
+        :return: cg_model_update
+            cg_model_update - a dict containing any values to be updated
+            for the CG in the database. This value may be None.
+        """
+        raise NotImplementedError()
+
+    def create_cgsnapshot(self, context, snap_dict, share_server=None):
+        """Create a consistency group snapshot.
+
+        :param context:
+        :param snap_dict: The cgsnapshot details
+            EXAMPLE:
+            .. code::
+
+                {
+                'status': 'available',
+                'project_id': '13c0be6290934bd98596cfa004650049',
+                'user_id': 'a0314a441ca842019b0952224aa39192',
+                'description': None,
+                'deleted': '0',
+                'created_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                'updated_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                'consistency_group_id': '4b04fdc3-00b9-4909-ba1a-06e9b3f88b67',
+                'cgsnapshot_members': [
+                    {
+                     'status': 'available',
+                     'share_type_id': '1a9ed31e-ee70-483d-93ba-89690e028d7f',
+                     'user_id': 'a0314a441ca842019b0952224aa39192',
+                     'deleted': 'False',
+                     'created_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                     'share': <models.Share>,
+                     'updated_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                     'share_proto': 'NFS',
+                     'project_id': '13c0be6290934bd98596cfa004650049',
+                     'cgsnapshot_id': 'f6aa3b59-57eb-421e-965c-4e182538e36a',
+                     'deleted_at': None,
+                     'id': '6813e06b-a8f5-4784-b17d-f3e91afa370e',
+                     'size': 1
+                    }
+                ],
+                'deleted_at': None,
+                'id': 'f6aa3b59-57eb-421e-965c-4e182538e36a',
+                'name': None
+                }
+        :return: (cgsnapshot_update, member_update_list)
+            cgsnapshot_update - a dict containing any values to be updated
+            for the CGSnapshot in the database. This value may be None.
+
+            member_update_list -  a list of dictionaries containing for every
+            member of the cgsnapshot. Each dict should contains values to be
+            updated for teh CGSnapshotMember in the database. This list may be
+            empty or None.
+        """
+        raise NotImplementedError()
+
+    def delete_cgsnapshot(self, context, snap_dict, share_server=None):
+        """Delete a consistency group snapshot
+
+        :param context:
+        :param snap_dict: The cgsnapshot details
+            EXAMPLE:
+            .. code::
+
+                {
+                'status': 'available',
+                'project_id': '13c0be6290934bd98596cfa004650049',
+                'user_id': 'a0314a441ca842019b0952224aa39192',
+                'description': None,
+                'deleted': '0',
+                'created_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                'updated_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                'consistency_group_id': '4b04fdc3-00b9-4909-ba1a-06e9b3f88b67',
+                'cgsnapshot_members': [
+                    {
+                     'status': 'available',
+                     'share_type_id': '1a9ed31e-ee70-483d-93ba-89690e028d7f',
+                     'share_id': 'e14b5174-e534-4f35-bc4f-fe81c1575d6f',
+                     'user_id': 'a0314a441ca842019b0952224aa39192',
+                     'deleted': 'False',
+                     'created_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                     'share': <models.Share>,
+                     'updated_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+                     'share_proto': 'NFS',
+                     'project_id': '13c0be6290934bd98596cfa004650049',
+                     'cgsnapshot_id': 'f6aa3b59-57eb-421e-965c-4e182538e36a',
+                     'deleted_at': None,
+                     'id': '6813e06b-a8f5-4784-b17d-f3e91afa370e',
+                     'size': 1
+                    }
+                ],
+                'deleted_at': None,
+                'id': 'f6aa3b59-57eb-421e-965c-4e182538e36a',
+                'name': None
+                }
+        :return: (cgsnapshot_update, member_update_list)
+            cgsnapshot_update - a dict containing any values to be updated
+            for the CGSnapshot in the database. This value may be None.
+        """
+        raise NotImplementedError()
+
+    def get_periodic_hook_data(self, context, share_instances):
+        """Dedicated for update/extend of data for existing share instances.
+
+        Redefine this method in share driver to be able to update/change/extend
+        share instances data that will be used by periodic hook action.
+        One of possible updates is add-on of "automount" CLI commands for each
+        share instance for case of notification is enabled using 'hook'
+        approach.
+
+        :param context: Current context
+        :param share_instances: share instances list provided by share manager
+        :return: list of share instances.
+        """
+        return share_instances

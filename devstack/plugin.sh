@@ -96,6 +96,11 @@ MANILA_SERVICE_KEYPAIR_NAME=${MANILA_SERVICE_KEYPAIR_NAME:-"manila-service"}
 MANILA_SERVICE_INSTANCE_USER=${MANILA_SERVICE_INSTANCE_USER:-"manila"}
 MANILA_SERVICE_IMAGE_URL=${MANILA_SERVICE_IMAGE_URL:-"https://github.com/uglide/manila-image-elements/releases/download/0.1.0/manila-service-image.qcow2"}
 MANILA_SERVICE_IMAGE_NAME=${MANILA_SERVICE_IMAGE_NAME:-"manila-service-image"}
+# Third party CI Vendors should set this to false to skip the service image download
+MANILA_SERVICE_IMAGE_ENABLED=$(trueorfalse True MANILA_SERVICE_IMAGE_ENABLED)
+
+MANILA_USE_SERVICE_INSTANCE_PASSWORD=${MANILA_USE_SERVICE_INSTANCE_PASSWORD:-"False"}
+MANILA_SERVICE_INSTANCE_PASSWORD=${MANILA_SERVICE_INSTANCE_PASSWORD:-"manila"}
 
 MANILA_SERVICE_VM_FLAVOR_REF=${MANILA_SERVICE_VM_FLAVOR_REF:-100}
 MANILA_SERVICE_VM_FLAVOR_NAME=${MANILA_SERVICE_VM_FLAVOR_NAME:-"manila-service-flavor"}
@@ -148,6 +153,10 @@ function configure_default_backends {
         iniset $MANILA_CONF $group_name service_image_name $MANILA_SERVICE_IMAGE_NAME
         iniset $MANILA_CONF $group_name service_instance_user $MANILA_SERVICE_INSTANCE_USER
         iniset $MANILA_CONF $group_name driver_handles_share_servers True
+
+        if [ $(trueorfalse False MANILA_USE_SERVICE_INSTANCE_PASSWORD) == True ]; then
+            iniset $MANILA_CONF $group_name service_instance_password $MANILA_SERVICE_INSTANCE_PASSWORD
+        fi
     done
 }
 
@@ -318,15 +327,13 @@ function configure_manila {
 
 function configure_manila_ui {
     setup_develop $MANILA_UI_DIR
-    local local_settings=$HORIZON_DIR/openstack_dashboard/local/local_settings.py
 
-    _horizon_config_set $local_settings "HORIZON_CONFIG" customization_module "'manila_ui.overrides'"
     cp $MANILA_UI_DIR/manila_ui/enabled/_90_manila_*.py $HORIZON_DIR/openstack_dashboard/local/enabled
 }
 
 
 function create_manila_service_keypair {
-    openstack keypair create $MANILA_SERVICE_KEYPAIR_NAME --public-key $MANILA_PATH_TO_PUBLIC_KEY
+    nova keypair-add $MANILA_SERVICE_KEYPAIR_NAME --pub-key $MANILA_PATH_TO_PUBLIC_KEY
 }
 
 
@@ -352,6 +359,7 @@ function create_service_share_servers {
             iniset $MANILA_CONF $BE service_instance_name_or_id $vm_id
             iniset $MANILA_CONF $BE service_net_name_or_ip private
             iniset $MANILA_CONF $BE tenant_net_name_or_ip private
+            iniset $MANILA_CONF $BE migration_data_copy_node_ip $PUBLIC_NETWORK_GATEWAY
         fi
     done
 }
@@ -422,33 +430,24 @@ function create_manila_service_secgroup {
 }
 
 # create_manila_accounts - Set up common required manila accounts
-# Tenant               User       Roles
-# ------------------------------------------------------------------
-# service              manila     admin        # if enabled
 function create_manila_accounts {
-    SERVICE_TENANT=$(openstack project show $SERVICE_TENANT_NAME -f value -c id)
-    ADMIN_ROLE=$(openstack role show admin -f value -c id)
-    MANILA_USER=$(openstack user create \
-        --password="$SERVICE_PASSWORD" \
-        --project=$SERVICE_TENANT \
-        --email=manila@example.com \
-        manila \
-        -f value -c id)
-    openstack role add \
-        --project $SERVICE_TENANT \
-        --user $MANILA_USER \
-        $ADMIN_ROLE
+
+    create_service_user "manila"
+
     if [[ "$KEYSTONE_CATALOG_BACKEND" = 'sql' ]]; then
-        MANILA_SERVICE=$(openstack service create \
-            --type=share \
-            --description="Manila Shared Filesystem Service" \
-            manila -f value -c id)
-        openstack endpoint create \
-            --region RegionOne \
-            --publicurl "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v1/\$(tenant_id)s" \
-            --adminurl "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v1/\$(tenant_id)s" \
-            --internalurl "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v1/\$(tenant_id)s" \
-            $MANILA_SERVICE
+        # Set up Manila v1 service and endpoint
+        get_or_create_service "manila" "share" "Manila Shared Filesystem Service"
+        get_or_create_endpoint "share" "$REGION_NAME" \
+            "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v1/\$(tenant_id)s" \
+            "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v1/\$(tenant_id)s" \
+            "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v1/\$(tenant_id)s"
+
+        # Set up Manila v2 service and endpoint
+        get_or_create_service "manilav2" "sharev2" "Manila Shared Filesystem Service V2"
+        get_or_create_endpoint "sharev2" "$REGION_NAME" \
+            "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v2/\$(tenant_id)s" \
+            "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v2/\$(tenant_id)s" \
+            "$MANILA_SERVICE_PROTOCOL://$MANILA_SERVICE_HOST:$MANILA_SERVICE_PORT/v2/\$(tenant_id)s"
     fi
 }
 
@@ -462,9 +461,23 @@ function create_default_share_type {
     enabled_backends=(${MANILA_ENABLED_BACKENDS//,/ })
     driver_handles_share_servers=$(iniget $MANILA_CONF ${enabled_backends[0]} driver_handles_share_servers)
 
-    manila type-create $MANILA_DEFAULT_SHARE_TYPE $driver_handles_share_servers
+    manila \
+        --debug \
+        --os-auth-url $KEYSTONE_AUTH_URI/v2.0 \
+        --os-tenant-name ${OS_PROJECT_NAME:-$OS_TENANT_NAME} \
+        --os-username $OS_USERNAME \
+        --os-password $OS_PASSWORD \
+        --os-region-name $OS_REGION_NAME \
+        type-create $MANILA_DEFAULT_SHARE_TYPE $driver_handles_share_servers
     if [[ $MANILA_DEFAULT_SHARE_TYPE_EXTRA_SPECS ]]; then
-        manila type-key $MANILA_DEFAULT_SHARE_TYPE set $MANILA_DEFAULT_SHARE_TYPE_EXTRA_SPECS
+        manila \
+            --debug \
+            --os-auth-url $KEYSTONE_AUTH_URI/v2.0 \
+            --os-tenant-name ${OS_PROJECT_NAME:-$OS_TENANT_NAME} \
+            --os-username $OS_USERNAME \
+            --os-password $OS_PASSWORD \
+            --os-region-name $OS_REGION_NAME \
+            type-key $MANILA_DEFAULT_SHARE_TYPE set $MANILA_DEFAULT_SHARE_TYPE_EXTRA_SPECS
     fi
 }
 
@@ -531,6 +544,27 @@ function stop_manila {
     done
 }
 
+# update_tempest - Function used for updating Tempest config if Tempest service enabled
+function update_tempest {
+    if is_service_enabled tempest; then
+        if [ $(trueorfalse False MANILA_USE_SERVICE_INSTANCE_PASSWORD) == True ]; then
+            iniset $TEMPEST_DIR/etc/tempest.conf share image_password $MANILA_SERVICE_INSTANCE_PASSWORD
+        fi
+    fi
+}
+
+function install_libraries {
+    if [ $(trueorfalse False MANILA_MULTI_BACKEND) == True ]; then
+        if [ $(trueorfalse True RUN_MANILA_MIGRATION_TESTS) == True ]; then
+            if is_ubuntu; then
+                install_package nfs-common
+            else
+                install_package nfs-utils
+            fi
+        fi
+    fi
+}
+
 # Main dispatcher
 if [[ "$1" == "stack" && "$2" == "install" ]]; then
     echo_summary "Installing Manila"
@@ -541,6 +575,8 @@ elif [[ "$1" == "stack" && "$2" == "post-config" ]]; then
     configure_manila
     echo_summary "Initializing Manila"
     init_manila
+    echo_summary "Installing extra libraries"
+    install_libraries
 elif [[ "$1" == "stack" && "$2" == "extra" ]]; then
     echo_summary "Creating Manila entities for auth service"
     create_manila_accounts
@@ -551,8 +587,15 @@ elif [[ "$1" == "stack" && "$2" == "extra" ]]; then
     echo_summary "Creating Manila service security group"
     create_manila_service_secgroup
 
-    echo_summary "Creating Manila service image"
-    create_manila_service_image
+    # Skip image downloads when disabled.
+    # This way vendor Manila driver CI tests can skip
+    # this potentially long and unnecessary download.
+    if [ "$MANILA_SERVICE_IMAGE_ENABLED" = "True" ]; then
+        echo_summary "Creating Manila service image"
+        create_manila_service_image
+    else
+        echo_summary "Skipping download of Manila service image"
+    fi
 
     echo_summary "Creating Manila service keypair"
     create_manila_service_keypair
@@ -566,6 +609,9 @@ elif [[ "$1" == "stack" && "$2" == "extra" ]]; then
 
     echo_summary "Creating Manila default share type"
     create_default_share_type
+
+    echo_summary "Update Tempest config"
+    update_tempest
 fi
 
 if [[ "$1" == "unstack" ]]; then

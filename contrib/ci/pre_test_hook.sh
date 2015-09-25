@@ -25,6 +25,7 @@ echo "DEVSTACK_GATE_TEMPEST_ALLOW_TENANT_ISOLATION=1" >> $localrc_path
 echo "API_RATE_LIMIT=False" >> $localrc_path
 echo "TEMPEST_SERVICES+=,manila" >> $localrc_path
 echo "VOLUME_BACKING_FILE_SIZE=22G" >> $localrc_path
+echo "CINDER_LVM_TYPE=thin" >> $localrc_path
 
 echo "MANILA_BACKEND1_CONFIG_GROUP_NAME=london" >> $localrc_path
 echo "MANILA_BACKEND2_CONFIG_GROUP_NAME=paris" >> $localrc_path
@@ -36,6 +37,8 @@ driver_handles_share_servers=$(trueorfalse True driver_handles_share_servers)
 
 echo "MANILA_OPTGROUP_london_driver_handles_share_servers=$driver_handles_share_servers" >> $localrc_path
 echo "MANILA_OPTGROUP_paris_driver_handles_share_servers=$driver_handles_share_servers" >> $localrc_path
+
+echo "MANILA_USE_SERVICE_INSTANCE_PASSWORD=True" >> $localrc_path
 
 echo "MANILA_USE_DOWNGRADE_MIGRATIONS=True" >> $localrc_path
 
@@ -53,14 +56,13 @@ fi
 # created vm's in scenario tests.
 echo 'ENABLE_ISOLATED_METADATA=True' >> $localrc_path
 
+
 # Go to Tempest dir and checkout stable commit to avoid possible
 # incompatibilities for plugin stored in Manila repo.
-TEMPEST_COMMIT="489f5e62"  # 15 June, 2015
+TEMPEST_COMMIT="3b1bb9be3265f"  # 28 Aug, 2015
 cd $BASE/new/tempest
 git checkout $TEMPEST_COMMIT
 
 # Print current Tempest status
 git status
 
-# Install Manila Tempest integration
-cp -r $BASE/new/manila/contrib/tempest/tempest/* $BASE/new/tempest/tempest

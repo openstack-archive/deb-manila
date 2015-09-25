@@ -23,6 +23,7 @@ import paramiko
 from manila import exception
 from manila.share.drivers.hitachi import ssh
 from manila import test
+from manila import utils
 
 CONF = cfg.CONF
 
@@ -69,7 +70,6 @@ file_system        1055  fake_span          Umount   2        4      5
 file_system2       1050  fake_span2         NoEVS    -      10       0     1
 fake_fs            1051  fake_span          Umount   2      100     1024   """
 
-
 HNAS_RESULT_one_fs = """ \
 Instance name      Dev   On span            State   EVS  Cap/GiB Confined Flag
 -----------------  ----  -------            ------  ---  ------- -------- ----
@@ -110,6 +110,22 @@ HNAS_RESULT_quota_tb = """Type            : Explicit
 Target          : ViVol: vvol_test
 Usage           : 0 B
   Limit         : 1 TB (Hard)
+  Warning       : Unset
+  Critical      : Unset
+  Reset         : 5% (51.2 MB)
+File Count      : 1
+  Limit         : Unset
+  Warning       : Unset
+  Critical      : Unset
+  Reset         : 5% (0)
+Generate Events : Disabled
+Global id       : 28a3c9f8-ae05-11d0-9025-836896aada5d
+Last modified   : 2015-06-23 22:37:17.363660800+00:00  """
+
+HNAS_RESULT_quota_mb = """Type            : Explicit
+Target          : ViVol: vvol_test
+Usage           : 0 B
+  Limit         : 500 MB (Hard)
   Warning       : Unset
   Critical      : Unset
   Reset         : 5% (51.2 MB)
@@ -295,9 +311,7 @@ vol3
   usage  bytes : 5 GB (5368709120 B)  files: 2
   last modified: 2015-07-28 20:23:05.672404600+00:00"""
 
-HNAS_RESULT_tree_job_status_fail = """
-tree-clone-job-status: Job id = d933100a-b5f6-11d0-91d9-836896aada5d
-   JOB ID : d933100a-b5f6-11d0-91d9-836896aada5d
+HNAS_RESULT_tree_job_status_fail = """JOB ID : d933100a-b5f6-11d0-91d9-836896aada5d
       Job request
         Physical node                  : 1
         EVS                            : 1
@@ -310,7 +324,6 @@ tree-clone-job-status: Job id = d933100a-b5f6-11d0-91d9-836896aada5d
         Ensure destination path exists : true
 
       Job state                        : Job failed
-
       Job info
         Started                        : 2013-09-05 23:16:48-07:00
         Ended                          : 2013-09-05 23:17:02-07:00
@@ -328,9 +341,7 @@ tree-clone-job-status: Job id = d933100a-b5f6-11d0-91d9-836896aada5d
 HNAS_RESULT_job = """tree-operation-job-submit: Request submitted successfully.
 tree-operation-job-submit: Job id = d933100a-b5f6-11d0-91d9-836896aada5d """
 
-HNAS_RESULT_job_completed = """
-   tree-clone-job-status: Job id = ab4211b8-aac8-11ce-91af-39e0822ea368
-   JOB ID : ab4211b8-aac8-11ce-91af-39e0822ea368
+HNAS_RESULT_job_completed = """JOB ID : ab4211b8-aac8-11ce-91af-39e0822ea368
       Job request
         Physical node                  : 1
         EVS                            : 1
@@ -341,6 +352,7 @@ HNAS_RESULT_job_completed = """
         Creation time                  : 2013-09-05 23:16:48-07:00
         Destination path               : "/clone/bar"
         Ensure destination path exists : true
+
       Job state                        : Job was completed
       Job info
         Started                        : 2013-09-05 23:16:48-07:00
@@ -357,9 +369,7 @@ HNAS_RESULT_job_completed = """
 block special devices, 25 character devices
 """
 
-HNAS_RESULT_job_running = """
-   tree-clone-job-status: Job id = ab4211b8-aac8-11ce-91af-39e0822ea368
-   JOB ID : ab4211b8-aac8-11ce-91af-39e0822ea368
+HNAS_RESULT_job_running = """JOB ID : ab4211b8-aac8-11ce-91af-39e0822ea368
       Job request
         Physical node                  : 1
         EVS                            : 1
@@ -370,6 +380,7 @@ HNAS_RESULT_job_running = """
         Creation time                  : 2013-09-05 23:16:48-07:00
         Destination path               : "/clone/bar"
         Ensure destination path exists : true
+
       Job state                        : Job is running
       Job info
         Started                        : 2013-09-05 23:16:48-07:00
@@ -384,6 +395,24 @@ HNAS_RESULT_job_running = """
         Source files skipped           : 801
         Skipping details               : 104 symlinks, 452 hard links, 47 \
 block special devices, 25 character devices
+"""
+
+HNAS_RESULT_df = """
+  ID          Label  EVS      Size            Used  Snapshots  Deduped  \
+          Avail  Thin  ThinSize  ThinAvail              FS Type
+----  -------------  ---  --------  --------------  ---------  -------  \
+-------------  ----  --------  ---------  -------------------
+1051  FS-ManilaDev1    3  70.00 GB  10.00 GB (75%)   0 B (0%)       NA  \
+18.3 GB (25%)    No                       4 KB,WFS-2,128 DSBs
+"""
+
+HNAS_RESULT_df_tb = """
+  ID          Label  EVS      Size            Used  Snapshots  Deduped  \
+          Avail  Thin  ThinSize  ThinAvail              FS Type
+----  -------------  ---  --------  --------------  ---------  -------  \
+-------------  ----  --------  ---------  -------------------
+1051  FS-ManilaDev1    3.00  7.00 TB  2 TB (75%)   0 B (0%)       NA  \
+18.3 GB (25%)    No                       4 KB,WFS-2,128 DSBs
 """
 
 
@@ -427,37 +456,44 @@ class HNASSSHTestCase(test.TestCase):
         }
 
     def test_get_stats(self):
-        fake_list_command = ['quota', 'list', 'file_system', 'vol3']
+        fake_list_command = ['df', '-a', '-f', 'file_system']
+        expected_debug_calls = [
+            ('Total space in file system: %(total)s GB.', {'total': 7168.0}),
+            ('Used space in the file system: %(used)s GB.', {'used': 2048.0}),
+            ('Available space in the file system: %(space)s GB.',
+             {'space': 5120.0})
+        ]
+
         self.mock_object(ssh.HNASSSHBackend, '_execute',
-                         mock.Mock(side_effect=[(HNAS_RESULT_fslimits, ""),
-                                                (HNAS_RESULT_vvol_list, ""),
-                                                (HNAS_RESULT_quota, ""),
-                                                (HNAS_RESULT_quota, ""),
-                                                (HNAS_RESULT_quota, ""),
-                                                (HNAS_RESULT_vvol_list, "")]))
+                         mock.Mock(return_value=(HNAS_RESULT_df_tb, "")))
 
         total, free = self._driver.get_stats()
 
         ssh.HNASSSHBackend._execute.assert_called_with(fake_list_command)
-        self.assertTrue(self.mock_log.debug.called)
-        self.assertEqual(100, total)
-        self.assertEqual(85, free)
+        self.mock_log.debug.assert_has_calls([mock.call(*a) for a in
+                                              expected_debug_calls])
+        self.assertEqual(7168.0, total)
+        self.assertEqual(5120.0, free)
 
     def test_get_stats_terabytes(self):
-        fake_list_command = ['quota', 'list', 'file_system', 'vol3']
+        fake_list_command = ['df', '-a', '-f', 'file_system']
+        expected_debug_calls = [
+            ('Total space in file system: %(total)s GB.', {'total': 7168.0}),
+            ('Used space in the file system: %(used)s GB.', {'used': 2048.0}),
+            ('Available space in the file system: %(space)s GB.',
+             {'space': 5120.0})
+        ]
+
         self.mock_object(ssh.HNASSSHBackend, '_execute',
-                         mock.Mock(side_effect=[(HNAS_RESULT_fslimits_tb, ""),
-                                                (HNAS_RESULT_vvol_list, ""),
-                                                (HNAS_RESULT_quota, ""),
-                                                (HNAS_RESULT_quota_tb, ""),
-                                                (HNAS_RESULT_quota, "")]))
+                         mock.Mock(return_value=(HNAS_RESULT_df_tb, "")))
 
         total, free = self._driver.get_stats()
 
         ssh.HNASSSHBackend._execute.assert_called_with(fake_list_command)
-        self.assertTrue(self.mock_log.debug.called)
-        self.assertEqual(1500, total)
-        self.assertEqual(466, free)
+        self.mock_log.debug.assert_has_calls([mock.call(*a) for a in
+                                              expected_debug_calls])
+        self.assertEqual(7168.0, total)
+        self.assertEqual(5120.0, free)
 
     def test_allow_access(self):
         fake_mod_command = ['nfs-export', 'mod', '-c',
@@ -841,9 +877,7 @@ class HNASSSHTestCase(test.TestCase):
                                                 (HNAS_RESULT_vvol, ""),
                                                 (HNAS_RESULT_quota, ""),
                                                 (HNAS_RESULT_export, ""),
-                                                (HNAS_RESULT_fslimits, ""),
-                                                (HNAS_RESULT_vvol, ""),
-                                                (HNAS_RESULT_quota, ""),
+                                                (HNAS_RESULT_df, ""),
                                                 (HNAS_RESULT_empty, "")]))
 
         self._driver.extend_share(self.vvol['id'],
@@ -855,18 +889,14 @@ class HNASSSHTestCase(test.TestCase):
         ssh.HNASSSHBackend._execute.assert_called_with(fake_quota_mod_command)
 
     def test_extend_share_no_space(self):
-        fake_list_command = ['quota', 'list', 'file_system', 'vol3']
+        fake_list_command = ['df', '-a', '-f', 'file_system']
         self.mock_object(ssh.HNASSSHBackend, '_execute',
                          mock.Mock(side_effect=[(HNAS_RESULT_fs, ""),
                                                 (HNAS_RESULT_fs, ""),
                                                 (HNAS_RESULT_vvol, ""),
                                                 (HNAS_RESULT_quota, ""),
                                                 (HNAS_RESULT_export, ""),
-                                                (HNAS_RESULT_fslimits, ""),
-                                                (HNAS_RESULT_vvol_list, ""),
-                                                (HNAS_RESULT_quota, ""),
-                                                (HNAS_RESULT_quota, ""),
-                                                (HNAS_RESULT_quota, "")]))
+                                                (HNAS_RESULT_df, "")]))
 
         # Tests when try to create a share bigger than available free space
         self.assertRaises(exception.HNASBackendException,
@@ -884,13 +914,13 @@ class HNASSSHTestCase(test.TestCase):
                                                 (HNAS_RESULT_vvol, ""),
                                                 (HNAS_RESULT_quota, ""),
                                                 (HNAS_RESULT_export, ""),
-                                                (HNAS_RESULT_quota, "")]))
+                                                (HNAS_RESULT_quota_tb, "")]))
 
         output = self._driver.manage_existing(self.vvol, self.vvol['id'])
 
         self.assertEqual({'export_locations':
                           ['172.24.44.1:/shares/vvol_test'],
-                          'size': 5.0}, output)
+                          'size': 1024.0}, output)
         ssh.HNASSSHBackend._execute.assert_called_with(fake_list_command)
 
     def test_manage_existing_share_without_size(self):
@@ -902,6 +932,21 @@ class HNASSSHTestCase(test.TestCase):
                                                 (HNAS_RESULT_quota, ""),
                                                 (HNAS_RESULT_export, ""),
                                                 (HNAS_RESULT_quota_err, "")]))
+
+        self.assertRaises(exception.HNASBackendException,
+                          self._driver.manage_existing,
+                          self.vvol, self.vvol['id'])
+        ssh.HNASSSHBackend._execute.assert_called_with(fake_list_command)
+
+    def test_manage_existing_share_invalid_size(self):
+        fake_list_command = ['quota', 'list', 'file_system', 'vvol_test']
+        self.mock_object(ssh.HNASSSHBackend, '_execute',
+                         mock.Mock(side_effect=[(HNAS_RESULT_fs, ""),
+                                                (HNAS_RESULT_fs, ""),
+                                                (HNAS_RESULT_vvol, ""),
+                                                (HNAS_RESULT_quota, ""),
+                                                (HNAS_RESULT_export, ""),
+                                                (HNAS_RESULT_quota_mb, "")]))
 
         self.assertRaises(exception.HNASBackendException,
                           self._driver.manage_existing,
@@ -1077,8 +1122,7 @@ class HNASSSHTestCase(test.TestCase):
                                '/shares/vvol_test']
         # Tests when successfully creates a share from snapshot
         self.mock_object(ssh.HNASSSHBackend, '_execute',
-                         mock.Mock(side_effect=[(HNAS_RESULT_quota, ""),
-                                                (HNAS_RESULT_fs, ""),
+                         mock.Mock(side_effect=[(HNAS_RESULT_fs, ""),
                                                 (HNAS_RESULT_empty, ""),
                                                 (HNAS_RESULT_empty, ""),
                                                 (HNAS_RESULT_job, ""),
@@ -1091,17 +1135,6 @@ class HNASSSHTestCase(test.TestCase):
         self.assertTrue(self.mock_log.debug.called)
         ssh.HNASSSHBackend._execute.assert_called_with(fake_export_command)
 
-    def test_create_share_from_snapshot_quota_unset(self):
-        # Tests when quota is unset
-        fake_quota_command = ['quota', 'list', 'file_system', 'vvol_test']
-        self.mock_object(ssh.HNASSSHBackend, '_execute',
-                         mock.Mock(return_value=(HNAS_RESULT_quota_err, "")))
-
-        self.assertRaises(exception.HNASBackendException,
-                          self._driver.create_share_from_snapshot,
-                          self.vvol, self.snapshot)
-        ssh.HNASSSHBackend._execute.assert_called_with(fake_quota_command)
-
     def test_create_share_from_empty_snapshot(self):
         msg = 'Cannot find any clonable files in the source directory'
         fake_export_command = ['nfs-export', 'add', '-S', 'disable', '-c',
@@ -1110,8 +1143,7 @@ class HNASSSHTestCase(test.TestCase):
 
         # Tests when successfully creates a share from snapshot
         self.mock_object(ssh.HNASSSHBackend, '_execute',
-                         mock.Mock(side_effect=[(HNAS_RESULT_quota, ""),
-                                                (HNAS_RESULT_fs, ""),
+                         mock.Mock(side_effect=[(HNAS_RESULT_fs, ""),
                                                 (HNAS_RESULT_empty, ""),
                                                 (HNAS_RESULT_empty, ""),
                                                 (putils.ProcessExecutionError
@@ -1133,8 +1165,7 @@ class HNASSSHTestCase(test.TestCase):
                                '/shares/vvol_test']
 
         self.mock_object(ssh.HNASSSHBackend, '_execute',
-                         mock.Mock(side_effect=[(HNAS_RESULT_quota, ""),
-                                                (HNAS_RESULT_fs, ""),
+                         mock.Mock(side_effect=[(HNAS_RESULT_fs, ""),
                                                 (HNAS_RESULT_empty, ""),
                                                 (HNAS_RESULT_empty, ""),
                                                 (putils.ProcessExecutionError
@@ -1170,6 +1201,31 @@ class HNASSSHTestCase(test.TestCase):
                                                       port=self.port)
         self.assertIn('Request submitted successfully.', output)
 
+    def test__execute_retry(self):
+        commands = ['tree-clone-job-submit', '-e', '/src', '/dst']
+        concat_command = ('ssc --smuauth fake console-context --evs 2 '
+                          'tree-clone-job-submit -e /src /dst')
+        msg = 'Failed to establish SSC connection'
+
+        item_mock = mock.Mock()
+        self.mock_object(utils.pools.Pool, 'item',
+                         mock.Mock(return_value=item_mock))
+        setattr(item_mock, '__enter__', mock.Mock())
+        setattr(item_mock, '__exit__', mock.Mock())
+
+        self.mock_object(paramiko.SSHClient, 'connect')
+        # testing retrying 3 times
+        self.mock_object(putils, 'ssh_execute', mock.Mock(
+            side_effect=[putils.ProcessExecutionError(stderr=msg),
+                         putils.ProcessExecutionError(stderr=msg),
+                         putils.ProcessExecutionError(stderr=msg),
+                         (HNAS_RESULT_job, '')]))
+
+        self._driver._execute(commands)
+
+        putils.ssh_execute.assert_called_with(mock.ANY, concat_command,
+                                              check_exit_code=True)
+
     def test__execute_ssh_exception(self):
         key = self.ssh_private_key
         commands = ['tree-clone-job-submit', '-e', '/src', '/dst']
@@ -1177,7 +1233,8 @@ class HNASSSHTestCase(test.TestCase):
                           'tree-clone-job-submit -e /src /dst')
         self.mock_object(paramiko.SSHClient, 'connect')
         self.mock_object(putils, 'ssh_execute',
-                         mock.Mock(side_effect=putils.ProcessExecutionError))
+                         mock.Mock(side_effect=putils.ProcessExecutionError
+                                   (stderr='Error')))
 
         self.assertRaises(putils.ProcessExecutionError,
                           self._driver._execute, commands)

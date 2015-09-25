@@ -44,7 +44,8 @@ host_manager_opts = [
                 default=[
                     'AvailabilityZoneFilter',
                     'CapacityFilter',
-                    'CapabilitiesFilter'
+                    'CapabilitiesFilter',
+                    'ConsistencyGroupFilter',
                 ],
                 help='Which filter class names to use for filtering hosts '
                      'when not specified in the request.'),
@@ -123,6 +124,8 @@ class HostState(object):
         self.thin_provisioning = False
         self.driver_handles_share_servers = False
         self.snapshot_support = True
+        self.consistency_group_support = False
+        self.dedupe = False
 
         # PoolState for all pools
         self.pools = {}
@@ -278,6 +281,13 @@ class HostState(object):
         if not pool_cap.get('snapshot_support'):
             pool_cap['snapshot_support'] = True
 
+        if not pool_cap.get('consistency_group_support'):
+            pool_cap['consistency_group_support'] = \
+                self.consistency_group_support
+
+        if not pool_cap.get('dedupe'):
+            pool_cap['dedupe'] = False
+
     def update_backend(self, capability):
         self.share_backend_name = capability.get('share_backend_name')
         self.vendor_name = capability.get('vendor_name')
@@ -286,19 +296,22 @@ class HostState(object):
         self.driver_handles_share_servers = capability.get(
             'driver_handles_share_servers')
         self.snapshot_support = capability.get('snapshot_support')
+        self.consistency_group_support = capability.get(
+            'consistency_group_support', False)
         self.updated = capability['timestamp']
 
     def consume_from_share(self, share):
         """Incrementally update host state from an share."""
-        share_gb = share['size']
-        if self.free_capacity_gb == 'infinite':
-            # There's virtually infinite space on back-end
-            pass
-        elif self.free_capacity_gb == 'unknown':
-            # Unable to determine the actual free space on back-end
-            pass
-        else:
-            self.free_capacity_gb -= share_gb
+
+        if (isinstance(self.free_capacity_gb, six.string_types)
+                and self.free_capacity_gb != 'unknown'):
+            raise exception.InvalidCapacity(
+                name='free_capacity_gb',
+                value=six.text_type(self.free_capacity_gb)
+            )
+
+        if self.free_capacity_gb != 'unknown':
+            self.free_capacity_gb -= share['size']
         self.updated = timeutils.utcnow()
 
     def __repr__(self):
@@ -344,6 +357,8 @@ class PoolState(HostState):
                 CONF.max_over_subscription_ratio)
             self.thin_provisioning = capability.get(
                 'thin_provisioning', False)
+            self.dedupe = capability.get(
+                'dedupe', False)
 
     def update_pools(self, capability):
         # Do nothing, since we don't have pools within pool, yet

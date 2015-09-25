@@ -195,6 +195,8 @@ class HostManagerTestCase(test.TestCase):
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
                         'snapshot_support': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
                     },
                 }, {
                     'name': 'host2@back1#BBB',
@@ -215,6 +217,8 @@ class HostManagerTestCase(test.TestCase):
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
                         'snapshot_support': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
                     },
                 }, {
                     'name': 'host2@back2#CCC',
@@ -235,6 +239,8 @@ class HostManagerTestCase(test.TestCase):
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
                         'snapshot_support': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
                     },
                 },
             ]
@@ -277,6 +283,8 @@ class HostManagerTestCase(test.TestCase):
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
                         'snapshot_support': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
                     },
                 }, {
                     'name': 'host2@BBB#pool2',
@@ -298,6 +306,8 @@ class HostManagerTestCase(test.TestCase):
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
                         'snapshot_support': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
                     },
                 }, {
                     'name': 'host3@CCC#pool3',
@@ -319,6 +329,8 @@ class HostManagerTestCase(test.TestCase):
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
                         'snapshot_support': True,
+                        'consistency_group_support': 'pool',
+                        'dedupe': False,
                     },
                 }, {
                     'name': 'host4@DDD#pool4a',
@@ -340,6 +352,8 @@ class HostManagerTestCase(test.TestCase):
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
                         'snapshot_support': True,
+                        'consistency_group_support': 'host',
+                        'dedupe': False,
                     },
                 }, {
                     'name': 'host4@DDD#pool4b',
@@ -361,6 +375,8 @@ class HostManagerTestCase(test.TestCase):
                         'storage_protocol': None,
                         'driver_handles_share_servers': False,
                         'snapshot_support': True,
+                        'consistency_group_support': 'host',
+                        'dedupe': False,
                     },
                 },
             ]
@@ -415,6 +431,8 @@ class HostManagerTestCase(test.TestCase):
                         'provisioned_capacity_gb': 312,
                         'max_over_subscription_ratio': 1.0,
                         'thin_provisioning': False,
+                        'consistency_group_support': False,
+                        'dedupe': False,
                     },
                 }, {
                     'name': 'host2@back1#BBB',
@@ -435,6 +453,8 @@ class HostManagerTestCase(test.TestCase):
                         'provisioned_capacity_gb': 400,
                         'max_over_subscription_ratio': 2.0,
                         'thin_provisioning': True,
+                        'consistency_group_support': False,
+                        'dedupe': False,
                     },
                 },
             ]
@@ -480,7 +500,9 @@ class HostManagerTestCase(test.TestCase):
                         'max_over_subscription_ratio': 2.0,
                         'thin_provisioning': True,
                         'vendor_name': None,
-                        'storage_protocol': None
+                        'storage_protocol': None,
+                        'consistency_group_support': False,
+                        'dedupe': False,
                     },
                 },
             ]
@@ -626,27 +648,9 @@ class HostStateTestCase(test.TestCase):
         self.assertEqual(10000, fake_host.pools['pool3'].total_capacity_gb)
         self.assertEqual(10000, fake_host.pools['pool3'].free_capacity_gb)
 
-    def test_update_from_share_infinite_capability(self):
-        share_capability = {'total_capacity_gb': 'infinite',
-                            'free_capacity_gb': 'infinite',
-                            'reserved_percentage': 0,
-                            'timestamp': None}
-        fake_host = host_manager.HostState('host1#_pool0')
-        self.assertIsNone(fake_host.free_capacity_gb)
-
-        fake_host.update_from_share_capability(share_capability)
-        # Backend level stats remain uninitialized
-        self.assertEqual(fake_host.total_capacity_gb, 0)
-        self.assertIsNone(fake_host.free_capacity_gb)
-        # Pool stats has been updated
-        self.assertEqual(fake_host.pools['_pool0'].total_capacity_gb,
-                         'infinite')
-        self.assertEqual(fake_host.pools['_pool0'].free_capacity_gb,
-                         'infinite')
-
     def test_update_from_share_unknown_capability(self):
         share_capability = {
-            'total_capacity_gb': 'infinite',
+            'total_capacity_gb': 'unknown',
             'free_capacity_gb': 'unknown',
             'reserved_percentage': 0,
             'timestamp': None
@@ -660,7 +664,7 @@ class HostStateTestCase(test.TestCase):
         self.assertIsNone(fake_host.free_capacity_gb)
         # Pool stats has been updated
         self.assertEqual(fake_host.pools['_pool0'].total_capacity_gb,
-                         'infinite')
+                         'unknown')
         self.assertEqual(fake_host.pools['_pool0'].free_capacity_gb,
                          'unknown')
 
@@ -681,25 +685,9 @@ class HostStateTestCase(test.TestCase):
         self.assertEqual(fake_host.free_capacity_gb,
                          free_capacity - share_size)
 
-    def test_consume_from_share_infinite_capability(self):
-        share_capability = {
-            'total_capacity_gb': 'infinite',
-            'free_capacity_gb': 'infinite',
-            'reserved_percentage': 0,
-            'timestamp': None
-        }
-        fake_host = host_manager.PoolState('host1', share_capability, '_pool0')
-        share_size = 1000
-        fake_share = {'id': 'foo', 'size': share_size}
-
-        fake_host.update_from_share_capability(share_capability)
-        fake_host.consume_from_share(fake_share)
-        self.assertEqual(fake_host.total_capacity_gb, 'infinite')
-        self.assertEqual(fake_host.free_capacity_gb, 'infinite')
-
     def test_consume_from_share_unknown_capability(self):
         share_capability = {
-            'total_capacity_gb': 'infinite',
+            'total_capacity_gb': 'unknown',
             'free_capacity_gb': 'unknown',
             'reserved_percentage': 0,
             'timestamp': None
@@ -710,8 +698,15 @@ class HostStateTestCase(test.TestCase):
 
         fake_host.update_from_share_capability(share_capability)
         fake_host.consume_from_share(fake_share)
-        self.assertEqual(fake_host.total_capacity_gb, 'infinite')
+        self.assertEqual(fake_host.total_capacity_gb, 'unknown')
         self.assertEqual(fake_host.free_capacity_gb, 'unknown')
+
+    def test_consume_from_share_invalid_capacity(self):
+        fake_host = host_manager.PoolState('host1', {}, '_pool0')
+        fake_host.free_capacity_gb = 'invalid_foo_string'
+
+        self.assertRaises(exception.InvalidCapacity,
+                          fake_host.consume_from_share, 'fake')
 
     def test_repr(self):
 

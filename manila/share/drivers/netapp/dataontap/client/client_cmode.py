@@ -600,6 +600,42 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         self.send_request('net-interface-delete', api_args)
 
     @na_utils.trace
+    def get_node_for_aggregate(self, aggregate_name):
+        """Get home node for the specified aggregate.
+
+        This API could return None, most notably if it was sent
+        to a Vserver LIF, so the caller must be able to handle that case.
+        """
+
+        if not aggregate_name:
+            return None
+
+        desired_attributes = {
+            'aggr-attributes': {
+                'aggregate-name': None,
+                'aggr-ownership-attributes': {
+                    'home-name': None,
+                },
+            },
+        }
+
+        try:
+            aggrs = self._get_aggregates(aggregate_names=[aggregate_name],
+                                         desired_attributes=desired_attributes)
+        except netapp_api.NaApiError as e:
+            if e.code == netapp_error.EAPINOTFOUND:
+                return None
+            else:
+                raise e
+
+        if len(aggrs) < 1:
+            return None
+
+        aggr_ownership_attrs = aggrs[0].get_child_by_name(
+            'aggr-ownership-attributes') or netapp_api.NaElement('none')
+        return aggr_ownership_attrs.get_child_content('home-name')
+
+    @na_utils.trace
     def get_cluster_aggregate_capacities(self, aggregate_names):
         """Calculates capacity of one or more aggregates.
 
@@ -1497,6 +1533,32 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         """Deletes a volume snapshot."""
         api_args = {'volume': volume_name, 'snapshot': snapshot_name}
         self.send_request('snapshot-delete', api_args)
+
+    @na_utils.trace
+    def create_cg_snapshot(self, volume_names, snapshot_name):
+        """Creates a consistency group snapshot of one or more flexvols."""
+        cg_id = self._start_cg_snapshot(volume_names, snapshot_name)
+        if not cg_id:
+            msg = _('Could not start consistency group snapshot %s.')
+            raise exception.NetAppException(msg % snapshot_name)
+        self._commit_cg_snapshot(cg_id)
+
+    @na_utils.trace
+    def _start_cg_snapshot(self, volume_names, snapshot_name):
+        api_args = {
+            'snapshot': snapshot_name,
+            'timeout': 'relaxed',
+            'volumes': [
+                {'volume-name': volume_name} for volume_name in volume_names
+            ],
+        }
+        result = self.send_request('cg-start', api_args)
+        return result.get_child_content('cg-id')
+
+    @na_utils.trace
+    def _commit_cg_snapshot(self, cg_id):
+        api_args = {'cg-id': cg_id}
+        self.send_request('cg-commit', api_args)
 
     @na_utils.trace
     def create_cifs_share(self, share_name):

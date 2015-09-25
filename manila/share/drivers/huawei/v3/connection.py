@@ -16,18 +16,18 @@
 import time
 
 from oslo_log import log
-from oslo_utils import strutils
 from oslo_utils import units
 
 from manila.common import constants as common_constants
 from manila import exception
-from manila.i18n import _, _LI, _LW
+from manila.i18n import _
+from manila.i18n import _LI
+from manila.i18n import _LW
 from manila.share.drivers.huawei import base as driver
 from manila.share.drivers.huawei import constants
 from manila.share.drivers.huawei import huawei_utils
 from manila.share.drivers.huawei.v3 import helper
 from manila.share.drivers.huawei.v3 import smartx
-from manila.share import share_types
 from manila.share import utils as share_utils
 
 
@@ -114,7 +114,7 @@ class V3StorageConnection(driver.HuaweiBase):
         share_name = share['name']
 
         # The unit is in sectors.
-        size = new_size * units.Mi * 2
+        size = int(new_size) * units.Mi * 2
         share_url_type = self.helper._get_share_url_type(share_proto)
 
         share = self.helper._get_share_by_name(share_name, share_url_type)
@@ -144,7 +144,7 @@ class V3StorageConnection(driver.HuaweiBase):
         share_name = share['name']
 
         # The unit is in sectors.
-        size = new_size * units.Mi * 2
+        size = int(new_size) * units.Mi * 2
         share_url_type = self.helper._get_share_url_type(share_proto)
 
         share = self.helper._get_share_by_name(share_name, share_url_type)
@@ -192,14 +192,13 @@ class V3StorageConnection(driver.HuaweiBase):
         snap_name = snapshot['id']
         share_proto = snapshot['share']['share_proto']
 
-        share_name = self.helper._get_share_name_by_id(
-            snapshot['share']['share_id'])
         share_url_type = self.helper._get_share_url_type(share_proto)
-        share = self.helper._get_share_by_name(share_name, share_url_type)
+        share = self.helper._get_share_by_name(snapshot['share_name'],
+                                               share_url_type)
 
         if not share:
             err_msg = _('Can not create snapshot,'
-                        ' because share_id is not provided.')
+                        ' because share id is not provided.')
             LOG.error(err_msg)
             raise exception.InvalidInput(reason=err_msg)
 
@@ -214,9 +213,7 @@ class V3StorageConnection(driver.HuaweiBase):
         LOG.debug("Delete a snapshot.")
         snap_name = snapshot['id']
 
-        share_name = self.helper._get_share_name_by_id(
-            snapshot['share']['share_id'])
-        sharefsid = self.helper._get_fsid_by_name(share_name)
+        sharefsid = self.helper._get_fsid_by_name(snapshot['share_name'])
 
         if sharefsid is None:
             LOG.warning(_LW('Delete snapshot share id %s fs has been '
@@ -234,45 +231,41 @@ class V3StorageConnection(driver.HuaweiBase):
     def update_share_stats(self, stats_dict):
         """Retrieve status info from share group."""
         root = self.helper._read_xml()
-        pool_name_list = root.findtext('Filesystem/StoragePool')
-        if not pool_name_list:
+        all_pool_info = self.helper._find_all_pool_info()
+        stats_dict["pools"] = []
+
+        for pool_type in ('Thin', 'Thick'):
+            pool_name_list = root.findtext(('Filesystem/%s_StoragePool'
+                                            % pool_type))
+            pool_name_list = pool_name_list.split(";")
+            for pool_name in pool_name_list:
+                pool_name = pool_name.strip().strip('\n')
+                capacity = self._get_capacity(pool_name, all_pool_info)
+                if capacity:
+                    pool = dict(
+                        pool_name=pool_name,
+                        total_capacity_gb=capacity['TOTALCAPACITY'],
+                        free_capacity_gb=capacity['CAPACITY'],
+                        provisioned_capacity_gb=(
+                            capacity['PROVISIONEDCAPACITYGB']),
+                        max_over_subscription_ratio=(
+                            self.configuration.safe_get(
+                                'max_over_subscription_ratio')),
+                        allocated_capacity_gb=capacity['CONSUMEDCAPACITY'],
+                        QoS_support=False,
+                        reserved_percentage=0,
+                        thin_provisioning=(pool_type == 'Thin'),
+                        dedupe=(pool_type == 'Thin'),
+                        compression=(pool_type == 'Thin'),
+                        huawei_smartcache=True,
+                        huawei_smartpartition=True,
+                    )
+                    stats_dict["pools"].append(pool)
+
+        if not stats_dict["pools"]:
             err_msg = _("The StoragePool is None.")
             LOG.error(err_msg)
             raise exception.InvalidInput(err_msg)
-
-        pool_name_list = pool_name_list.split(";")
-
-        result = self.helper._find_all_pool_info()
-        stats_dict["pools"] = []
-        for pool_name in pool_name_list:
-            pool_name = pool_name.strip().strip('\n')
-            capacity = self._get_capacity(pool_name, result)
-            if capacity:
-                pool_thin = dict(
-                    pool_name=pool_name,
-                    total_capacity_gb=capacity['TOTALCAPACITY'],
-                    free_capacity_gb=capacity['CAPACITY'],
-                    provisioned_capacity_gb=capacity['PROVISIONEDCAPACITYGB'],
-                    max_over_subscription_ratio=self.configuration.safe_get(
-                        'max_over_subscription_ratio'),
-                    allocated_capacity_gb=capacity['CONSUMEDCAPACITY'],
-                    QoS_support=False,
-                    reserved_percentage=0,
-                    thin_provisioning=True,
-                    dedupe=True,
-                    compression=True,
-                    huawei_smartcache=True,
-                    huawei_smartpartition=True,
-                )
-
-                stats_dict["pools"].append(pool_thin)
-
-                # One pool can support both thin and thick
-                pool_thick = pool_thin.copy()
-                pool_thick["thin_provisioning"] = False
-                pool_thick["dedupe"] = False
-                pool_thick["compression"] = False
-                stats_dict["pools"].append(pool_thick)
 
     def delete_share(self, share, share_server=None):
         """Delete share."""
@@ -324,11 +317,12 @@ class V3StorageConnection(driver.HuaweiBase):
     def _init_filesys_para(self, share, poolinfo, extra_specs):
         """Init basic filesystem parameters."""
         name = share['name']
-        size = share['size'] * units.Mi * 2
+        size = int(share['size']) * units.Mi * 2
         fileparam = {
             "NAME": name.replace("-", "_"),
             "DESCRIPTION": "",
-            "ALLOCTYPE": 1,
+            "ALLOCTYPE": (1 if poolinfo['type'] == 'Thin'
+                          else 0),
             "CAPACITY": size,
             "PARENTID": poolinfo['ID'],
             "INITIALALLOCCAPACITY": units.Ki * 20,
@@ -343,25 +337,6 @@ class V3StorageConnection(driver.HuaweiBase):
             "ENABLEDEDUP": extra_specs['dedupe'],
             "ENABLECOMPRESSION": extra_specs['compression'],
         }
-
-        root = self.helper._read_xml()
-        fstype = root.findtext('Filesystem/AllocType')
-        if fstype:
-            fstype = fstype.strip()
-            if fstype == 'Thin':
-                fileparam['ALLOCTYPE'] = 1
-            elif fstype == 'Thick':
-                fileparam['ALLOCTYPE'] = 0
-            else:
-                err_msg = (_(
-                    'Config file is wrong. Filesystem type must be "Thin"'
-                    ' or "Thick". AllocType:%(fetchtype)s') %
-                    {'fetchtype': fstype})
-                LOG.error(err_msg)
-                raise exception.InvalidShare(reason=err_msg)
-
-        if 'LUNType' in extra_specs:
-            fileparam['ALLOCTYPE'] = extra_specs['LUNType']
 
         if fileparam['ALLOCTYPE'] == 0:
             if (extra_specs['dedupe'] or
@@ -493,16 +468,6 @@ class V3StorageConnection(driver.HuaweiBase):
 
     def manage_existing(self, share, driver_options):
         """Manage existing share."""
-        driver_mode = share_types.get_share_type_extra_specs(
-            share['share_type_id'],
-            common_constants.ExtraSpecs.DRIVER_HANDLES_SHARE_SERVERS)
-
-        if strutils.bool_from_string(driver_mode):
-            msg = _("%(mode)s != False") % {
-                'mode':
-                common_constants.ExtraSpecs.DRIVER_HANDLES_SHARE_SERVERS
-            }
-            raise exception.ManageExistingShareTypeMismatch(reason=msg)
 
         share_proto = share['share_proto']
         share_name = share['name']
@@ -595,26 +560,27 @@ class V3StorageConnection(driver.HuaweiBase):
         username = root.findtext('Storage/UserName')
         pwd = root.findtext('Storage/UserPassword')
         product = root.findtext('Storage/Product')
-        pool_node = root.findtext('Filesystem/StoragePool')
+        thin_pool_node = root.findtext('Filesystem/Thin_StoragePool')
+        thick_pool_node = root.findtext('Filesystem/Thick_StoragePool')
 
         if product != "V3":
             err_msg = (_(
-                '_check_conf_file: Config file invalid. '
+                'check_conf_file: Config file invalid. '
                 'Product must be set to V3.'))
             LOG.error(err_msg)
             raise exception.InvalidInput(err_msg)
 
         if not (resturl and username and pwd):
             err_msg = (_(
-                '_check_conf_file: Config file invalid. RestURL,'
+                'check_conf_file: Config file invalid. RestURL,'
                 ' UserName and UserPassword must be set.'))
             LOG.error(err_msg)
             raise exception.InvalidInput(err_msg)
 
-        if not pool_node:
+        if (not thin_pool_node) and (not thick_pool_node):
             err_msg = (_(
-                '_check_conf_file: Config file invalid. '
-                'StoragePool must be set.'))
+                'check_conf_file: Config file invalid. '
+                'Thin_StoragePool or Thick_StoragePool must be set.'))
             LOG.error(err_msg)
             raise exception.InvalidInput(err_msg)
 

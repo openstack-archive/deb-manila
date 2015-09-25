@@ -131,6 +131,11 @@ class PolicyNotAuthorized(NotAuthorized):
     message = _("Policy doesn't allow %(action)s to be performed.")
 
 
+class Conflict(ManilaException):
+    message = _("%(err)s")
+    code = 409
+
+
 class Invalid(ManilaException):
     message = _("Unacceptable parameters.")
     code = 400
@@ -184,6 +189,10 @@ class InvalidGlobalAPIVersion(Invalid):
                 "is %(min_ver)s and maximum is %(max_ver)s.")
 
 
+class InvalidCapacity(Invalid):
+    message = _("Invalid capacity: %(name)s = %(value)s.")
+
+
 class NotFound(ManilaException):
     message = _("Resource could not be found.")
     code = 404
@@ -217,6 +226,14 @@ class ShareServerInUse(InUse):
 
 class InvalidShareServer(Invalid):
     message = _("Share server %(share_server_id)s is not valid.")
+
+
+class ShareMigrationFailed(ManilaException):
+    message = _("Share migration failed: %(reason)s")
+
+
+class ServiceIPNotFound(ManilaException):
+    message = _("Share migration failed: %(reason)s")
 
 
 class ShareServerNotCreated(ManilaException):
@@ -590,14 +607,6 @@ class HP3ParUnexpectedError(ManilaException):
     message = _("%(err)s")
 
 
-class GPFSException(ManilaException):
-    message = _("GPFS exception occurred.")
-
-
-class GPFSGaneshaException(ManilaException):
-    message = _("GPFS Ganesha exception occurred.")
-
-
 class GaneshaCommandFailure(ProcessExecutionError):
     _description = _("Ganesha management command failed.")
 
@@ -613,10 +622,6 @@ class InvalidSqliteDB(Invalid):
 
 class SSHException(ManilaException):
     message = _("Exception in SSH protocol negotiation or logic.")
-
-
-class SopAPIError(Invalid):
-    message = _("%(err)s")
 
 
 class HDFSException(ManilaException):
@@ -640,3 +645,30 @@ class SSHInjectionThreat(ManilaException):
 
 class HNASBackendException(ManilaException):
     message = _("HNAS Backend Exception: %(msg)s")
+
+
+class HNASConnException(ManilaException):
+    message = _("HNAS Connection Exception: %(msg)s")
+
+
+# ConsistencyGroup
+class ConsistencyGroupNotFound(NotFound):
+    message = _("ConsistencyGroup %(consistency_group_id)s could not be "
+                "found.")
+
+
+class CGSnapshotNotFound(NotFound):
+    message = _("Consistency group snapshot %(cgsnapshot_id)s could not be "
+                "found.")
+
+
+class CGSnapshotMemberNotFound(NotFound):
+    message = _("CG snapshot %(member_id)s could not be found.")
+
+
+class InvalidConsistencyGroup(Invalid):
+    message = _("Invalid ConsistencyGroup: %(reason)s")
+
+
+class InvalidCGSnapshot(Invalid):
+    message = _("Invalid CGSnapshot: %(reason)s")

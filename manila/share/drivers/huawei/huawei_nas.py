@@ -47,7 +47,11 @@ class HuaweiNasDriver(driver.ShareDriver):
 
         1.0 - Initial version.
         1.1 - Add shrink share.
-        1.2 - Add manage share.
+              Add extend share.
+              Add manage share.
+              Add share level(ro).
+              Add smartx capabilities.
+              Support multi pools in one backend.
     """
 
     def __init__(self, *args, **kwargs):
@@ -85,7 +89,8 @@ class HuaweiNasDriver(driver.ShareDriver):
         backend_driver = HUAWEI_UNIFIED_DRIVER_REGISTRY.get(product)
         if backend_driver is None:
             raise exception.InvalidInput(
-                reason=_('Storage %s is not supported.') % product)
+                reason=_('Product %s is not supported. Product '
+                         'must be set to V3.') % product)
 
         return backend_driver
 
@@ -108,12 +113,6 @@ class HuaweiNasDriver(driver.ShareDriver):
         """Shrinks size of existing share."""
         LOG.debug("Shrink a share.")
         self.plugin.shrink_share(share, new_size, share_server)
-
-    def create_share_from_snapshot(self, context, share, snapshot,
-                                   share_server=None):
-        """Is called to create share from snapshot."""
-        LOG.debug("Create share from snapshot.")
-        raise NotImplementedError()
 
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""

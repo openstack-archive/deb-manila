@@ -18,6 +18,7 @@
 import ast
 
 from oslo_log import log
+from oslo_utils import strutils
 from oslo_utils import uuidutils
 import six
 import webob
@@ -64,12 +65,53 @@ class ShareController(wsgi.Controller):
 
         try:
             share = self.share_api.get(context, id)
+
+            # NOTE(ameade): If the share is in a consistency group, we require
+            # it's id be specified as a param.
+            if share.get('consistency_group_id'):
+                consistency_group_id = req.params.get('consistency_group_id')
+                if (share.get('consistency_group_id') and
+                        not consistency_group_id):
+                    msg = _("Must provide 'consistency_group_id' as a request "
+                            "parameter when deleting a share in a consistency "
+                            "group.")
+                    raise exc.HTTPBadRequest(explanation=msg)
+                elif consistency_group_id != share.get('consistency_group_id'):
+                    msg = _("The specified 'consistency_group_id' does not "
+                            "match the consistency group id of the share.")
+                    raise exc.HTTPBadRequest(explanation=msg)
+
             self.share_api.delete(context, share)
         except exception.NotFound:
             raise exc.HTTPNotFound()
         except exception.InvalidShare as e:
             raise exc.HTTPForbidden(explanation=six.text_type(e))
 
+        return webob.Response(status_int=202)
+
+    @wsgi.Controller.api_version("2.5", None, True)
+    @wsgi.action("os-migrate_share")
+    def migrate_share(self, req, id, body):
+        """Migrate a share to the specified host."""
+        context = req.environ['manila.context']
+        try:
+            share = self.share_api.get(context, id)
+        except exception.NotFound:
+            msg = _("Share %s not found.") % id
+            raise exc.HTTPNotFound(explanation=msg)
+        params = body['os-migrate_share']
+        try:
+            host = params['host']
+        except KeyError:
+            raise exc.HTTPBadRequest(explanation=_("Must specify 'host'"))
+        force_host_copy = params.get('force_host_copy', False)
+        try:
+            force_host_copy = strutils.bool_from_string(force_host_copy,
+                                                        strict=True)
+        except ValueError:
+            raise exc.HTTPBadRequest(
+                explanation=_("Bad value for 'force_host_copy'"))
+        self.share_api.migrate_share(context, share, host, force_host_copy)
         return webob.Response(status_int=202)
 
     def index(self, req):
@@ -133,6 +175,7 @@ class ShareController(wsgi.Controller):
             'display_name', 'status', 'share_server_id', 'volume_type_id',
             'share_type_id', 'snapshot_id', 'host', 'share_network_id',
             'is_public', 'metadata', 'extra_specs', 'sort_key', 'sort_dir',
+            'consistency_group_id', 'cgsnapshot_id'
         )
 
     def update(self, req, id, body):
@@ -162,14 +205,15 @@ class ShareController(wsgi.Controller):
         share.update(update_dict)
         return self._view_builder.detail(req, share)
 
-    @wsgi.Controller.api_version("1.3")
+    @wsgi.Controller.api_version("2.4")
     def create(self, req, body):
         return self._create(req, body)
 
-    @wsgi.Controller.api_version("1.0", "1.2")  # noqa
-    def create(self, req, body):
+    @wsgi.Controller.api_version("1.0", "2.3")  # noqa
+    def create(self, req, body):  # pylint: disable=E0102
+        # Remove consistency group attributes
+        body.get('share', {}).pop('consistency_group_id', None)
         share = self._create(req, body)
-        share.pop('snapshot_support', None)
         return share
 
     def _create(self, req, body):
@@ -211,6 +255,7 @@ class ShareController(wsgi.Controller):
             'availability_zone': availability_zone,
             'metadata': share.get('metadata'),
             'is_public': share.get('is_public', False),
+            'consistency_group_id': share.get('consistency_group_id')
         }
 
         snapshot_id = share.get('snapshot_id')

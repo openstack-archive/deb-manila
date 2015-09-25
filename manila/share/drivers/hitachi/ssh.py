@@ -48,24 +48,26 @@ class HNASSSHBackend(object):
     def get_stats(self):
         """Get the stats from file-system.
 
-        The available space is calculated by total space - SUM(quotas).
         :returns:
-        total_fs_space = Total size from filesystem in config file.
+        fs_capacity.size = Total size from filesystem.
         available_space = Free space currently on filesystem.
         """
-        total_fs_space = self._get_filesystem_capacity()
-        total_quota = 0
-        share_list = self._get_vvol_list()
+        command = ['df', '-a', '-f', self.fs_name]
+        output, err = self._execute(command)
 
-        for item in share_list:
-            share_quota = self._get_share_quota(item)
-            if share_quota is not None:
-                total_quota += share_quota
-        available_space = total_fs_space - total_quota
-        LOG.debug("Available space in the file system: %(space)s.",
+        line = output.split('\n')
+        fs_capacity = Capacity(line[3])
+
+        available_space = fs_capacity.size - fs_capacity.used
+
+        LOG.debug("Total space in file system: %(total)s GB.",
+                  {'total': fs_capacity.size})
+        LOG.debug("Used space in the file system: %(used)s GB.",
+                  {'used': fs_capacity.used})
+        LOG.debug("Available space in the file system: %(space)s GB.",
                   {'space': available_space})
 
-        return total_fs_space, available_space
+        return fs_capacity.size, available_space
 
     def allow_access(self, share_id, host, share_proto, permission='rw'):
         """Allow access to the share.
@@ -378,16 +380,8 @@ class HNASSSHBackend(object):
 
         # Before copying everything to new vvol, we need to create it,
         # because we only can transform an empty directory into a vvol.
-        quota = self._get_share_quota(snapshot['share_id'])
-        LOG.debug("Share size: %(quota)s.", {'quota': six.text_type(quota)})
 
-        if quota is None:
-            msg = (_("The original share %s does not have a quota limit, "
-                     "please set it before creating a new "
-                     "share.") % share['id'])
-            raise exception.HNASBackendException(msg=msg)
-
-        self._vvol_create(share['id'], quota)
+        self._vvol_create(share['id'], share['size'])
 
         try:
             # Copy the directory to new vvol
@@ -414,6 +408,7 @@ class HNASSSHBackend(object):
             msg = (_("Share %s was not created.") % share['id'])
             raise exception.HNASBackendException(msg=msg)
 
+    @mutils.retry(exception=exception.HNASConnException, wait_random=True)
     def _execute(self, commands):
         command = ['ssc', '127.0.0.1']
         if self.admin_ip0 is not None:
@@ -442,13 +437,19 @@ class HNASSSHBackend(object):
                                        'out': out, 'err': err})
                 return out, err
             except processutils.ProcessExecutionError as e:
-                LOG.debug("Command %(cmd)s result: out = %(out)s - err = "
-                          "%(err)s - exit = %(exit)s.", {'cmd': e.cmd,
-                                                         'out': e.stdout,
-                                                         'err': e.stderr,
-                                                         'exit': e.exit_code})
-                LOG.error(_LE("Error running SSH command."))
-                raise
+                if 'Failed to establish SSC connection' in e.stderr:
+                    LOG.debug("SSC connection error!")
+                    msg = _("Failed to establish SSC connection.")
+                    raise exception.HNASConnException(msg=msg)
+                else:
+                    LOG.debug("Command %(cmd)s result: out = %(out)s - err = "
+                              "%(err)s - exit = %(exit)s.", {'cmd': e.cmd,
+                                                             'out': e.stdout,
+                                                             'err': e.stderr,
+                                                             'exit':
+                                                             e.exit_code})
+                    LOG.error(_LE("Error running SSH command."))
+                    raise
 
     def _check_fs_mounted(self, fs_name):
         self._check_fs()
@@ -657,47 +658,19 @@ class HNASSSHBackend(object):
                     'No quotas matching' not in items[i]):
                 if 'Limit' in items[i] and 'Hard' in items[i]:
                     quota = float(items[i].split(' ')[12])
-
-                    # If the quota is 1 or more TB, converts to GB
-                    if items[i].split(' ')[13] == 'TB':
-                        return quota * units.Ki
-
-                    return quota
+                    size_unit = items[i].split(' ')[13]
+                    if size_unit in ('TB', 'GB'):
+                        # If the quota is 1 or more TB, converts to GB
+                        if size_unit == 'TB':
+                            return quota * units.Ki
+                        return quota
+                    else:
+                        msg = (_("Share %s does not support quota values "
+                                 "below 1GB.") % share_id)
+                        raise exception.HNASBackendException(msg=msg)
             else:
                 # Returns None if the quota is unset
                 return None
-
-    def _get_vvol_list(self):
-        command = ['virtual-volume', 'list', self.fs_name]
-        output, err = self._execute(command)
-
-        vvol_list = []
-        items = output.split('\n')
-
-        for i in range(0, len(items) - 1):
-            if ":" not in items[i]:
-                vvol_list.append(items[i])
-
-        return vvol_list
-
-    def _get_filesystem_capacity(self):
-        command = ['filesystem-limits', self.fs_name]
-        output, err = self._execute(command)
-
-        items = output.split('\n')
-
-        for i in range(0, len(items) - 1):
-            if 'Current capacity' in items[i]:
-                fs_capacity = items[i].split(' ')
-
-                # Gets the index of the file system capacity (EX: 20GiB)
-                index = [i for i, string in enumerate(fs_capacity)
-                         if 'GiB' in string]
-
-                fs_capacity = fs_capacity[index[0]]
-                fs_capacity = fs_capacity.split('GiB')[0]
-
-                return int(fs_capacity)
 
     @mutils.synchronized("hds_hnas_select_fs", external=True)
     def _locked_selectfs(self, op, path):
@@ -776,55 +749,41 @@ class Export(object):
 class JobStatus(object):
     def __init__(self, data):
         if data:
-            split_data = data.replace(",", "").split()
+            lines = data.split("\n")
 
-            self.job_id = split_data[4]
-            self.pysical_node = split_data[14]
-            self.evs = split_data[17]
-            self.volume_number = split_data[21]
-            self.fs_id = split_data[26]
-            self.fs_name = split_data[31]
-            self.source_path = split_data[35]
-            self.creation_time = split_data[39] + " " + split_data[40]
-            self.destination_path = split_data[44]
-            self.ensure_destination_path_exists = split_data[50]
+            self.job_id = lines[0].split()[3]
+            self.physical_node = lines[2].split()[3]
+            self.evs = lines[3].split()[2]
+            self.volume_number = lines[4].split()[3]
+            self.fs_id = lines[5].split()[4]
+            self.fs_name = lines[6].split()[4]
+            self.source_path = lines[7].split()[3]
+            self.creation_time = " ".join(lines[8].split()[3:5])
+            self.destination_path = lines[9].split()[3]
+            self.ensure_path_exists = lines[10].split()[5]
+            self.job_state = " ".join(lines[12].split()[3:])
+            self.job_started = " ".join(lines[14].split()[2:4])
+            self.job_ended = " ".join(lines[15].split()[2:4])
+            self.job_status = lines[16].split()[2]
 
-            if split_data[55] == 'failed':
-                self.job_state = " ".join(split_data[54:56])
+            error_details_line = lines[17].split()
+            if len(error_details_line) > 3:
+                self.error_details = " ".join(error_details_line[3:])
             else:
-                self.job_state = " ".join(split_data[54:57])
+                self.error_details = None
 
-            for i in range(55, len(split_data)):
-                if split_data[i] == "Started":
-                    self.job_started = " ".join(split_data[i + 2:i + 4])
-                elif split_data[i] == "Ended":
-                    self.job_ended = " ".join(split_data[i + 2:i + 4])
-                elif split_data[i] == "Status":
-                    self.job_status = split_data[i + 2]
-                elif " ".join(split_data[i:i + 2]) == "Error details":
-                    self.error_details = \
-                        split_data[i + 2] if split_data[i + 2] != ":" else ""
-                elif " ".join(split_data[i:i + 2]) == "Directories processed":
-                    self.directories_processed = split_data[i + 3]
-                elif " ".join(split_data[i:i + 2]) == "Files processed":
-                    self.files_processed = split_data[i + 3]
-                elif " ".join(split_data[i:i + 3]) == "Data bytes processed":
-                    self.data_bytes_processed = split_data[i + 4]
-                elif " ".join(split_data[i:i + 3]) == "Source directories " \
-                                                      "missing":
-                    self.directories_missing = split_data[i + 4]
-                elif " ".join(split_data[i:i + 3]) == "Source files missing":
-                    self.files_missing = split_data[i + 4]
-                elif " ".join(split_data[i:i + 3]) == "Source files skipped":
-                    self.files_skipped = split_data[i + 4]
-                elif split_data[i] == "symlinks":
-                    self.symlinks_skipped = split_data[i - 1]
-                elif " ".join(split_data[i:i + 2]) == "hard links":
-                    self.hard_links_skipped = split_data[i - 1]
-                elif " ".join(split_data[i:i + 3]) == "block special devices":
-                    self.block_special_devices_skipped = split_data[i - 1]
-                elif " ".join(split_data[i:i + 2]) == "character devices":
-                    self.character_devices_skipped = split_data[i - 1]
+            self.directories_processed = lines[18].split()[3]
+            self.files_processed = lines[19].split()[3]
+            self.data_bytes_processed = lines[20].split()[4]
+            self.directories_missing = lines[21].split()[4]
+            self.files_missing = lines[22].split()[4]
+            self.files_skipped = lines[23].split()[4]
+
+            skipping_details_line = lines[24].split()
+            if len(skipping_details_line) > 3:
+                self.skipping_details = " ".join(skipping_details_line[3:])
+            else:
+                self.skipping_details = None
 
 
 class JobSubmit(object):
@@ -834,3 +793,20 @@ class JobSubmit(object):
 
             self.request_status = " ".join(split_data[1:4])
             self.job_id = split_data[8]
+
+
+class Capacity(object):
+    def __init__(self, data):
+        if data:
+            items = data.split()
+            self.id = items[0]
+            self.label = items[1]
+            self.evs = items[2]
+            self.size = float(items[3])
+            self.size_measure = items[4]
+            if self.size_measure == 'TB':
+                self.size = self.size * units.Ki
+            self.used = float(items[5])
+            self.used_measure = items[6]
+            if self.used_measure == 'TB':
+                self.used = self.used * units.Ki

@@ -331,6 +331,17 @@ class RestHelper(object):
 
         self._assert_rest_result(result, 'Start CIFS service error.')
 
+    def _find_pool_type(self, poolinfo):
+        root = self._read_xml()
+        for pool_type in ('Thin', 'Thick'):
+            pool_name_list = root.findtext(('Filesystem/%s_StoragePool'
+                                            % pool_type))
+            pool_name_list = pool_name_list.split(";")
+            for pool_name in pool_name_list:
+                pool_name = pool_name.strip().strip('\n')
+                if poolinfo['name'] == pool_name:
+                    poolinfo['type'] = pool_type
+
     def _find_pool_info(self, pool_name, result):
         if pool_name is None:
             return
@@ -344,6 +355,7 @@ class RestHelper(object):
                 poolinfo['CAPACITY'] = item['USERFREECAPACITY']
                 poolinfo['TOTALCAPACITY'] = item['USERTOTALCAPACITY']
                 poolinfo['CONSUMEDCAPACITY'] = item['USERCONSUMEDCAPACITY']
+                self._find_pool_type(poolinfo)
                 break
 
         return poolinfo
@@ -600,10 +612,6 @@ class RestHelper(object):
         share_path = "/" + share_name.replace("-", "_") + "/"
         return share_path
 
-    def _get_share_name_by_id(self, share_id):
-        share_name = "share_" + share_id
-        return share_name
-
     def _get_share_name_by_export_location(self, export_location, share_proto):
         export_location_split = None
         share_name = None
@@ -672,7 +680,7 @@ class RestHelper(object):
         self._assert_rest_result(result, msg)
 
     def _get_partition_id_by_name(self, name):
-        url = self.url + "/cachepartition"
+        url = "/cachepartition"
         result = self.call(url, None, "GET")
         self._assert_rest_result(result, _('Get partition by name error.'))
 
@@ -683,7 +691,7 @@ class RestHelper(object):
         return None
 
     def _add_fs_to_partition(self, fs_id, partition_id):
-        url = self.url + "/filesystem/associate/cachepartition"
+        url = "/filesystem/associate/cachepartition"
         data = jsonutils.dumps({"ID": partition_id,
                                 "ASSOCIATEOBJTYPE": 40,
                                 "ASSOCIATEOBJID": fs_id,
@@ -694,7 +702,7 @@ class RestHelper(object):
                                  _('Add filesystem to partition error.'))
 
     def _get_cache_id_by_name(self, name):
-        url = self.url + "/SMARTCACHEPARTITION"
+        url = "/SMARTCACHEPARTITION"
         result = self.call(url, None, "GET")
         self._assert_rest_result(result, _('Get cache by name error.'))
 
@@ -705,7 +713,7 @@ class RestHelper(object):
         return None
 
     def _add_fs_to_cache(self, fs_id, cache_id):
-        url = self.url + "/SMARTCACHEPARTITION/CREATE_ASSOCIATE"
+        url = "/SMARTCACHEPARTITION/CREATE_ASSOCIATE"
         data = jsonutils.dumps({"ID": cache_id,
                                 "ASSOCIATEOBJTYPE": 40,
                                 "ASSOCIATEOBJID": fs_id,

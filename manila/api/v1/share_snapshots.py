@@ -24,7 +24,7 @@ from manila.api import common
 from manila.api.openstack import wsgi
 from manila.api.views import share_snapshots as snapshot_views
 from manila import exception
-from manila.i18n import _LI
+from manila.i18n import _, _LI
 from manila import share
 
 LOG = log.getLogger(__name__)
@@ -155,7 +155,7 @@ class ShareSnapshotsController(wsgi.Controller):
             msg = _("Snapshot cannot be created from share '%s', because "
                     "share back end does not support it.") % share_id
             LOG.error(msg)
-            raise exc.HTTPUnprocessableEntity(msg)
+            raise exc.HTTPUnprocessableEntity(explanation=msg)
 
         LOG.info(_LI("Create snapshot from share %s"),
                  share_id, context=context)

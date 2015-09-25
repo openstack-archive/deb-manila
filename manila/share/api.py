@@ -39,6 +39,9 @@ from manila import policy
 from manila import quota
 from manila.scheduler import rpcapi as scheduler_rpcapi
 from manila.share import rpcapi as share_rpcapi
+from manila.share import share_types
+from manila.share import utils as share_utils
+from manila import utils
 
 share_api_opts = [
     cfg.BoolOpt('use_scheduler_creating_share_from_snapshot',
@@ -66,7 +69,8 @@ class API(base.Base):
 
     def create(self, context, share_proto, size, name, description,
                snapshot=None, availability_zone=None, metadata=None,
-               share_network_id=None, share_type=None, is_public=False):
+               share_network_id=None, share_type=None, is_public=False,
+               consistency_group_id=None, cgsnapshot_member=None):
         """Create new share."""
         policy.check_policy(context, 'share', 'create')
 
@@ -167,6 +171,49 @@ class API(base.Base):
         except ValueError as e:
             raise exception.InvalidParameterValue(six.text_type(e))
 
+        consistency_group = None
+        if consistency_group_id:
+            try:
+                consistency_group = self.db.consistency_group_get(
+                    context, consistency_group_id)
+            except exception.NotFound as e:
+                raise exception.InvalidParameterValue(six.text_type(e))
+
+            if (not cgsnapshot_member and
+                    not (consistency_group['status'] ==
+                         constants.STATUS_AVAILABLE)):
+                params = {
+                    'avail': constants.STATUS_AVAILABLE,
+                    'cg_status': consistency_group['status'],
+                }
+                msg = _("Consistency group status must be %(avail)s, got"
+                        "%(cg_status)s.") % params
+                raise exception.InvalidConsistencyGroup(message=msg)
+
+            if share_type_id:
+                cg_st_ids = [st['share_type_id'] for st in
+                             consistency_group.get('share_types', [])]
+                if share_type_id not in cg_st_ids:
+                    params = {
+                        'type': share_type_id,
+                        'cg': consistency_group_id
+                    }
+                    msg = _("The specified share type (%(type)s) is not "
+                            "supported by the specified consistency group "
+                            "(%(cg)s).") % params
+                    raise exception.InvalidParameterValue(msg)
+
+            if (not consistency_group.get('share_network_id')
+                    == share_network_id):
+                params = {
+                    'net': share_network_id,
+                    'cg': consistency_group_id
+                }
+                msg = _("The specified share network (%(net)s) is not "
+                        "supported by the specified consistency group "
+                        "(%(cg)s).") % params
+                raise exception.InvalidParameterValue(msg)
+
         options = {'size': size,
                    'user_id': context.user_id,
                    'project_id': context.project_id,
@@ -178,7 +225,10 @@ class API(base.Base):
                    'share_proto': share_proto,
                    'share_type_id': share_type_id,
                    'is_public': is_public,
+                   'consistency_group_id': consistency_group_id,
                    }
+        if cgsnapshot_member:
+            options['source_cgsnapshot_member_id'] = cgsnapshot_member['id']
 
         try:
             share = self.db.share_create(context, options,
@@ -198,12 +248,15 @@ class API(base.Base):
             host = snapshot['share']['host']
 
         self.create_instance(context, share, share_network_id=share_network_id,
-                             host=host, availability_zone=availability_zone)
+                             host=host, availability_zone=availability_zone,
+                             consistency_group=consistency_group,
+                             cgsnapshot_member=cgsnapshot_member)
 
         return share
 
     def create_instance(self, context, share, share_network_id=None,
-                        host=None, availability_zone=None):
+                        host=None, availability_zone=None,
+                        consistency_group=None, cgsnapshot_member=None):
         policy.check_policy(context, 'share', 'create')
 
         availability_zone_id = None
@@ -226,6 +279,14 @@ class API(base.Base):
             }
         )
 
+        if cgsnapshot_member:
+            host = cgsnapshot_member['share']['host']
+            share = self.db.share_instance_update(context,
+                                                  share_instance['id'],
+                                                  {'host': host})
+            # NOTE(ameade): Do not cast to driver if creating from cgsnapshot
+            return
+
         share_dict = share.to_dict()
         share_dict.update(
             {'metadata': self.db.share_metadata_get(context, share['id'])}
@@ -243,6 +304,7 @@ class API(base.Base):
             'share_id': share['id'],
             'snapshot_id': share['snapshot_id'],
             'share_type': share_type,
+            'consistency_group': consistency_group,
         }
 
         if host:
@@ -259,6 +321,8 @@ class API(base.Base):
             # on hosts other than the source host.
             self.scheduler_rpcapi.create_share_instance(
                 context, request_spec=request_spec, filter_properties={})
+
+        return share_instance
 
     def manage(self, context, share_data, driver_options):
         policy.check_policy(context, 'share', 'manage')
@@ -301,6 +365,13 @@ class API(base.Base):
     def unmanage(self, context, share):
         policy.check_policy(context, 'share', 'unmanage')
 
+        # Make sure share is not part of a migration
+        if share['task_state'] in constants.BUSY_TASK_STATES:
+            msg = _("Share %s is busy as part of an active "
+                    "task.") % share['id']
+            LOG.error(msg)
+            raise exception.InvalidShare(reason=msg)
+
         update_data = {'status': constants.STATUS_UNMANAGING,
                        'terminated_at': timeutils.utcnow()}
         share_ref = self.db.share_update(context, share['id'], update_data)
@@ -322,7 +393,8 @@ class API(base.Base):
 
         share_id = share['id']
 
-        statuses = (constants.STATUS_AVAILABLE, constants.STATUS_ERROR)
+        statuses = (constants.STATUS_AVAILABLE, constants.STATUS_ERROR,
+                    constants.STATUS_INACTIVE)
         if not (force or share['status'] in statuses):
             msg = _("Share status must be one of %(statuses)s") % {
                 "statuses": statuses}
@@ -331,6 +403,22 @@ class API(base.Base):
         snapshots = self.db.share_snapshot_get_all_for_share(context, share_id)
         if len(snapshots):
             msg = _("Share still has %d dependent snapshots") % len(snapshots)
+            raise exception.InvalidShare(reason=msg)
+
+        cgsnapshot_members_count = self.db.count_cgsnapshot_members_in_share(
+            context, share_id)
+        if cgsnapshot_members_count:
+            msg = (_("Share still has %d dependent cgsnapshot members") %
+                   cgsnapshot_members_count)
+            raise exception.InvalidShare(reason=msg)
+
+        # Make sure share is not part of a migration
+        if share['task_state'] not in (
+                None, constants.STATUS_TASK_STATE_MIGRATION_ERROR,
+                constants.STATUS_TASK_STATE_MIGRATION_SUCCESS):
+            msg = _("Share %s is busy as part of an active "
+                    "task.") % share['id']
+            LOG.error(msg)
             raise exception.InvalidShare(reason=msg)
 
         try:
@@ -357,7 +445,8 @@ class API(base.Base):
     def delete_instance(self, context, share_instance, force=False):
         policy.check_policy(context, 'share', 'delete')
 
-        statuses = (constants.STATUS_AVAILABLE, constants.STATUS_ERROR)
+        statuses = (constants.STATUS_AVAILABLE, constants.STATUS_ERROR,
+                    constants.STATUS_INACTIVE)
         if not (force or share_instance['status'] in statuses):
             msg = _("Share instance status must be one of %(statuses)s") % {
                 "statuses": statuses}
@@ -459,6 +548,78 @@ class API(base.Base):
 
         self.share_rpcapi.create_snapshot(context, share, snapshot)
         return snapshot
+
+    @policy.wrap_check_policy('share')
+    def migrate_share(self, context, share, host, force_host_copy):
+        """Migrates share to a new host."""
+
+        policy.check_policy(context, 'share', 'migrate')
+
+        share_instance = share.instance
+
+        # We only handle "available" share for now
+        if share_instance['status'] != constants.STATUS_AVAILABLE:
+            msg = _('Share instance %(instance_id)s status must be available, '
+                    'but current status is: %(instance_status)s.') % {
+                'instance_id': share_instance['id'],
+                'instance_status': share_instance['status']}
+            LOG.error(msg)
+            raise exception.InvalidShare(reason=msg)
+
+        # Make sure share is not part of a migration
+        if share['task_state'] in constants.BUSY_TASK_STATES:
+            msg = _("Share %s is busy as part of an active "
+                    "task.") % share['id']
+            LOG.error(msg)
+            raise exception.InvalidShare(reason=msg)
+
+        # Make sure the destination host is different than the current one
+        if host == share_instance['host']:
+            msg = _('Destination host %(dest_host)s must be different '
+                    'than the current host %(src_host)s.') % {
+                'dest_host': host,
+                'src_host': share_instance['host']}
+            LOG.error(msg)
+            raise exception.InvalidHost(reason=msg)
+
+        # We only handle shares without snapshots for now
+        snaps = self.db.share_snapshot_get_all_for_share(context, share['id'])
+        if snaps:
+            msg = _("Share %s must not have snapshots.") % share['id']
+            LOG.error(msg)
+            raise exception.InvalidShare(reason=msg)
+
+        # Make sure the host is in the list of available hosts
+        utils.validate_service_host(context, share_utils.extract_host(host))
+
+        # NOTE(ganso): there is the possibility of an error between here and
+        # manager code, which will cause the share to be stuck in
+        # MIGRATION_STARTING status. According to Liberty Midcycle discussion,
+        # this kind of scenario should not be cleaned up, the administrator
+        # should be issued to clear this status before a new migration request
+        # is made
+        self.update(
+            context, share,
+            {'task_state': constants.STATUS_TASK_STATE_MIGRATION_STARTING})
+
+        share_type = {}
+        share_type_id = share['share_type_id']
+        if share_type_id:
+            share_type = share_types.get_share_type(context, share_type_id)
+        request_spec = {'share_properties': share,
+                        'share_instance_properties': share_instance.to_dict(),
+                        'share_type': share_type,
+                        'share_id': share['id']}
+
+        try:
+            self.scheduler_rpcapi.migrate_share_to_host(context, share['id'],
+                                                        host, force_host_copy,
+                                                        request_spec)
+        except Exception:
+            self.update(
+                context, share,
+                {'task_state': constants.STATUS_TASK_STATE_MIGRATION_ERROR})
+            raise
 
     @policy.wrap_check_policy('share')
     def delete_snapshot(self, context, snapshot, force=False):
@@ -631,7 +792,6 @@ class API(base.Base):
 
         for share_instance in share.instances:
             self.allow_access_to_instance(ctx, share_instance, access)
-
         return access
 
     def allow_access_to_instance(self, context, share_instance, access):
@@ -660,7 +820,13 @@ class API(base.Base):
             self.db.share_access_delete(ctx, access["id"])
         elif access['state'] == constants.STATUS_ACTIVE:
             for share_instance in share.instances:
-                self.deny_access_to_instance(ctx, share_instance, access)
+                try:
+                    self.deny_access_to_instance(ctx, share_instance, access)
+                except exception.NotFound:
+                    LOG.warn(_LW("Access rule %(access_id)s not found "
+                                 "for instance %(instance_id)s.") % {
+                        'access_id': access['id'],
+                        'instance_id': share_instance['id']})
         else:
             msg = _("Access policy should be %(active)s or in %(error)s "
                     "state") % {"active": constants.STATUS_ACTIVE,

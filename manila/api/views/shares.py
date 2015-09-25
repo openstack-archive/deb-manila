@@ -20,6 +20,12 @@ class ViewBuilder(common.ViewBuilder):
     """Model a server API response as a python dictionary."""
 
     _collection_name = 'shares'
+    _detail_version_modifiers = [
+        "add_snapshot_support_field",
+        "add_consistency_group_fields",
+        "add_task_state_field",
+        "modify_share_type_field",
+    ]
 
     def summary_list(self, request, shares):
         """Show a list of shares without many details."""
@@ -76,9 +82,40 @@ class ViewBuilder(common.ViewBuilder):
             'is_public': share.get('is_public'),
             'export_locations': export_locations,
         }
+
+        self.update_versioned_resource_dict(request, share_dict, share)
+
         if context.is_admin:
             share_dict['share_server_id'] = share.get('share_server_id')
         return {'share': share_dict}
+
+    @common.ViewBuilder.versioned_method("2.2")
+    def add_snapshot_support_field(self, share_dict, share):
+        share_dict['snapshot_support'] = share.get('snapshot_support')
+
+    @common.ViewBuilder.versioned_method("2.4")
+    def add_consistency_group_fields(self, share_dict, share):
+        share_dict['consistency_group_id'] = share.get(
+            'consistency_group_id')
+        share_dict['source_cgsnapshot_member_id'] = share.get(
+            'source_cgsnapshot_member_id')
+
+    @common.ViewBuilder.versioned_method("2.5")
+    def add_task_state_field(self, share_dict, share):
+        share_dict['task_state'] = share.get('task_state')
+
+    @common.ViewBuilder.versioned_method("2.6")
+    def modify_share_type_field(self, share_dict, share):
+        share_type = share.get('share_type_id')
+
+        share_type_name = None
+        if share.get('share_type'):
+            share_type_name = share.get('share_type').get('name')
+
+        share_dict.update({
+            'share_type_name': share_type_name,
+            'share_type': share_type,
+        })
 
     def _list_view(self, func, request, shares):
         """Provide a view for a list of shares."""

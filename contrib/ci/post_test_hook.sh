@@ -27,6 +27,8 @@ if [[ "$1" =~ "multibackend" ]]; then
     # if arg $1 has "multibackend", then we assume multibackend installation
     iniset $BASE/new/tempest/etc/tempest.conf share multi_backend True
 
+    iniset $BASE/new/tempest/etc/tempest.conf share run_migration_tests $(trueorfalse True RUN_MANILA_MIGRATION_TESTS)
+
     # Set share backends names, they are defined within pre_test_hook
     export BACKENDS_NAMES="LONDON,PARIS"
 else
@@ -40,6 +42,10 @@ iniset $BASE/new/tempest/etc/tempest.conf share share_creation_retry_number 2
 # Suppress errors in cleanup of resources
 SUPPRESS_ERRORS=${SUPPRESS_ERRORS_IN_CLEANUP:-True}
 iniset $BASE/new/tempest/etc/tempest.conf share suppress_errors_in_cleanup $SUPPRESS_ERRORS
+
+# Enable consistency group tests
+RUN_MANILA_CG_TESTS=${RUN_MANILA_CG_TESTS:-True}
+iniset $BASE/new/tempest/etc/tempest.conf share run_consistency_group_tests $RUN_MANILA_CG_TESTS
 
 # Enable manage/unmanage tests
 RUN_MANILA_MANAGE_TESTS=${RUN_MANILA_MANAGE_TESTS:-True}
@@ -89,11 +95,11 @@ set +o errexit
 cd $BASE/new/tempest
 
 export MANILA_TEMPEST_CONCURRENCY=${MANILA_TEMPEST_CONCURRENCY:-12}
-export MANILA_TESTS=${MANILA_TESTS:-'tempest.api.share*'}
+export MANILA_TESTS=${MANILA_TESTS:-'manila_tempest_tests.tests.api'}
 
 if [[ "$JOB_NAME" =~ "scenario" ]]; then
     echo "Set test set to scenario only"
-    MANILA_TESTS='tempest.scenario.*share*'
+    MANILA_TESTS='manila_tempest_tests.tests.scenario'
 elif [[ "$JOB_NAME" =~ "no-share-servers"  ]]; then
     # Using approach without handling of share servers we have bigger load for
     # volume creation in Cinder using Generic driver. So, reduce amount of
@@ -102,5 +108,8 @@ elif [[ "$JOB_NAME" =~ "no-share-servers"  ]]; then
     MANILA_TEMPEST_CONCURRENCY=8
 fi
 
+# check if tempest plugin was installed correctly
+echo 'import pkg_resources; print list(pkg_resources.iter_entry_points("tempest.test_plugins"))' | python
+
 echo "Running tempest manila test suites"
-sudo -H -u jenkins tox -eall $MANILA_TESTS -- --concurrency=$MANILA_TEMPEST_CONCURRENCY
+sudo -H -u jenkins tox -eall-plugin $MANILA_TESTS -- --concurrency=$MANILA_TEMPEST_CONCURRENCY

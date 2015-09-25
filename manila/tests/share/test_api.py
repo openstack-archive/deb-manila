@@ -40,6 +40,74 @@ from manila import utils
 CONF = cfg.CONF
 
 
+def fake_share(id, **kwargs):
+    share = {
+        'id': id,
+        'size': 1,
+        'user_id': 'fakeuser',
+        'project_id': 'fakeproject',
+        'snapshot_id': None,
+        'share_network_id': None,
+        'share_type_id': None,
+        'availability_zone': 'fakeaz',
+        'status': 'fakestatus',
+        'display_name': 'fakename',
+        'metadata': None,
+        'display_description': 'fakedesc',
+        'share_proto': 'nfs',
+        'export_location': 'fake_location',
+        'host': 'fakehost',
+        'is_public': False,
+        'consistency_group_id': None,
+        'scheduled_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+        'launched_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+        'terminated_at': datetime.datetime(1, 1, 1, 1, 1, 1)
+    }
+    share.update(kwargs)
+    return share
+
+
+def fake_snapshot(id, **kwargs):
+    snapshot = {
+        'id': id,
+        'share_size': 1,
+        'size': 1,
+        'user_id': 'fakeuser',
+        'project_id': 'fakeproject',
+        'share_id': None,
+        'availability_zone': 'fakeaz',
+        'status': 'fakestatus',
+        'display_name': 'fakename',
+        'display_description': 'fakedesc',
+        'share_proto': 'nfs',
+        'progress': 'fakeprogress99%',
+        'scheduled_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+        'launched_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+        'terminated_at': datetime.datetime(1, 1, 1, 1, 1, 1),
+        'share': {'host': 'fake_source_host'},
+    }
+    snapshot.update(kwargs)
+    return snapshot
+
+
+def fake_access(id, **kwargs):
+    access = {
+        'id': id,
+        'share_id': 'fakeshareid',
+        'access_type': 'fakeacctype',
+        'access_to': 'fakeaccto',
+        'access_level': 'rw',
+        'state': 'fakeactive',
+        'STATE_NEW': 'fakenew',
+        'STATE_ACTIVE': 'fakeactive',
+        'STATE_DELETING': 'fakedeleting',
+        'STATE_DELETED': 'fakedeleted',
+        'STATE_ERROR': 'fakeerror',
+    }
+    access.update(kwargs)
+    return access
+
+
 _FAKE_LIST_OF_ALL_SHARES = [
     {
         'name': 'foo',
@@ -744,6 +812,7 @@ class ShareAPITestCase(test.TestCase):
             'status': constants.STATUS_AVAILABLE,
             'user_id': self.context.user_id,
             'project_id': self.context.project_id,
+            'task_state': None
         }
         self.mock_object(db_api, 'share_update', mock.Mock())
 
@@ -753,6 +822,20 @@ class ShareAPITestCase(test.TestCase):
             self.context, mock.ANY)
         db_api.share_update.assert_called_once_with(
             mock.ANY, share_data['id'], mock.ANY)
+
+    def test_unmanage_task_state_busy(self):
+        share_data = {
+            'id': 'fakeid',
+            'host': 'fake',
+            'size': '1',
+            'status': constants.STATUS_AVAILABLE,
+            'user_id': self.context.user_id,
+            'project_id': self.context.project_id,
+            'task_state': constants.STATUS_TASK_STATE_MIGRATION_MIGRATING
+        }
+
+        self.assertRaises(exception.InvalidShare, self.api.unmanage,
+                          self.context, share_data)
 
     @mock.patch.object(quota.QUOTAS, 'reserve',
                        mock.Mock(return_value='reservation'))
@@ -883,7 +966,8 @@ class ShareAPITestCase(test.TestCase):
         self.api.create_instance.assert_called_once_with(
             self.context, share, share_network_id=share['share_network_id'],
             host=valid_host,
-            availability_zone=snapshot['share']['availability_zone'])
+            availability_zone=snapshot['share']['availability_zone'],
+            consistency_group=None, cgsnapshot_member=None)
         share_api.policy.check_policy.assert_called_once_with(
             self.context, 'share', 'create')
         quota.QUOTAS.reserve.assert_called_once_with(
@@ -957,7 +1041,18 @@ class ShareAPITestCase(test.TestCase):
             utils.IsAMatcher(context.RequestContext), share['id'])
 
     def test_delete_wrong_status(self):
-        share = db_utils.create_share()
+        share = fake_share('fakeid')
+        self.mock_object(db_api, 'share_get', mock.Mock(return_value=share))
+        self.assertRaises(exception.InvalidShare, self.api.delete,
+                          self.context, share)
+
+    @mock.patch.object(db_api, 'count_cgsnapshot_members_in_share',
+                       mock.Mock(return_value=2))
+    def test_delete_dependent_cgsnapshot_members(self):
+        share_server_id = 'fake-ss-id'
+        share = self._setup_delete_mocks(constants.STATUS_AVAILABLE,
+                                         share_server_id)
+
         self.assertRaises(exception.InvalidShare, self.api.delete,
                           self.context, share)
 
@@ -979,6 +1074,15 @@ class ShareAPITestCase(test.TestCase):
             self.context,
             share
         )
+
+    def test_delete_share_part_of_migration(self):
+        share = db_utils.create_share(
+            status=constants.STATUS_AVAILABLE,
+            task_state=constants.STATUS_TASK_STATE_MIGRATION_MIGRATING)
+
+        self.assertRaises(exception.InvalidShare,
+                          self.api.delete,
+                          self.context, share)
 
     def test_delete_share_quota_error(self):
         share = self._setup_delete_mocks(constants.STATUS_AVAILABLE)
@@ -1241,6 +1345,16 @@ class ShareAPITestCase(test.TestCase):
         self.share_rpcapi.deny_access.assert_called_once_with(
             self.context, utils.IsAMatcher(models.ShareInstance), access)
 
+    def test_deny_access_not_found(self):
+        share = db_utils.create_share(status=constants.STATUS_AVAILABLE)
+        access = db_utils.create_access(state=constants.STATUS_ACTIVE,
+                                        share_id=share['id'])
+        self.mock_object(db_api, 'share_instance_access_get',
+                         mock.Mock(side_effect=[exception.NotFound('fake')]))
+        self.api.deny_access(self.context, share, access)
+        share_api.policy.check_policy.assert_called_with(
+            self.context, 'share', 'deny_access')
+
     def test_deny_access_not_active_not_error(self):
         share = db_utils.create_share(status=constants.STATUS_AVAILABLE)
         access = db_utils.create_access(share_id=share['id'])
@@ -1276,6 +1390,7 @@ class ShareAPITestCase(test.TestCase):
 
     def test_access_get_all(self):
         share = db_utils.create_share(id='fakeid')
+
         expected = {
             'fakeacc0id': {
                 'id': 'fakeacc0id',
@@ -1301,7 +1416,6 @@ class ShareAPITestCase(test.TestCase):
 
         self.mock_object(db_api, 'share_access_get_all_for_share',
                          mock.Mock(return_value=rules))
-
         actual = self.api.access_get_all(self.context, share)
         for access in actual:
             expected_access = expected[access['id']]
@@ -1416,6 +1530,106 @@ class ShareAPITestCase(test.TestCase):
         self.api.share_rpcapi.shrink_share.assert_called_once_with(
             self.context, share, new_size
         )
+
+    def test_migrate_share(self):
+        host = 'fake2@backend#pool'
+        share = db_utils.create_share(
+            status=constants.STATUS_AVAILABLE,
+            host='fake@backend#pool', share_type_id='fake_type_id')
+        request_spec = {'share_properties': share,
+                        'share_instance_properties': share.instance.to_dict(),
+                        'share_type': 'fake_type',
+                        'share_id': share['id']}
+
+        self.mock_object(self.scheduler_rpcapi, 'migrate_share_to_host')
+        self.mock_object(share_types, 'get_share_type',
+                         mock.Mock(return_value='fake_type'))
+        self.mock_object(utils, 'validate_service_host')
+
+        self.api.migrate_share(self.context, share, host, True)
+
+        self.scheduler_rpcapi.migrate_share_to_host.assert_called_once_with(
+            self.context, share['id'], host, True, request_spec)
+
+    def test_migrate_share_status_unavailable(self):
+        host = 'fake2@backend#pool'
+        share = db_utils.create_share(
+            status=constants.STATUS_ERROR)
+
+        mock_log = self.mock_object(share_api, 'LOG')
+
+        self.assertRaises(exception.InvalidShare, self.api.migrate_share,
+                          self.context, share, host, True)
+        self.assertTrue(mock_log.error.called)
+
+    def test_migrate_share_task_state_invalid(self):
+        host = 'fake2@backend#pool'
+        share = db_utils.create_share(
+            status=constants.STATUS_AVAILABLE,
+            task_state=constants.STATUS_TASK_STATE_MIGRATION_MIGRATING)
+
+        mock_log = self.mock_object(share_api, 'LOG')
+
+        self.assertRaises(exception.InvalidShare, self.api.migrate_share,
+                          self.context, share, host, True)
+        self.assertTrue(mock_log.error.called)
+
+    def test_migrate_share_with_snapshots(self):
+        host = 'fake2@backend#pool'
+        share = db_utils.create_share(
+            host='fake@backend#pool', status=constants.STATUS_AVAILABLE)
+        self.mock_object(db_api, 'share_snapshot_get_all_for_share',
+                         mock.Mock(return_value=True))
+
+        mock_log = self.mock_object(share_api, 'LOG')
+
+        self.assertRaises(exception.InvalidShare, self.api.migrate_share,
+                          self.context, share, host, True)
+        self.assertTrue(mock_log.error.called)
+
+    def test_migrate_share_invalid_host(self):
+        host = 'fake@backend#pool'
+        share = db_utils.create_share(
+            host='fake2@backend', status=constants.STATUS_AVAILABLE)
+
+        self.mock_object(db_api, 'share_snapshot_get_all_for_share',
+                         mock.Mock(return_value=False))
+
+        self.assertRaises(exception.ServiceNotFound,
+                          self.api.migrate_share,
+                          self.context, share, host, True)
+
+    def test_migrate_share_same_host(self):
+        host = 'fake@backend#pool'
+        share = db_utils.create_share(
+            host='fake@backend#pool', status=constants.STATUS_AVAILABLE)
+
+        mock_log = self.mock_object(share_api, 'LOG')
+
+        self.assertRaises(exception.InvalidHost,
+                          self.api.migrate_share,
+                          self.context, share, host, True)
+        self.assertTrue(mock_log.error.called)
+
+    def test_migrate_share_exception(self):
+        host = 'fake2@backend#pool'
+        share = db_utils.create_share(
+            host='fake@backend#pool', status=constants.STATUS_AVAILABLE)
+
+        self.mock_object(utils, 'validate_service_host')
+        self.mock_object(db_api, 'share_snapshot_get_all_for_share',
+                         mock.Mock(return_value=False))
+        self.mock_object(db_api, 'share_update', mock.Mock(return_value=True))
+        self.mock_object(self.scheduler_rpcapi, 'migrate_share_to_host',
+                         mock.Mock(side_effect=exception.ShareMigrationFailed(
+                             reason='fake')))
+
+        self.assertRaises(exception.ShareMigrationFailed,
+                          self.api.migrate_share,
+                          self.context, share, host, True)
+
+        db_api.share_update.assert_any_call(
+            mock.ANY, share['id'], mock.ANY)
 
 
 class OtherTenantsShareActionsTestCase(test.TestCase):

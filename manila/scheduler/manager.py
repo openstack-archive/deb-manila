@@ -23,11 +23,13 @@ from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import excutils
 from oslo_utils import importutils
+import six
 
+from manila.common import constants
 from manila import context
 from manila import db
 from manila import exception
-from manila.i18n import _LE
+from manila.i18n import _LE, _LW
 from manila import manager
 from manila import rpc
 from manila.share import rpcapi as share_rpcapi
@@ -46,7 +48,7 @@ CONF.register_opt(scheduler_driver_opt)
 class SchedulerManager(manager.Manager):
     """Chooses a host to create shares."""
 
-    RPC_API_VERSION = '1.2'
+    RPC_API_VERSION = '1.4'
 
     def __init__(self, scheduler_driver=None, service_name=None,
                  *args, **kwargs):
@@ -82,35 +84,69 @@ class SchedulerManager(manager.Manager):
             self.driver.schedule_create_share(context, request_spec,
                                               filter_properties)
         except exception.NoValidHost as ex:
-            self._set_share_error_state_and_notify('create_share',
-                                                   context, ex, request_spec)
+            self._set_share_state_and_notify('create_share',
+                                             {'status':
+                                              constants.STATUS_ERROR},
+                                             context, ex, request_spec)
         except Exception as ex:
             with excutils.save_and_reraise_exception():
-                self._set_share_error_state_and_notify('create_share',
-                                                       context, ex,
-                                                       request_spec)
+                self._set_share_state_and_notify('create_share',
+                                                 {'status':
+                                                  constants.STATUS_ERROR},
+                                                 context, ex, request_spec)
 
     def get_pools(self, context, filters=None):
         """Get active pools from the scheduler's cache."""
         return self.driver.get_pools(context, filters)
 
-    def _set_share_error_state_and_notify(self, method, context, ex,
-                                          request_spec):
-        LOG.error(_LE("Failed to schedule_%(method)s: %(ex)s"),
-                  {"method": method, "ex": ex})
+    def migrate_share_to_host(self, context, share_id, host,
+                              force_host_copy, request_spec,
+                              filter_properties=None):
+        """Ensure that the host exists and can accept the share."""
 
-        share_state = {'status': 'error'}
+        def _migrate_share_set_error(self, context, ex, request_spec):
+            self._set_share_state_and_notify(
+                'migrate_share_to_host',
+                {'task_state': constants.STATUS_TASK_STATE_MIGRATION_ERROR},
+                context, ex, request_spec)
+
+        try:
+            tgt_host = self.driver.host_passes_filters(context, host,
+                                                       request_spec,
+                                                       filter_properties)
+
+        except exception.NoValidHost as ex:
+            _migrate_share_set_error(self, context, ex, request_spec)
+        except Exception as ex:
+            with excutils.save_and_reraise_exception():
+                _migrate_share_set_error(self, context, ex, request_spec)
+        else:
+            share_ref = db.share_get(context, share_id)
+            try:
+                share_rpcapi.ShareAPI().migrate_share(context,
+                                                      share_ref, tgt_host,
+                                                      force_host_copy)
+            except Exception as ex:
+                with excutils.save_and_reraise_exception():
+                    _migrate_share_set_error(self, context, ex, request_spec)
+
+    def _set_share_state_and_notify(self, method, state, context, ex,
+                                    request_spec):
+
+        LOG.error(_LE("Failed to schedule %(method)s: %(ex)s"),
+                  {"method": method, "ex": six.text_type(ex)})
+
         properties = request_spec.get('share_properties', {})
 
         share_id = request_spec.get('share_id', None)
 
         if share_id:
-            db.share_update(context, share_id, share_state)
+            db.share_update(context, share_id, state)
 
         payload = dict(request_spec=request_spec,
                        share_properties=properties,
                        share_id=share_id,
-                       state=share_state,
+                       state=state,
                        method=method,
                        reason=ex)
 
@@ -119,3 +155,32 @@ class SchedulerManager(manager.Manager):
 
     def request_service_capabilities(self, context):
         share_rpcapi.ShareAPI().publish_service_capabilities(context)
+
+    def _set_cg_error_state(self, method, context, ex, request_spec):
+        LOG.warning(_LW("Failed to schedule_%(method)s: %(ex)s"),
+                    {"method": method, "ex": ex})
+
+        cg_state = {'status': constants.STATUS_ERROR}
+
+        consistency_group_id = request_spec.get('consistency_group_id')
+
+        if consistency_group_id:
+            db.consistency_group_update(context,
+                                        consistency_group_id,
+                                        cg_state)
+
+        # TODO(ameade): add notifications
+
+    def create_consistency_group(self, context, cg_id, request_spec=None,
+                                 filter_properties=None):
+        try:
+            self.driver.schedule_create_consistency_group(context, cg_id,
+                                                          request_spec,
+                                                          filter_properties)
+        except exception.NoValidHost as ex:
+            self._set_cg_error_state('create_consistency_group',
+                                     context, ex, request_spec)
+        except Exception as ex:
+            with excutils.save_and_reraise_exception():
+                self._set_cg_error_state('create_consistency_group',
+                                         context, ex, request_spec)

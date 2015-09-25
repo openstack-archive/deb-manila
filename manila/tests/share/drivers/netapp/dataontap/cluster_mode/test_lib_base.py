@@ -284,6 +284,29 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             assert_called_once_with(fake.AGGREGATES)
         self.assertDictEqual(fake.AGGREGATE_CAPACITIES, result)
 
+    def test_get_aggregate_node_cluster_creds(self):
+
+        self.library._have_cluster_creds = True
+        self.mock_object(self.library._client,
+                         'get_node_for_aggregate',
+                         mock.Mock(return_value=fake.CLUSTER_NODE))
+
+        result = self.library._get_aggregate_node(fake.AGGREGATE)
+
+        self.library._client.get_node_for_aggregate.\
+            assert_called_once_with(fake.AGGREGATE)
+        self.assertEqual(fake.CLUSTER_NODE, result)
+
+    def test_get_aggregate_node_no_cluster_creds(self):
+
+        self.library._have_cluster_creds = False
+        self.mock_object(self.library._client, 'get_node_for_aggregate')
+
+        result = self.library._get_aggregate_node(fake.AGGREGATE)
+
+        self.assertFalse(self.library._client.get_node_for_aggregate.called)
+        self.assertIsNone(result)
+
     def test_get_share_stats(self):
 
         self.mock_object(self.library,
@@ -301,6 +324,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             'storage_protocol': 'NFS_CIFS',
             'total_capacity_gb': 0.0,
             'free_capacity_gb': 0.0,
+            'consistency_group_support': 'host',
             'pools': fake.POOLS,
         }
         self.assertDictEqual(expected, result)
@@ -315,16 +339,27 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
         self.assertListEqual(fake.POOLS, result)
 
-    def test_get_pools(self):
+    @ddt.data(
+        {
+            'capacities': fake.AGGREGATE_CAPACITIES,
+            'pools': fake.POOLS,
+        },
+        {
+            'capacities': fake.AGGREGATE_CAPACITIES_VSERVER_CREDS,
+            'pools': fake.POOLS_VSERVER_CREDS
+        }
+    )
+    @ddt.unpack
+    def test_get_pools(self, capacities, pools):
 
         self.mock_object(self.library,
                          '_get_aggregate_space',
-                         mock.Mock(return_value=fake.AGGREGATE_CAPACITIES))
+                         mock.Mock(return_value=capacities))
         self.library._ssc_stats = fake.SSC_INFO
 
         result = self.library._get_pools()
 
-        self.assertListEqual(fake.POOLS, result)
+        self.assertListEqual(pools, result)
 
     def test_handle_ems_logging(self):
 
@@ -883,6 +918,9 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                          mock.Mock(return_value=protocol_helper))
         vserver_client = mock.Mock()
         vserver_client.get_network_interfaces.return_value = fake.LIFS
+        mock_sort_lifs_by_aggregate_locality = self.mock_object(
+            self.library, '_sort_lifs_by_aggregate_locality',
+            mock.Mock(return_value=fake.LIFS))
 
         result = self.library._create_export(fake.SHARE,
                                              fake.VSERVER1,
@@ -891,6 +929,8 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         self.assertEqual(fake.NFS_EXPORTS, result)
         protocol_helper.create_share.assert_called_once_with(
             fake.SHARE, fake.SHARE_NAME, fake.LIF_ADDRESSES)
+        mock_sort_lifs_by_aggregate_locality.assert_called_once_with(
+            fake.SHARE, fake.LIFS)
 
     def test_create_export_lifs_not_found(self):
 
@@ -903,6 +943,37 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                           fake.SHARE,
                           fake.VSERVER1,
                           vserver_client)
+
+    @ddt.data(fake.CLUSTER_NODES[0], fake.CLUSTER_NODES[1])
+    def test_sort_lifs_by_aggregate_locality(self, node):
+
+        mock_get_aggregate_node = self.mock_object(
+            self.library, '_get_aggregate_node', mock.Mock(return_value=node))
+
+        fake_share = copy.deepcopy(fake.SHARE)
+        fake_share['host'] = 'fake_host@fake_backend#fake_pool'
+
+        result = self.library._sort_lifs_by_aggregate_locality(fake.SHARE,
+                                                               fake.LIFS)
+
+        mock_get_aggregate_node.assert_called_once_with('fake_pool')
+        self.assertEqual(2, len(result))
+        self.assertEqual(node, result[0]['home-node'])
+
+    def test_sort_lifs_by_aggregate_locality_node_unknown(self):
+
+        mock_get_aggregate_node = self.mock_object(
+            self.library, '_get_aggregate_node', mock.Mock(return_value=None))
+
+        fake_share = copy.deepcopy(fake.SHARE)
+        fake_share['host'] = 'fake_host@fake_backend#fake_pool'
+
+        result = self.library._sort_lifs_by_aggregate_locality(fake.SHARE,
+                                                               fake.LIFS)
+
+        mock_get_aggregate_node.assert_called_once_with('fake_pool')
+        self.assertEqual(2, len(result))
+        self.assertEqual(fake.LIFS, result)
 
     def test_remove_export(self):
 
@@ -1333,6 +1404,324 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                           self.library._validate_volume_for_manage,
                           fake.FLEXVOL_TO_MANAGE,
                           vserver_client)
+
+    def test_create_consistency_group(self):
+
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+
+        result = self.library.create_consistency_group(
+            self.context, fake.EMPTY_CONSISTENCY_GROUP,
+            share_server=fake.SHARE_SERVER)
+
+        self.assertIsNone(result)
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    @ddt.data(exception.InvalidInput(reason='fake_reason'),
+              exception.VserverNotSpecified(),
+              exception.VserverNotFound(vserver='fake_vserver'))
+    def test_create_consistency_group_no_share_server(self,
+                                                      get_vserver_exception):
+
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(side_effect=get_vserver_exception))
+
+        self.assertRaises(type(get_vserver_exception),
+                          self.library.create_consistency_group,
+                          self.context,
+                          fake.EMPTY_CONSISTENCY_GROUP,
+                          share_server=fake.SHARE_SERVER)
+
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    def test_create_consistency_group_from_cgsnapshot(self):
+
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+        mock_allocate_container_from_snapshot = self.mock_object(
+            self.library, '_allocate_container_from_snapshot')
+        mock_create_export = self.mock_object(
+            self.library, '_create_export',
+            mock.Mock(side_effect=[['loc3'], ['loc4']]))
+
+        result = self.library.create_consistency_group_from_cgsnapshot(
+            self.context,
+            fake.CONSISTENCY_GROUP_DEST,
+            fake.CG_SNAPSHOT,
+            share_server=fake.SHARE_SERVER)
+
+        share_update_list = [
+            {'id': fake.SHARE_ID3, 'export_locations': ['loc3']},
+            {'id': fake.SHARE_ID4, 'export_locations': ['loc4']}
+        ]
+        expected = (None, share_update_list)
+        self.assertEqual(expected, result)
+
+        mock_allocate_container_from_snapshot.assert_has_calls([
+            mock.call(fake.COLLATED_CGSNAPSHOT_INFO[0]['share'],
+                      fake.COLLATED_CGSNAPSHOT_INFO[0]['snapshot'],
+                      vserver_client,
+                      mock.ANY),
+            mock.call(fake.COLLATED_CGSNAPSHOT_INFO[1]['share'],
+                      fake.COLLATED_CGSNAPSHOT_INFO[1]['snapshot'],
+                      vserver_client,
+                      mock.ANY),
+        ])
+        mock_create_export.assert_has_calls([
+            mock.call(fake.COLLATED_CGSNAPSHOT_INFO[0]['share'],
+                      fake.VSERVER1,
+                      vserver_client),
+            mock.call(fake.COLLATED_CGSNAPSHOT_INFO[1]['share'],
+                      fake.VSERVER1,
+                      vserver_client),
+        ])
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    def test_create_consistency_group_from_cgsnapshot_no_members(self):
+
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+        mock_allocate_container_from_snapshot = self.mock_object(
+            self.library, '_allocate_container_from_snapshot')
+        mock_create_export = self.mock_object(
+            self.library, '_create_export',
+            mock.Mock(side_effect=[['loc3'], ['loc4']]))
+
+        fake_cg_snapshot = copy.deepcopy(fake.CG_SNAPSHOT)
+        fake_cg_snapshot['cgsnapshot_members'] = []
+
+        result = self.library.create_consistency_group_from_cgsnapshot(
+            self.context,
+            fake.CONSISTENCY_GROUP_DEST,
+            fake_cg_snapshot,
+            share_server=fake.SHARE_SERVER)
+
+        self.assertEqual((None, None), result)
+
+        self.assertFalse(mock_allocate_container_from_snapshot.called)
+        self.assertFalse(mock_create_export.called)
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    def test_collate_cg_snapshot_info(self):
+
+        result = self.library._collate_cg_snapshot_info(
+            fake.CONSISTENCY_GROUP_DEST, fake.CG_SNAPSHOT)
+
+        self.assertEqual(fake.COLLATED_CGSNAPSHOT_INFO, result)
+
+    def test_collate_cg_snapshot_info_invalid(self):
+
+        fake_cg_snapshot = copy.deepcopy(fake.CG_SNAPSHOT)
+        fake_cg_snapshot['cgsnapshot_members'] = []
+
+        self.assertRaises(exception.InvalidConsistencyGroup,
+                          self.library._collate_cg_snapshot_info,
+                          fake.CONSISTENCY_GROUP_DEST, fake_cg_snapshot)
+
+    def test_delete_consistency_group(self):
+
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+
+        result = self.library.delete_consistency_group(
+            self.context,
+            fake.EMPTY_CONSISTENCY_GROUP,
+            share_server=fake.SHARE_SERVER)
+
+        self.assertIsNone(result)
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    @ddt.data(exception.InvalidInput(reason='fake_reason'),
+              exception.VserverNotSpecified(),
+              exception.VserverNotFound(vserver='fake_vserver'))
+    def test_delete_consistency_group_no_share_server(self,
+                                                      get_vserver_exception):
+
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(side_effect=get_vserver_exception))
+
+        result = self.library.delete_consistency_group(
+            self.context,
+            fake.EMPTY_CONSISTENCY_GROUP,
+            share_server=fake.SHARE_SERVER)
+
+        self.assertIsNone(result)
+        self.assertEqual(1, lib_base.LOG.warning.call_count)
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    def test_create_cgsnapshot(self):
+
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+
+        result = self.library.create_cgsnapshot(
+            self.context,
+            fake.CG_SNAPSHOT,
+            share_server=fake.SHARE_SERVER)
+
+        share_names = [
+            self.library._get_valid_share_name(
+                fake.CG_SNAPSHOT_MEMBER_1['share_id']),
+            self.library._get_valid_share_name(
+                fake.CG_SNAPSHOT_MEMBER_2['share_id'])
+        ]
+        snapshot_name = self.library._get_valid_cg_snapshot_name(
+            fake.CG_SNAPSHOT['id'])
+        vserver_client.create_cg_snapshot.assert_called_once_with(
+            share_names, snapshot_name)
+        self.assertEqual((None, None), result)
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    def test_create_cgsnapshot_no_members(self):
+
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+
+        fake_cg_snapshot = copy.deepcopy(fake.CG_SNAPSHOT)
+        fake_cg_snapshot['cgsnapshot_members'] = []
+
+        result = self.library.create_cgsnapshot(
+            self.context,
+            fake_cg_snapshot,
+            share_server=fake.SHARE_SERVER)
+
+        self.assertFalse(vserver_client.create_cg_snapshot.called)
+        self.assertEqual((None, None), result)
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    def test_delete_cgsnapshot(self):
+
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+        mock_handle_busy_snapshot = self.mock_object(self.library,
+                                                     '_handle_busy_snapshot')
+
+        result = self.library.delete_cgsnapshot(
+            self.context,
+            fake.CG_SNAPSHOT,
+            share_server=fake.SHARE_SERVER)
+
+        share_names = [
+            self.library._get_valid_share_name(
+                fake.CG_SNAPSHOT_MEMBER_1['share_id']),
+            self.library._get_valid_share_name(
+                fake.CG_SNAPSHOT_MEMBER_2['share_id'])
+        ]
+        snapshot_name = self.library._get_valid_cg_snapshot_name(
+            fake.CG_SNAPSHOT['id'])
+
+        mock_handle_busy_snapshot.assert_has_calls([
+            mock.call(vserver_client, share_names[0], snapshot_name),
+            mock.call(vserver_client, share_names[1], snapshot_name)
+        ])
+        vserver_client.delete_snapshot.assert_has_calls([
+            mock.call(share_names[0], snapshot_name),
+            mock.call(share_names[1], snapshot_name)
+        ])
+        self.assertEqual((None, None), result)
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    def test_delete_cgsnapshot_no_members(self):
+
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+        mock_handle_busy_snapshot = self.mock_object(self.library,
+                                                     '_handle_busy_snapshot')
+
+        fake_cg_snapshot = copy.deepcopy(fake.CG_SNAPSHOT)
+        fake_cg_snapshot['cgsnapshot_members'] = []
+
+        result = self.library.delete_cgsnapshot(
+            self.context,
+            fake_cg_snapshot,
+            share_server=fake.SHARE_SERVER)
+
+        self.assertFalse(mock_handle_busy_snapshot.called)
+        self.assertFalse(vserver_client.delete_snapshot.called)
+        self.assertEqual((None, None), result)
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    def test_delete_cgsnapshot_snapshots_not_found(self):
+
+        vserver_client = mock.Mock()
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(return_value=(fake.VSERVER1, vserver_client)))
+        mock_handle_busy_snapshot = self.mock_object(
+            self.library,
+            '_handle_busy_snapshot',
+            mock.Mock(side_effect=exception.SnapshotNotFound(name='fake')))
+
+        result = self.library.delete_cgsnapshot(
+            self.context,
+            fake.CG_SNAPSHOT,
+            share_server=fake.SHARE_SERVER)
+
+        share_names = [
+            self.library._get_valid_share_name(
+                fake.CG_SNAPSHOT_MEMBER_1['share_id']),
+            self.library._get_valid_share_name(
+                fake.CG_SNAPSHOT_MEMBER_2['share_id'])
+        ]
+        snapshot_name = self.library._get_valid_cg_snapshot_name(
+            fake.CG_SNAPSHOT['id'])
+
+        mock_handle_busy_snapshot.assert_has_calls([
+            mock.call(vserver_client, share_names[0], snapshot_name),
+            mock.call(vserver_client, share_names[1], snapshot_name)
+        ])
+        self.assertFalse(vserver_client.delete_snapshot.called)
+        self.assertEqual((None, None), result)
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
+
+    @ddt.data(exception.InvalidInput(reason='fake_reason'),
+              exception.VserverNotSpecified(),
+              exception.VserverNotFound(vserver='fake_vserver'))
+    def test_delete_cgsnapshot_no_share_server(self,
+                                               get_vserver_exception):
+
+        mock_get_vserver = self.mock_object(
+            self.library, '_get_vserver',
+            mock.Mock(side_effect=get_vserver_exception))
+
+        result = self.library.delete_cgsnapshot(
+            self.context,
+            fake.EMPTY_CONSISTENCY_GROUP,
+            share_server=fake.SHARE_SERVER)
+
+        self.assertEqual((None, None), result)
+        self.assertEqual(1, lib_base.LOG.warning.call_count)
+        mock_get_vserver.assert_called_once_with(
+            share_server=fake.SHARE_SERVER)
 
     def test_extend_share(self):
 
