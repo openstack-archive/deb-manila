@@ -2,6 +2,7 @@ manila (1.0.0~rc1-1) experimental; urgency=medium
 
   * New upstream release.
   * Now manila-api depends on python-openstackclient.
+  * Fixed (build-)depends for this release.
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 21 Sep 2015 13:02:31 +0000
 
