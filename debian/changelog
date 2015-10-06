@@ -5,6 +5,13 @@ manila (1.0.0-1) experimental; urgency=medium
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 13 Oct 2015 15:03:45 +0200
 
+manila (1.0.0~rc1-2) experimental; urgency=medium
+
+  * Do not duplicate /usr/bin/manila-scheduler in both -common and -scheduler
+    packages (Closes: #801101).
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 06 Oct 2015 14:20:36 +0000
+
 manila (1.0.0~rc1-1) experimental; urgency=medium
 
   * New upstream release.
