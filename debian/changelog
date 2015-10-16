@@ -1,6 +1,8 @@
-manila (1.0.0-1) experimental; urgency=medium
+manila (1:1.0.0-1) unstable; urgency=medium
 
   * New upstream release.
+  * Uploading to unstable.
+  * Align the EPOCH with the Ubuntu version.
   * Added python-pymysql as runtime dependency.
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 13 Oct 2015 15:03:45 +0200
