@@ -1,3 +1,9 @@
+manila (1:1.0.0-2) unstable; urgency=medium
+
+  * Added -p flag when doing mkdir /var/lib/manila/volumes (Closes: #802319).
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 22 Oct 2015 18:08:15 +0200
+
 manila (1:1.0.0-1) unstable; urgency=medium
 
   * New upstream release.
