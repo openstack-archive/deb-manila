@@ -8,7 +8,7 @@ if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
 	pkgos_var_user_group manila
 
 	# We need that extra folder.
-	mkdir /var/lib/manila/volumes
+	mkdir -p /var/lib/manila/volumes
 	chown -R manila:manila /var/lib/manila/volumes
 
 	# Install config files.
