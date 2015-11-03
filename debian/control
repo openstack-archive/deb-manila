@@ -148,6 +148,7 @@ Package: manila-api
 Architecture: all
 Depends: manila-common (= ${binary:Version}),
          python-openstackclient,
+         q-text-as-data,
          ${misc:Depends},
          ${python:Depends},
 Description: OpenStack shared file system as a service - API server
