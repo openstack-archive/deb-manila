@@ -18,7 +18,12 @@ override_dh_auto_install:
 
 	# Generate the config file
 	mkdir -p $(CURDIR)/debian/manila-common/usr/share/manila-common
-	oslo-config-generator --config-file etc/oslo-config-generator/manila.conf \
+	PYTHONPATH=. oslo-config-generator \
+		--namespace manila \
+		--namespace oslo.messaging \
+		--namespace oslo.db \
+		--namespace oslo.db.concurrency \
+		--namespace keystonemiddleware.auth_token \
 		--output-file $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
 	sed -i 's|^[# \t]*auth_protocol[\t #]*=.*|auth_protocol = http|' $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
 
