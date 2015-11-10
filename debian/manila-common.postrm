@@ -1,0 +1,29 @@
+#!/bin/sh
+
+set -e
+
+if [ "${1}" = "purge" ] ; then
+	if [ -f /usr/share/debconf/confmodule ] ; then
+		. /usr/share/debconf/confmodule
+
+		db_get manila/configure_db || true
+		if [ "$RET" = "true" ]; then
+			if [ -f /usr/share/dbconfig-common/dpkg/postrm ]; then
+				. /usr/share/dbconfig-common/dpkg/postrm
+				dbc_go manila-common $@
+			else
+				rm -f /etc/dbconfig-common/manila-common.conf
+				if which ucf >/dev/null 2>&1; then
+					ucf --purge /etc/dbconfig-common/manila-common.conf
+					ucfr --purge manila-common /etc/dbconfig-common/manila-common.conf
+				fi
+			fi
+		fi
+	fi
+
+	rm -rf /etc/manila /var/log/manila /var/lib/manila /var/lock/manila
+fi
+
+#DEBHELPER#
+
+exit 0
