@@ -26,7 +26,7 @@ if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
 		        SERVICE_TYPE=share
 			SERVICE_DESC="OpenStack Shared Filesystems"
 			SERVICE_PORT=8786
-			SERVICE_URL=/v1/'%(tenant_id)s'
+			SERVICE_URL=/v1/'$(tenant_id)s'
 			echo "Registering service and endpoints for ${SERVICE_NAME} with type ${SERVICE_TYPE} at http://${PKG_ENDPOINT_IP}:${SERVICE_PORT}${SERVICE_URL}"
 			NUM_LINES=$(openstack --os-token ${AUTH_TOKEN} --os-url=http://${KEYSTONE_ENDPOINT_IP}:35357/v3/ --os-domain-name default --os-identity-api-version=3 service list --format=csv | q -d , -H 'SELECT ID FROM - WHERE `Type`="'${SERVICE_TYPE}'"' | wc -l)
 			if [ "${NUM_LINES}" = "0" ] ; then
@@ -47,7 +47,7 @@ if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
 		        SERVICE_TYPE=sharev2
 			SERVICE_DESC="OpenStack Shared Filesystems v2"
 			SERVICE_PORT=8786
-			SERVICE_URL=/v2/'%(tenant_id)s'
+			SERVICE_URL=/v2/'$(tenant_id)s'
 			echo "Registering service and endpoints for ${SERVICE_NAME} with type ${SERVICE_TYPE} at http://${PKG_ENDPOINT_IP}:${SERVICE_PORT}${SERVICE_URL}"
 			NUM_LINES=$(openstack --os-token ${AUTH_TOKEN} --os-url=http://${KEYSTONE_ENDPOINT_IP}:35357/v3/ --os-domain-name default --os-identity-api-version=3 service list --format=csv | q -d , -H 'SELECT ID FROM - WHERE `Type`="'${SERVICE_TYPE}'"' | wc -l)
 			if [ "${NUM_LINES}" = "0" ] ; then
@@ -63,8 +63,8 @@ if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
 				openstack --os-token ${AUTH_TOKEN} --os-url=http://${KEYSTONE_ENDPOINT_IP}:35357/v3/ --os-domain-name default --os-identity-api-version=3 endpoint create \
 					--region "${REGION_NAME}" ${SERVICE_NAME} admin http://${PKG_ENDPOINT_IP}:${SERVICE_PORT}${SERVICE_URL}
 			fi
-#			pkgos_register_endpoint_postinst manila manila volume "Shared FS Service" 8786 /v1/'%(tenant_id)s'
-#			pkgos_register_endpoint_postinst manila manilav2 volumev2 "Shared FS Service v2" 8786 /v2/'%(tenant_id)s'
+#			pkgos_register_endpoint_postinst manila manila volume "Shared FS Service" 8786 /v1/'$(tenant_id)s'
+#			pkgos_register_endpoint_postinst manila manilav2 volumev2 "Shared FS Service v2" 8786 /v2/'$(tenant_id)s'
 		else
 			echo "Problem in endpoint parameter (IPs or otherwise)."
 		fi
