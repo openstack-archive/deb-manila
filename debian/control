@@ -8,7 +8,7 @@ Uploaders: Malihe Asemani <ml.asemani@gmail.com>,
 Build-Depends: debhelper (>= 9),
                dh-python,
                dh-systemd,
-               openstack-pkg-tools (>= 23~),
+               openstack-pkg-tools (>= 37~),
                po-debconf,
                python-all,
                python-pbr (>= 1.8),
@@ -128,6 +128,7 @@ Description: OpenStack shared file system as a service - Python libs
 Package: manila-common
 Architecture: all
 Depends: adduser,
+         dbconfig-common,
          python-manila (= ${binary:Version}),
          ${misc:Depends},
          ${python:Depends},

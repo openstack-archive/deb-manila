@@ -9,6 +9,9 @@ export OSLO_PACKAGE_VERSION=$(shell dpkg-parsechangelog | grep Version: | cut -d
 override_dh_auto_build:
 	dh_auto_build -O--buildsystem=python_distutils
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func manila-common.postinst
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func manila-common.config
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func manila-api.postinst
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func manila-api.config
 
 override_dh_auto_install:
 	dh_auto_install -O--buildsystem=python_distutils
@@ -17,6 +20,7 @@ override_dh_auto_install:
 	mkdir -p $(CURDIR)/debian/manila-common/usr/share/manila-common
 	oslo-config-generator --config-file etc/oslo-config-generator/manila.conf \
 		--output-file $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
+	sed -i 's|^[# \t]*auth_protocol[\t #]*=.*|auth_protocol = http|' $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
 
 	# and copy the remaining
 	set -e ; for i in api-paste.ini policy.json rootwrap.conf ; do \
@@ -25,11 +29,13 @@ override_dh_auto_install:
 	cp $(CURDIR)/etc/manila/logging_sample.conf $(CURDIR)/debian/manila-common/usr/share/manila-common/logging.conf
 	cp -rfv $(CURDIR)/etc/manila/rootwrap.d $(CURDIR)/debian/manila-common/usr/share/manila-common
 
+	install -D -m 0440 debian/manila-common.sudoers $(CURDIR)/debian/manila-common/etc/sudoers.d/manila-common
+
 override_dh_auto_clean:
 	dh_auto_clean
 	rm -f etc/manila/manila.conf
 	rm -f debian/*.service debian/*.upstart debian/*.init
-	rm -f debian/manila-common.postinst
+	rm -f debian/manila-common.postinst debian/manila-common.config debian/manila-api.config debian/manila-api.postinst
 
 override_dh_install:
 	dh_install --fail-missing

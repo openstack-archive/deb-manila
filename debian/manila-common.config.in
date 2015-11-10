@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -e
+
+. /usr/share/debconf/confmodule
+CONF=/etc/manila/manila.conf
+
+#PKGOS-INCLUDE#
+
+pkgos_var_user_group manila
+pkgos_dbc_read_conf -pkg manila-common ${CONF} database connection manila $@
+pkgos_rabbit_read_conf ${CONF} oslo_messaging_rabbit manila
+pkgos_read_admin_creds ${CONF} keystone_authtoken manila
+db_go
+
+exit 0

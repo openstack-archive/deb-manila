@@ -2,9 +2,14 @@
 
 set -e
 
+CONF=/etc/manila/manila.conf
+
 #PKGOS-INCLUDE#
 
 if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
+	. /usr/share/debconf/confmodule
+	. /usr/share/dbconfig-common/dpkg/postinst
+
 	pkgos_var_user_group manila
 
 	# We need that extra folder.
@@ -24,14 +29,13 @@ if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
 		chmod 0755 /etc/manila/rootwrap.d
 	fi
 
+	pkgos_rabbit_write_conf ${CONF} oslo_messaging_rabbit manila
+	pkgos_write_admin_creds ${CONF} keystone_authtoken manila
 
-	if ! grep -q sql_connection /etc/manila/manila.conf ; then
+	db_get manila/configure_db
+	if [ "$RET" = "true" ]; then
+		pkgos_dbc_postinst ${CONF} database connection manila $@
 		su -s /bin/sh -c 'manila-manage db sync' manila
-	fi
-
-	if [ -e /var/lib/manila/manila.sqlite ]; then
-		chown manila:manila /var/lib/manila/manila.sqlite
-		chmod 0600 /var/lib/manila/manila.sqlite
 	fi
 fi
 
