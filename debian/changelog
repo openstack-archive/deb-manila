@@ -2,6 +2,7 @@ manila (1:1.0.0-5) unstable; urgency=medium
 
   * Correctly purge the package (Closes: #803444).
   * Configures keystone_authtoken, rabbit, db and API endpoint using debconf.
+  * Fixes missing alembic.ini.
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 10 Nov 2015 15:19:53 +0100
 

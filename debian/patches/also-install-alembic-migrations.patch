@@ -11,6 +11,6 @@ Last-Update: 2015-06-17
  exclude .gitignore
  exclude .gitreview
  
-+recursive-include manila/db/migrations/alembic_migrations *
++recursive-include manila/db/migrations *
 +
  global-exclude *.pyc
