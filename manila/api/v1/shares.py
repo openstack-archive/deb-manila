@@ -16,6 +16,7 @@
 """The shares api."""
 
 import ast
+import re
 
 from oslo_log import log
 from oslo_utils import strutils
@@ -37,14 +38,20 @@ from manila.share import share_types
 LOG = log.getLogger(__name__)
 
 
-class ShareController(wsgi.Controller):
-    """The Shares API controller for the OpenStack API."""
+class ShareMixin(object):
+    """Mixin class for Share API Controllers."""
 
-    _view_builder_class = share_views.ViewBuilder
+    def _update(self, *args, **kwargs):
+        db.share_update(*args, **kwargs)
 
-    def __init__(self):
-        super(ShareController, self).__init__()
-        self.share_api = share.API()
+    def _get(self, *args, **kwargs):
+        return self.share_api.get(*args, **kwargs)
+
+    def _delete(self, *args, **kwargs):
+        return self.share_api.delete(*args, **kwargs)
+
+    def _migrate(self, *args, **kwargs):
+        return self.share_api.migrate_share(*args, **kwargs)
 
     def show(self, req, id):
         """Return data about the given share."""
@@ -89,9 +96,7 @@ class ShareController(wsgi.Controller):
 
         return webob.Response(status_int=202)
 
-    @wsgi.Controller.api_version("2.5", None, True)
-    @wsgi.action("os-migrate_share")
-    def migrate_share(self, req, id, body):
+    def _migrate_share(self, req, id, body):
         """Migrate a share to the specified host."""
         context = req.environ['manila.context']
         try:
@@ -99,7 +104,7 @@ class ShareController(wsgi.Controller):
         except exception.NotFound:
             msg = _("Share %s not found.") % id
             raise exc.HTTPNotFound(explanation=msg)
-        params = body['os-migrate_share']
+        params = body.get('migrate_share', body.get('os-migrate_share'))
         try:
             host = params['host']
         except KeyError:
@@ -205,12 +210,7 @@ class ShareController(wsgi.Controller):
         share.update(update_dict)
         return self._view_builder.detail(req, share)
 
-    @wsgi.Controller.api_version("2.4")
     def create(self, req, body):
-        return self._create(req, body)
-
-    @wsgi.Controller.api_version("1.0", "2.3")  # noqa
-    def create(self, req, body):  # pylint: disable=E0102
         # Remove consistency group attributes
         body.get('share', {}).pop('consistency_group_id', None)
         share = self._create(req, body)
@@ -225,13 +225,13 @@ class ShareController(wsgi.Controller):
 
         share = body['share']
 
-        # NOTE(rushiagr): v2 API allows name instead of display_name
+        # NOTE(rushiagr): Manila API allows 'name' instead of 'display_name'.
         if share.get('name'):
             share['display_name'] = share.get('name')
             del share['name']
 
-        # NOTE(rushiagr): v2 API allows description instead of
-        #                display_description
+        # NOTE(rushiagr): Manila API allows 'description' instead of
+        #                 'display_description'.
         if share.get('description'):
             share['display_description'] = share.get('description')
             del share['description']
@@ -325,6 +325,194 @@ class ShareController(wsgi.Controller):
                                           **kwargs)
 
         return self._view_builder.detail(req, dict(six.iteritems(new_share)))
+
+    @staticmethod
+    def _validate_common_name(access):
+        """Validate common name passed by user.
+
+        'access' is used as the certificate's CN (common name)
+        to which access is allowed or denied by the backend.
+        The standard allows for just about any string in the
+        common name. The meaning of a string depends on its
+        interpretation and is limited to 64 characters.
+        """
+        if len(access) == 0 or len(access) > 64:
+            exc_str = _('Invalid CN (common name). Must be 1-64 chars long')
+            raise webob.exc.HTTPBadRequest(explanation=exc_str)
+
+    @staticmethod
+    def _validate_username(access):
+        valid_username_re = '[\w\.\-_\`;\'\{\}\[\]\\\\]{4,32}$'
+        username = access
+        if not re.match(valid_username_re, username):
+            exc_str = ('Invalid user or group name. Must be 4-32 characters '
+                       'and consist of alphanumeric characters and '
+                       'special characters ]{.-_\'`;}[\\')
+            raise webob.exc.HTTPBadRequest(explanation=exc_str)
+
+    @staticmethod
+    def _validate_ip_range(ip_range):
+        ip_range = ip_range.split('/')
+        exc_str = ('Supported ip format examples:\n'
+                   '\t10.0.0.2, 10.0.0.0/24')
+        if len(ip_range) > 2:
+            raise webob.exc.HTTPBadRequest(explanation=exc_str)
+        if len(ip_range) == 2:
+            try:
+                prefix = int(ip_range[1])
+                if prefix < 0 or prefix > 32:
+                    raise ValueError()
+            except ValueError:
+                msg = 'IP prefix should be in range from 0 to 32'
+                raise webob.exc.HTTPBadRequest(explanation=msg)
+        ip_range = ip_range[0].split('.')
+        if len(ip_range) != 4:
+            raise webob.exc.HTTPBadRequest(explanation=exc_str)
+        for item in ip_range:
+            try:
+                if 0 <= int(item) <= 255:
+                    continue
+                raise ValueError()
+            except ValueError:
+                raise webob.exc.HTTPBadRequest(explanation=exc_str)
+
+    def _allow_access(self, req, id, body):
+        """Add share access rule."""
+        context = req.environ['manila.context']
+        access_data = body.get('allow_access', body.get('os-allow_access'))
+        share = self.share_api.get(context, id)
+
+        access_type = access_data['access_type']
+        access_to = access_data['access_to']
+        if access_type == 'ip':
+            self._validate_ip_range(access_to)
+        elif access_type == 'user':
+            self._validate_username(access_to)
+        elif access_type == 'cert':
+            self._validate_common_name(access_to.strip())
+        else:
+            exc_str = _("Only 'ip','user',or'cert' access types "
+                        "are supported.")
+            raise webob.exc.HTTPBadRequest(explanation=exc_str)
+        try:
+            access = self.share_api.allow_access(
+                context, share, access_type, access_to,
+                access_data.get('access_level'))
+        except exception.ShareAccessExists as e:
+            raise webob.exc.HTTPBadRequest(explanation=e.msg)
+        return {'access': access}
+
+    def _deny_access(self, req, id, body):
+        """Remove share access rule."""
+        context = req.environ['manila.context']
+
+        access_id = body.get(
+            'deny_access', body.get('os-deny_access'))['access_id']
+
+        try:
+            access = self.share_api.access_get(context, access_id)
+            if access.share_id != id:
+                raise exception.NotFound()
+            share = self.share_api.get(context, id)
+        except exception.NotFound as error:
+            raise webob.exc.HTTPNotFound(explanation=six.text_type(error))
+        self.share_api.deny_access(context, share, access)
+        return webob.Response(status_int=202)
+
+    def _access_list(self, req, id, body):
+        """list share access rules."""
+        context = req.environ['manila.context']
+
+        share = self.share_api.get(context, id)
+        access_list = self.share_api.access_get_all(context, share)
+        return {'access_list': access_list}
+
+    def _extend(self, req, id, body):
+        """Extend size of a share."""
+        context = req.environ['manila.context']
+        share, size = self._get_valid_resize_parameters(
+            context, id, body, 'os-extend')
+
+        try:
+            self.share_api.extend(context, share, size)
+        except (exception.InvalidInput, exception.InvalidShare) as e:
+            raise webob.exc.HTTPBadRequest(explanation=six.text_type(e))
+        except exception.ShareSizeExceedsAvailableQuota as e:
+            raise webob.exc.HTTPForbidden(explanation=six.text_type(e))
+
+        return webob.Response(status_int=202)
+
+    def _shrink(self, req, id, body):
+        """Shrink size of a share."""
+        context = req.environ['manila.context']
+        share, size = self._get_valid_resize_parameters(
+            context, id, body, 'os-shrink')
+
+        try:
+            self.share_api.shrink(context, share, size)
+        except (exception.InvalidInput, exception.InvalidShare) as e:
+            raise webob.exc.HTTPBadRequest(explanation=six.text_type(e))
+
+        return webob.Response(status_int=202)
+
+    def _get_valid_resize_parameters(self, context, id, body, action):
+        try:
+            share = self.share_api.get(context, id)
+        except exception.NotFound as e:
+            raise webob.exc.HTTPNotFound(explanation=six.text_type(e))
+
+        try:
+            size = int(body.get(action, action.split('os-')[-1])['new_size'])
+        except (KeyError, ValueError, TypeError):
+            msg = _("New share size must be specified as an integer.")
+            raise webob.exc.HTTPBadRequest(explanation=msg)
+
+        return share, size
+
+
+class ShareController(wsgi.Controller, ShareMixin, wsgi.AdminActionsMixin):
+    """The Shares API v1 controller for the OpenStack API."""
+    resource_name = 'share'
+    _view_builder_class = share_views.ViewBuilder
+
+    def __init__(self):
+        super(self.__class__, self).__init__()
+        self.share_api = share.API()
+
+    @wsgi.action('os-reset_status')
+    def share_reset_status(self, req, id, body):
+        """Reset status of a share."""
+        return self._reset_status(req, id, body)
+
+    @wsgi.action('os-force_delete')
+    def share_force_delete(self, req, id, body):
+        """Delete a share, bypassing the check for status."""
+        return self._force_delete(req, id, body)
+
+    @wsgi.action('os-allow_access')
+    def allow_access(self, req, id, body):
+        """Add share access rule."""
+        return self._allow_access(req, id, body)
+
+    @wsgi.action('os-deny_access')
+    def deny_access(self, req, id, body):
+        """Remove share access rule."""
+        return self._deny_access(req, id, body)
+
+    @wsgi.action('os-access_list')
+    def access_list(self, req, id, body):
+        """List share access rules."""
+        return self._access_list(req, id, body)
+
+    @wsgi.action('os-extend')
+    def extend(self, req, id, body):
+        """Extend size of a share."""
+        return self._extend(req, id, body)
+
+    @wsgi.action('os-shrink')
+    def shrink(self, req, id, body):
+        """Shrink size of a share."""
+        return self._shrink(req, id, body)
 
 
 def create_resource():

@@ -36,7 +36,7 @@ ShareGroup = [
                help="The minimum api microversion is configured to be the "
                     "value of the minimum microversion supported by Manila."),
     cfg.StrOpt("max_api_microversion",
-               default="2.6",
+               default="2.7",
                help="The maximum api microversion is configured to be the "
                     "value of the latest microversion supported by Manila."),
     cfg.StrOpt("region",
@@ -176,6 +176,5 @@ ShareGroup = [
                help="Time to wait for share migration before "
                     "timing out (seconds)."),
     cfg.StrOpt("default_share_type_name",
-               default=None,
                help="Default share type name to use in tempest tests."),
 ]

@@ -202,6 +202,13 @@ class Share(BASE, ManilaBase):
             return self.instance.export_location
 
     @property
+    def is_busy(self):
+        # Make sure share is not busy, i.e., not part of a migration
+        if self.task_state in constants.BUSY_TASK_STATES:
+            return True
+        return False
+
+    @property
     def export_locations(self):
         # TODO(u_glide): Return a map with lists of locations per AZ when
         # replication functionality will be implemented.
@@ -278,6 +285,13 @@ class Share(BASE, ManilaBase):
         viewonly=True,
         join_depth=2,
     )
+    share_type = orm.relationship(
+        "ShareTypes",
+        lazy=True,
+        foreign_keys=share_type_id,
+        primaryjoin='and_('
+                    'Share.share_type_id == ShareTypes.id, '
+                    'ShareTypes.deleted == "False")')
 
 
 class ShareInstance(BASE, ManilaBase):
@@ -365,13 +379,6 @@ class ShareTypes(BASE, ManilaBase):
     deleted = Column(String(36), default='False')
     name = Column(String(255))
     is_public = Column(Boolean, default=True)
-    shares = orm.relationship(Share,
-                              backref=orm.backref('share_type',
-                                                  uselist=False),
-                              foreign_keys=id,
-                              primaryjoin='and_('
-                              'Share.share_type_id == ShareTypes.id, '
-                              'ShareTypes.deleted == "False")')
 
 
 class ShareTypeProjects(BASE, ManilaBase):

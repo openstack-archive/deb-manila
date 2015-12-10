@@ -17,21 +17,28 @@ import datetime
 
 import ddt
 import mock
+from oslo_serialization import jsonutils
+import six
 import webob
 
 from manila.api.v1 import share_snapshots
+from manila.common import constants
+from manila import context
+from manila import db
+from manila import exception
 from manila.share import api as share_api
 from manila import test
 from manila.tests.api.contrib import stubs
 from manila.tests.api import fakes
+from manila.tests import db_utils
 
 
 @ddt.ddt
-class ShareSnapshotApiTest(test.TestCase):
-    """Share Snapshot Api Test."""
+class ShareSnapshotAPITest(test.TestCase):
+    """Share Snapshot API Test."""
 
     def setUp(self):
-        super(ShareSnapshotApiTest, self).setUp()
+        super(self.__class__, self).setUp()
         self.controller = share_snapshots.ShareSnapshotsController()
 
         self.mock_object(share_api.API, 'get', stubs.stub_share_get)
@@ -127,7 +134,7 @@ class ShareSnapshotApiTest(test.TestCase):
                          stubs.stub_snapshot_delete)
         req = fakes.HTTPRequest.blank('/snapshots/200')
         resp = self.controller.delete(req, 200)
-        self.assertEqual(resp.status_int, 202)
+        self.assertEqual(202, resp.status_int)
 
     def test_snapshot_delete_nofound(self):
         self.mock_object(share_api.API, 'get_snapshot',
@@ -164,7 +171,7 @@ class ShareSnapshotApiTest(test.TestCase):
                 ],
             }
         }
-        self.assertEqual(res_dict, expected)
+        self.assertEqual(expected, res_dict)
 
     def test_snapshot_show_nofound(self):
         self.mock_object(share_api.API, 'get_snapshot',
@@ -198,7 +205,7 @@ class ShareSnapshotApiTest(test.TestCase):
                 }
             ]
         }
-        self.assertEqual(res_dict, expected)
+        self.assertEqual(expected, res_dict)
 
     def _snapshot_list_summary_with_search_opts(self, use_admin_context):
         search_opts = {
@@ -340,7 +347,7 @@ class ShareSnapshotApiTest(test.TestCase):
                 },
             ]
         }
-        self.assertEqual(res_dict, expected)
+        self.assertEqual(expected, res_dict)
 
     def test_snapshot_updates_description(self):
         snp = self.snp_example
@@ -348,7 +355,7 @@ class ShareSnapshotApiTest(test.TestCase):
 
         req = fakes.HTTPRequest.blank('/snapshot/1')
         res_dict = self.controller.update(req, 1, body)
-        self.assertEqual(res_dict['snapshot']["name"], snp["display_name"])
+        self.assertEqual(snp["display_name"], res_dict['snapshot']["name"])
 
     def test_snapshot_updates_display_descr(self):
         snp = self.snp_example
@@ -357,8 +364,8 @@ class ShareSnapshotApiTest(test.TestCase):
         req = fakes.HTTPRequest.blank('/snapshot/1')
         res_dict = self.controller.update(req, 1, body)
 
-        self.assertEqual(res_dict['snapshot']["description"],
-                         snp["display_description"])
+        self.assertEqual(snp["display_description"],
+                         res_dict['snapshot']["description"])
 
     def test_share_not_updates_size(self):
         snp = self.snp_example
@@ -367,4 +374,112 @@ class ShareSnapshotApiTest(test.TestCase):
         req = fakes.HTTPRequest.blank('/snapshot/1')
         res_dict = self.controller.update(req, 1, body)
 
-        self.assertNotEqual(res_dict['snapshot']["size"], snp["size"])
+        self.assertNotEqual(snp["size"], res_dict['snapshot']["size"])
+
+
+@ddt.ddt
+class ShareSnapshotAdminActionsAPITest(test.TestCase):
+
+    def setUp(self):
+        super(self.__class__, self).setUp()
+        self.controller = share_snapshots.ShareSnapshotsController()
+        self.flags(rpc_backend='manila.openstack.common.rpc.impl_fake')
+        self.admin_context = context.RequestContext('admin', 'fake', True)
+        self.member_context = context.RequestContext('fake', 'fake')
+
+    def _get_context(self, role):
+        return getattr(self, '%s_context' % role)
+
+    def _setup_snapshot_data(self, snapshot=None, version='2.7'):
+        if snapshot is None:
+            share = db_utils.create_share()
+            snapshot = db_utils.create_snapshot(
+                status=constants.STATUS_AVAILABLE, share_id=share['id'])
+        req = fakes.HTTPRequest.blank('/v2/fake/snapshots/%s/action' %
+                                      snapshot['id'], version=version)
+        return snapshot, req
+
+    def _reset_status(self, ctxt, model, req, db_access_method,
+                      valid_code, valid_status=None, body=None, version='2.7'):
+        if float(version) > 2.6:
+            action_name = 'reset_status'
+        else:
+            action_name = 'os-reset_status'
+        if body is None:
+            body = {action_name: {'status': constants.STATUS_ERROR}}
+        req.method = 'POST'
+        req.headers['content-type'] = 'application/json'
+        req.headers['X-Openstack-Manila-Api-Version'] = version
+        req.body = six.b(jsonutils.dumps(body))
+        req.environ['manila.context'] = ctxt
+
+        resp = req.get_response(fakes.app())
+
+        # validate response code and model status
+        self.assertEqual(valid_code, resp.status_int)
+
+        if valid_code == 404:
+            self.assertRaises(exception.NotFound,
+                              db_access_method,
+                              ctxt,
+                              model['id'])
+        else:
+            actual_model = db_access_method(ctxt, model['id'])
+            self.assertEqual(valid_status, actual_model['status'])
+
+    @ddt.data(*fakes.fixture_reset_status_with_different_roles)
+    @ddt.unpack
+    def test_snapshot_reset_status_with_different_roles(self, role, valid_code,
+                                                        valid_status, version):
+        ctxt = self._get_context(role)
+        snapshot, req = self._setup_snapshot_data(version=version)
+
+        self._reset_status(ctxt, snapshot, req, db.share_snapshot_get,
+                           valid_code, valid_status, version=version)
+
+    @ddt.data(
+        ({'os-reset_status': {'x-status': 'bad'}}, '2.6'),
+        ({'reset_status': {'x-status': 'bad'}}, '2.7'),
+        ({'os-reset_status': {'status': 'invalid'}}, '2.6'),
+        ({'reset_status': {'status': 'invalid'}}, '2.7'),
+    )
+    @ddt.unpack
+    def test_snapshot_invalid_reset_status_body(self, body, version):
+        snapshot, req = self._setup_snapshot_data(version=version)
+
+        self._reset_status(self.admin_context, snapshot, req,
+                           db.share_snapshot_get, 400,
+                           constants.STATUS_AVAILABLE, body, version=version)
+
+    def _force_delete(self, ctxt, model, req, db_access_method, valid_code,
+                      version='2.7'):
+        if float(version) > 2.6:
+            action_name = 'force_delete'
+        else:
+            action_name = 'os-force_delete'
+        req.method = 'POST'
+        req.headers['content-type'] = 'application/json'
+        req.headers['X-Openstack-Manila-Api-Version'] = version
+        req.body = six.b(jsonutils.dumps({action_name: {}}))
+        req.environ['manila.context'] = ctxt
+
+        resp = req.get_response(fakes.app())
+
+        # Validate response
+        self.assertEqual(valid_code, resp.status_int)
+
+    @ddt.data(*fakes.fixture_force_delete_with_different_roles)
+    @ddt.unpack
+    def test_snapshot_force_delete_with_different_roles(self, role, resp_code,
+                                                        version):
+        ctxt = self._get_context(role)
+        snapshot, req = self._setup_snapshot_data(version=version)
+
+        self._force_delete(ctxt, snapshot, req, db.share_snapshot_get,
+                           resp_code, version=version)
+
+    def test_snapshot_force_delete_missing(self):
+        ctxt = self._get_context('admin')
+        snapshot, req = self._setup_snapshot_data(snapshot={'id': 'fake'})
+
+        self._force_delete(ctxt, snapshot, req, db.share_snapshot_get, 404)

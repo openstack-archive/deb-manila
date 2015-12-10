@@ -31,30 +31,25 @@ LOG = log.getLogger(__name__)
 
 EMC_NAS_OPTS = [
     cfg.StrOpt('emc_nas_login',
-               default=None,
                help='User name for the EMC server.'),
     cfg.StrOpt('emc_nas_password',
-               default=None,
                help='Password for the EMC server.'),
     cfg.StrOpt('emc_nas_server',
-               default=None,
                help='EMC server hostname or IP address.'),
-    cfg.IntOpt('emc_nas_server_port',
-               default=8080,
-               help='Port number for the EMC server.'),
+    cfg.PortOpt('emc_nas_server_port',
+                default=8080,
+                help='Port number for the EMC server.'),
     cfg.BoolOpt('emc_nas_server_secure',
                 default=True,
                 help='Use secure connection to server.'),
     cfg.StrOpt('emc_share_backend',
-               default=None,
                help='Share backend.'),
     cfg.StrOpt('emc_nas_server_container',
                default='server_2',
                help='Container of share servers.'),
     cfg.StrOpt('emc_nas_pool_name',
-               default=None,
                help='EMC pool name.'),
-    cfg.StrOpt('emc_nas_root_dir', default=None,
+    cfg.StrOpt('emc_nas_root_dir',
                help='The root directory where shares will be located.'),
 ]
 
@@ -81,8 +76,7 @@ class EMCShareDriver(driver.ShareDriver):
 
     def create_share(self, context, share, share_server=None):
         """Is called to create share."""
-        location = self.plugin.create_share(self, context, share,
-                                            share_server)
+        location = self.plugin.create_share(context, share, share_server)
 
         return location
 
@@ -90,37 +84,33 @@ class EMCShareDriver(driver.ShareDriver):
                                    share_server=None):
         """Is called to create share from snapshot."""
         location = self.plugin.create_share_from_snapshot(
-            self, context, share, snapshot, share_server)
+            context, share, snapshot, share_server)
 
         return location
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Is called to create snapshot."""
-        self.plugin.create_snapshot(self, context, snapshot,
-                                    share_server)
+        self.plugin.create_snapshot(context, snapshot, share_server)
 
     def delete_share(self, context, share, share_server=None):
         """Is called to remove share."""
-        self.plugin.delete_share(self, context, share, share_server)
+        self.plugin.delete_share(context, share, share_server)
 
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Is called to remove snapshot."""
-        self.plugin.delete_snapshot(self, context, snapshot,
-                                    share_server)
+        self.plugin.delete_snapshot(context, snapshot, share_server)
 
     def ensure_share(self, context, share, share_server=None):
         """Invoked to sure that share is exported."""
-        self.plugin.ensure_share(self, context, share, share_server)
+        self.plugin.ensure_share(context, share, share_server)
 
     def allow_access(self, context, share, access, share_server=None):
         """Allow access to the share."""
-        self.plugin.allow_access(self, context, share, access,
-                                 share_server)
+        self.plugin.allow_access(context, share, access, share_server)
 
     def deny_access(self, context, share, access, share_server=None):
         """Deny access to the share."""
-        self.plugin.deny_access(self, context, share, access,
-                                share_server)
+        self.plugin.deny_access(context, share, access, share_server)
 
     def check_for_setup_error(self):
         """Check for setup error."""
@@ -144,14 +134,12 @@ class EMCShareDriver(driver.ShareDriver):
 
     def get_network_allocations_number(self):
         """Returns number of network allocations for creating VIFs."""
-        return self.plugin.get_network_allocations_number(self)
+        return self.plugin.get_network_allocations_number()
 
     def _setup_server(self, network_info, metadata=None):
         """Set up and configures share server with given network parameters."""
-        return self.plugin.setup_server(self, network_info, metadata)
+        return self.plugin.setup_server(network_info, metadata)
 
     def _teardown_server(self, server_details, security_services=None):
         """Teardown share server."""
-        return self.plugin.teardown_server(self,
-                                           server_details,
-                                           security_services)
+        return self.plugin.teardown_server(server_details, security_services)

@@ -298,7 +298,7 @@ class ShareAPITestCase(test.TestCase):
             ctx, sort_dir='desc', sort_key='created_at',
             project_id='fake_pid_1', filters={}, is_public=False
         )
-        self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[0])
+        self.assertEqual(_FAKE_LIST_OF_ALL_SHARES[0], shares)
 
     def test_get_all_admin_filter_by_all_tenants(self):
         ctx = context.RequestContext('fake_uid', 'fake_pid_1', is_admin=True)
@@ -309,7 +309,7 @@ class ShareAPITestCase(test.TestCase):
             ctx, 'share', 'get_all')
         db_api.share_get_all.assert_called_once_with(
             ctx, sort_dir='desc', sort_key='created_at', filters={})
-        self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES)
+        self.assertEqual(_FAKE_LIST_OF_ALL_SHARES, shares)
 
     def test_get_all_non_admin_filter_by_share_server(self):
 
@@ -351,7 +351,7 @@ class ShareAPITestCase(test.TestCase):
         )
         db_api.share_get_all_by_project.assert_has_calls([])
         db_api.share_get_all.assert_has_calls([])
-        self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[2:])
+        self.assertEqual(_FAKE_LIST_OF_ALL_SHARES[2:], shares)
 
     def test_get_all_admin_filter_by_name(self):
         ctx = context.RequestContext('fake_uid', 'fake_pid_2', is_admin=True)
@@ -365,7 +365,7 @@ class ShareAPITestCase(test.TestCase):
             ctx, sort_dir='desc', sort_key='created_at',
             project_id='fake_pid_2', filters={}, is_public=False
         )
-        self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[1::2])
+        self.assertEqual(_FAKE_LIST_OF_ALL_SHARES[1::2], shares)
 
     def test_get_all_admin_filter_by_name_and_all_tenants(self):
         ctx = context.RequestContext('fake_uid', 'fake_pid_2', is_admin=True)
@@ -377,7 +377,7 @@ class ShareAPITestCase(test.TestCase):
         ])
         db_api.share_get_all.assert_called_once_with(
             ctx, sort_dir='desc', sort_key='created_at', filters={})
-        self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[::2])
+        self.assertEqual(_FAKE_LIST_OF_ALL_SHARES[::2], shares)
 
     def test_get_all_admin_filter_by_status(self):
         ctx = context.RequestContext('fake_uid', 'fake_pid_2', is_admin=True)
@@ -391,7 +391,7 @@ class ShareAPITestCase(test.TestCase):
             ctx, sort_dir='desc', sort_key='created_at',
             project_id='fake_pid_2', filters={}, is_public=False
         )
-        self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[2::4])
+        self.assertEqual(_FAKE_LIST_OF_ALL_SHARES[2::4], shares)
 
     def test_get_all_admin_filter_by_status_and_all_tenants(self):
         ctx = context.RequestContext('fake_uid', 'fake_pid_2', is_admin=True)
@@ -404,7 +404,7 @@ class ShareAPITestCase(test.TestCase):
         ])
         db_api.share_get_all.assert_called_once_with(
             ctx, sort_dir='desc', sort_key='created_at', filters={})
-        self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[1::2])
+        self.assertEqual(_FAKE_LIST_OF_ALL_SHARES[1::2], shares)
 
     def test_get_all_non_admin_filter_by_all_tenants(self):
         # Expected share list only by project of non-admin user
@@ -419,7 +419,7 @@ class ShareAPITestCase(test.TestCase):
             ctx, sort_dir='desc', sort_key='created_at',
             project_id='fake_pid_2', filters={}, is_public=False
         )
-        self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[1:])
+        self.assertEqual(_FAKE_LIST_OF_ALL_SHARES[1:], shares)
 
     def test_get_all_non_admin_with_name_and_status_filters(self):
         ctx = context.RequestContext('fake_uid', 'fake_pid_2', is_admin=False)
@@ -436,12 +436,12 @@ class ShareAPITestCase(test.TestCase):
         )
 
         # two items expected, one filtered
-        self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[1::2])
+        self.assertEqual(_FAKE_LIST_OF_ALL_SHARES[1::2], shares)
 
         # one item expected, two filtered
         shares = self.api.get_all(
             ctx, {'name': 'foo', 'status': constants.STATUS_AVAILABLE})
-        self.assertEqual(shares, _FAKE_LIST_OF_ALL_SHARES[2::4])
+        self.assertEqual(_FAKE_LIST_OF_ALL_SHARES[2::4], shares)
         share_api.policy.check_policy.assert_has_calls([
             mock.call(ctx, 'share', 'get_all'),
             mock.call(ctx, 'share', 'get_all'),
@@ -805,37 +805,38 @@ class ShareAPITestCase(test.TestCase):
                           self.context, share_data, driver_options)
 
     def test_unmanage(self):
-        share_data = {
-            'id': 'fakeid',
-            'host': 'fake',
-            'size': '1',
-            'status': constants.STATUS_AVAILABLE,
-            'user_id': self.context.user_id,
-            'project_id': self.context.project_id,
-            'task_state': None
-        }
+
+        share = db_utils.create_share(
+            id='fakeid',
+            host='fake',
+            size='1',
+            status=constants.STATUS_AVAILABLE,
+            user_id=self.context.user_id,
+            project_id=self.context.project_id,
+            task_state=None)
+
         self.mock_object(db_api, 'share_update', mock.Mock())
 
-        self.api.unmanage(self.context, share_data)
+        self.api.unmanage(self.context, share)
 
         self.share_rpcapi.unmanage_share.assert_called_once_with(
             self.context, mock.ANY)
         db_api.share_update.assert_called_once_with(
-            mock.ANY, share_data['id'], mock.ANY)
+            mock.ANY, share['id'], mock.ANY)
 
     def test_unmanage_task_state_busy(self):
-        share_data = {
-            'id': 'fakeid',
-            'host': 'fake',
-            'size': '1',
-            'status': constants.STATUS_AVAILABLE,
-            'user_id': self.context.user_id,
-            'project_id': self.context.project_id,
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_MIGRATING
-        }
 
-        self.assertRaises(exception.InvalidShare, self.api.unmanage,
-                          self.context, share_data)
+        share = db_utils.create_share(
+            id='fakeid',
+            host='fake',
+            size='1',
+            status=constants.STATUS_AVAILABLE,
+            user_id=self.context.user_id,
+            project_id=self.context.project_id,
+            task_state=constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS)
+
+        self.assertRaises(exception.ShareBusyException, self.api.unmanage,
+                          self.context, share)
 
     @mock.patch.object(quota.QUOTAS, 'reserve',
                        mock.Mock(return_value='reservation'))
@@ -940,6 +941,19 @@ class ShareAPITestCase(test.TestCase):
         share_api.policy.check_policy.assert_called_once_with(
             self.context, 'share', 'create_snapshot', share)
 
+    def test_create_snapshot_invalid_task_state(self):
+        share = db_utils.create_share(
+            status=constants.STATUS_AVAILABLE,
+            task_state=constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS)
+        self.assertRaises(exception.ShareBusyException,
+                          self.api.create_snapshot,
+                          self.context,
+                          share,
+                          'fakename',
+                          'fakedesc')
+        share_api.policy.check_policy.assert_called_once_with(
+            self.context, 'share', 'create_snapshot', share)
+
     @ddt.data({'use_scheduler': False, 'valid_host': 'fake'},
               {'use_scheduler': True, 'valid_host': None})
     @ddt.unpack
@@ -996,9 +1010,9 @@ class ShareAPITestCase(test.TestCase):
         with mock.patch.object(db_api, 'share_snapshot_get',
                                mock.Mock(return_value=fake_get_snap)):
             rule = self.api.get_snapshot(self.context, 'fakeid')
-            self.assertEqual(rule, fake_get_snap)
+            self.assertEqual(fake_get_snap, rule)
             share_api.policy.check_policy.assert_called_once_with(
-                self.context, 'share', 'get_snapshot')
+                self.context, 'share_snapshot', 'get_snapshot')
             db_api.share_snapshot_get.assert_called_once_with(
                 self.context, 'fakeid')
 
@@ -1075,12 +1089,12 @@ class ShareAPITestCase(test.TestCase):
             share
         )
 
-    def test_delete_share_part_of_migration(self):
+    def test_delete_share_invalid_task_state(self):
         share = db_utils.create_share(
             status=constants.STATUS_AVAILABLE,
-            task_state=constants.STATUS_TASK_STATE_MIGRATION_MIGRATING)
+            task_state=constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS)
 
-        self.assertRaises(exception.InvalidShare,
+        self.assertRaises(exception.ShareBusyException,
                           self.api.delete,
                           self.context, share)
 
@@ -1145,7 +1159,7 @@ class ShareAPITestCase(test.TestCase):
         with mock.patch.object(db_api, 'share_get',
                                mock.Mock(return_value=share)):
             result = self.api.get(self.context, 'fakeid')
-            self.assertEqual(result, share)
+            self.assertEqual(share, result)
             share_api.policy.check_policy.assert_called_once_with(
                 self.context, 'share', 'get', share)
             db_api.share_get.assert_called_once_with(
@@ -1157,7 +1171,7 @@ class ShareAPITestCase(test.TestCase):
         ctx = context.RequestContext('fakeuid', 'fakepid', is_admin=True)
         self.api.get_all_snapshots(ctx)
         share_api.policy.check_policy.assert_called_once_with(
-            ctx, 'share', 'get_all_snapshots')
+            ctx, 'share_snapshot', 'get_all_snapshots')
         db_api.share_snapshot_get_all_by_project.assert_called_once_with(
             ctx, 'fakepid', sort_dir='desc', sort_key='share_id', filters={})
 
@@ -1166,7 +1180,7 @@ class ShareAPITestCase(test.TestCase):
         self.api.get_all_snapshots(self.context,
                                    search_opts={'all_tenants': 1})
         share_api.policy.check_policy.assert_called_once_with(
-            self.context, 'share', 'get_all_snapshots')
+            self.context, 'share_snapshot', 'get_all_snapshots')
         db_api.share_snapshot_get_all.assert_called_once_with(
             self.context, sort_dir='desc', sort_key='share_id', filters={})
 
@@ -1176,7 +1190,7 @@ class ShareAPITestCase(test.TestCase):
         ctx = context.RequestContext('fakeuid', 'fakepid', is_admin=False)
         self.api.get_all_snapshots(ctx)
         share_api.policy.check_policy.assert_called_once_with(
-            ctx, 'share', 'get_all_snapshots')
+            ctx, 'share_snapshot', 'get_all_snapshots')
         db_api.share_snapshot_get_all_by_project.assert_called_once_with(
             ctx, 'fakepid', sort_dir='desc', sort_key='share_id', filters={})
 
@@ -1191,7 +1205,7 @@ class ShareAPITestCase(test.TestCase):
 
         self.assertEqual([search_opts], result)
         share_api.policy.check_policy.assert_called_once_with(
-            ctx, 'share', 'get_all_snapshots')
+            ctx, 'share_snapshot', 'get_all_snapshots')
         db_api.share_snapshot_get_all_by_project.assert_called_once_with(
             ctx, 'fakepid', sort_dir='desc', sort_key='share_id',
             filters=search_opts)
@@ -1204,7 +1218,7 @@ class ShareAPITestCase(test.TestCase):
         snapshots = self.api.get_all_snapshots(
             ctx, sort_key='status', sort_dir='asc')
         share_api.policy.check_policy.assert_called_once_with(
-            ctx, 'share', 'get_all_snapshots')
+            ctx, 'share_snapshot', 'get_all_snapshots')
         db_api.share_snapshot_get_all_by_project.assert_called_once_with(
             ctx, 'fake_pid_1', sort_dir='asc', sort_key='status', filters={})
         self.assertEqual(_FAKE_LIST_OF_ALL_SNAPSHOTS[0], snapshots)
@@ -1221,7 +1235,7 @@ class ShareAPITestCase(test.TestCase):
             sort_key=1,
         )
         share_api.policy.check_policy.assert_called_once_with(
-            ctx, 'share', 'get_all_snapshots')
+            ctx, 'share_snapshot', 'get_all_snapshots')
 
     def test_get_all_snapshots_sort_dir_invalid(self):
         self.mock_object(
@@ -1235,7 +1249,7 @@ class ShareAPITestCase(test.TestCase):
             sort_dir=1,
         )
         share_api.policy.check_policy.assert_called_once_with(
-            ctx, 'share', 'get_all_snapshots')
+            ctx, 'share_snapshot', 'get_all_snapshots')
 
     @ddt.data(None, 'rw', 'ro')
     def test_allow_access(self, level):
@@ -1422,7 +1436,7 @@ class ShareAPITestCase(test.TestCase):
         with mock.patch.object(db_api, 'share_access_get',
                                mock.Mock(return_value='fake')):
             rule = self.api.access_get(self.context, 'fakeid')
-            self.assertEqual(rule, 'fake')
+            self.assertEqual('fake', rule)
             share_api.policy.check_policy.assert_called_once_with(
                 self.context, 'share', 'access_get')
             db_api.share_access_get.assert_called_once_with(
@@ -1505,6 +1519,15 @@ class ShareAPITestCase(test.TestCase):
         self.assertRaises(exception.InvalidShare,
                           self.api.extend, self.context, share, new_size)
 
+    def test_extend_invalid_task_state(self):
+        share = db_utils.create_share(
+            status=constants.STATUS_AVAILABLE,
+            task_state=constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS)
+        new_size = 123
+
+        self.assertRaises(exception.ShareBusyException,
+                          self.api.extend, self.context, share, new_size)
+
     def test_extend_invalid_size(self):
         share = db_utils.create_share(status=constants.STATUS_AVAILABLE,
                                       size=200)
@@ -1545,6 +1568,14 @@ class ShareAPITestCase(test.TestCase):
         share = db_utils.create_share(status=invalid_status)
 
         self.assertRaises(exception.InvalidShare,
+                          self.api.shrink, self.context, share, 123)
+
+    def test_shrink_invalid_task_state(self):
+        share = db_utils.create_share(
+            status=constants.STATUS_AVAILABLE,
+            task_state=constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS)
+
+        self.assertRaises(exception.ShareBusyException,
                           self.api.shrink, self.context, share, 123)
 
     @ddt.data(300, 0, -1)
@@ -1596,23 +1627,17 @@ class ShareAPITestCase(test.TestCase):
         share = db_utils.create_share(
             status=constants.STATUS_ERROR)
 
-        mock_log = self.mock_object(share_api, 'LOG')
-
         self.assertRaises(exception.InvalidShare, self.api.migrate_share,
                           self.context, share, host, True)
-        self.assertTrue(mock_log.error.called)
 
     def test_migrate_share_task_state_invalid(self):
         host = 'fake2@backend#pool'
         share = db_utils.create_share(
             status=constants.STATUS_AVAILABLE,
-            task_state=constants.STATUS_TASK_STATE_MIGRATION_MIGRATING)
+            task_state=constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS)
 
-        mock_log = self.mock_object(share_api, 'LOG')
-
-        self.assertRaises(exception.InvalidShare, self.api.migrate_share,
+        self.assertRaises(exception.ShareBusyException, self.api.migrate_share,
                           self.context, share, host, True)
-        self.assertTrue(mock_log.error.called)
 
     def test_migrate_share_with_snapshots(self):
         host = 'fake2@backend#pool'
@@ -1621,11 +1646,8 @@ class ShareAPITestCase(test.TestCase):
         self.mock_object(db_api, 'share_snapshot_get_all_for_share',
                          mock.Mock(return_value=True))
 
-        mock_log = self.mock_object(share_api, 'LOG')
-
         self.assertRaises(exception.InvalidShare, self.api.migrate_share,
                           self.context, share, host, True)
-        self.assertTrue(mock_log.error.called)
 
     def test_migrate_share_invalid_host(self):
         host = 'fake@backend#pool'
@@ -1644,12 +1666,9 @@ class ShareAPITestCase(test.TestCase):
         share = db_utils.create_share(
             host='fake@backend#pool', status=constants.STATUS_AVAILABLE)
 
-        mock_log = self.mock_object(share_api, 'LOG')
-
         self.assertRaises(exception.InvalidHost,
                           self.api.migrate_share,
                           self.context, share, host, True)
-        self.assertTrue(mock_log.error.called)
 
     def test_migrate_share_exception(self):
         host = 'fake2@backend#pool'

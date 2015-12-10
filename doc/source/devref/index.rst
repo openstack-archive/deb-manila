@@ -40,6 +40,7 @@ Background Concepts for Manila
    threading
    i18n
    rpc
+   driver_requirements
    pool-aware-manila-scheduler
 
 Other Resources
@@ -102,9 +103,11 @@ Share backends
    generic_driver
    glusterfs_driver
    glusterfs_native_driver
+   gpfs_driver
    huawei_nas_driver
    hdfs_native_driver
-   hp_3par_driver
+   hds_hnas_driver
+   hpe_3par_driver
 
 Indices and tables
 ------------------

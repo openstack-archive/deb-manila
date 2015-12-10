@@ -27,10 +27,12 @@ import webob.exc
 
 from manila.api.openstack import api_version_request as api_version
 from manila.api.openstack import versioned_method
+from manila.common import constants
 from manila import exception
 from manila.i18n import _
 from manila.i18n import _LE
 from manila.i18n import _LI
+from manila import policy
 from manila import wsgi
 
 LOG = log.getLogger(__name__)
@@ -1111,6 +1113,43 @@ class Controller(object):
         return decorator
 
     @staticmethod
+    def authorize(arg):
+        """Decorator for checking the policy on API methods.
+
+        Add this decorator to any API method which takes a request object
+        as the first parameter and belongs to a class which inherits from
+        wsgi.Controller. The class must also have a class member called
+        'resource_name' which specifies the resource for the policy check.
+
+        Can be used in any of the following forms
+        @authorize
+        @authorize('my_action_name')
+
+        :param arg: Can either be the function being decorated or a str
+        containing the 'action' for the policy check. If no action name is
+        provided, the function name is assumed to be the action name.
+        """
+        action_name = None
+
+        def decorator(f):
+            @functools.wraps(f)
+            def wrapper(self, req, *args, **kwargs):
+                action = action_name or f.__name__
+                context = req.environ['manila.context']
+                try:
+                    policy.check_policy(context, self.resource_name, action)
+                except exception.PolicyNotAuthorized:
+                    raise webob.exc.HTTPForbidden()
+                return f(self, req, *args, **kwargs)
+            return wrapper
+
+        if callable(arg):
+            return decorator(arg)
+        else:
+            action_name = arg
+            return decorator
+
+    @staticmethod
     def is_valid_body(body, entity_name):
         if not (body and entity_name in body):
             return False
@@ -1126,6 +1165,65 @@ class Controller(object):
             return False
 
         return True
+
+
+class AdminActionsMixin(object):
+    """Mixin class for API controllers with admin actions."""
+
+    valid_statuses = set([
+        constants.STATUS_CREATING,
+        constants.STATUS_AVAILABLE,
+        constants.STATUS_DELETING,
+        constants.STATUS_ERROR,
+        constants.STATUS_ERROR_DELETING,
+    ])
+
+    def _update(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def _get(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def _delete(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def validate_update(self, body):
+        update = {}
+        try:
+            update['status'] = body['status']
+        except (TypeError, KeyError):
+            raise webob.exc.HTTPBadRequest(explanation="Must specify 'status'")
+        if update['status'] not in self.valid_statuses:
+            expl = _("Invalid state. Valid states: " +
+                     ", ".join(self.valid_statuses) + ".")
+            raise webob.exc.HTTPBadRequest(explanation=expl)
+        return update
+
+    @Controller.authorize('reset_status')
+    def _reset_status(self, req, id, body):
+        """Reset status on the resource."""
+        context = req.environ['manila.context']
+        update = self.validate_update(
+            body.get('reset_status', body.get('os-reset_status')))
+        msg = "Updating %(resource)s '%(id)s' with '%(update)r'"
+        LOG.debug(msg, {'resource': self.resource_name, 'id': id,
+                        'update': update})
+        try:
+            self._update(context, id, update)
+        except exception.NotFound as e:
+            raise webob.exc.HTTPNotFound(six.text_type(e))
+        return webob.Response(status_int=202)
+
+    @Controller.authorize('force_delete')
+    def _force_delete(self, req, id, body):
+        """Delete a resource, bypassing the check for status."""
+        context = req.environ['manila.context']
+        try:
+            resource = self._get(context, id)
+        except exception.NotFound as e:
+            raise webob.exc.HTTPNotFound(six.text_type(e))
+        self._delete(context, resource, force=True)
+        return webob.Response(status_int=202)
 
 
 class Fault(webob.exc.HTTPException):

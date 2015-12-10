@@ -4,6 +4,18 @@
     "admin_or_owner": "is_admin:True or project_id:%(project_id)s",
     "default": "rule:admin_or_owner",
 
+    "availability_zone:index": "rule:default",
+
+    "quota_set:update": "rule:admin_api",
+    "quota_set:show": "rule:default",
+    "quota_set:delete": "rule:admin_api",
+
+    "quota_class_set:show": "rule:default",
+    "quota_class_set:update": "rule:admin_api",
+
+    "service:index": "rule:admin_api",
+    "service:update": "rule:admin_api",
+
     "share:create": "",
     "share:list_by_share_server_id": "rule:admin_api",
     "share:get": "",
@@ -17,13 +29,33 @@
     "share:get_all_snapshots": "",
     "share:extend": "",
     "share:shrink": "",
+    "share:manage": "rule:admin_api",
+    "share:unmanage": "rule:admin_api",
+    "share:force_delete": "rule:admin_api",
+    "share:reset_status": "rule:admin_api",
 
     "share_type:index": "rule:default",
     "share_type:show": "rule:default",
     "share_type:default": "rule:default",
+    "share_type:create": "rule:default",
+    "share_type:delete": "rule:default",
+    "share_type:add_project_access": "rule:admin_api",
+    "share_type:list_project_access": "rule:admin_api",
+    "share_type:remove_project_access": "rule:admin_api",
+
+    "share_types_extra_spec:create": "rule:default",
+    "share_types_extra_spec:update": "rule:default",
+    "share_types_extra_spec:show": "rule:default",
+    "share_types_extra_spec:index": "rule:default",
+    "share_types_extra_spec:delete": "rule:default",
 
     "share_instance:index": "rule:admin_api",
     "share_instance:show": "rule:admin_api",
+    "share_instance:force_delete": "rule:admin_api",
+    "share_instance:reset_status": "rule:admin_api",
+
+    "share_snapshot:force_delete": "rule:admin_api",
+    "share_snapshot:reset_status": "rule:admin_api",
 
     "share_network:create": "",
     "share_network:index": "",
@@ -41,29 +73,10 @@
     "share:get_share_metadata": "",
     "share:delete_share_metadata": "",
     "share:update_share_metadata": "",
-    "share_extension:share_admin_actions:force_delete": "rule:admin_api",
-    "share_extension:share_admin_actions:reset_status": "rule:admin_api",
-    "share_extension:snapshot_admin_actions:force_delete": "rule:admin_api",
-    "share_extension:snapshot_admin_actions:reset_status": "rule:admin_api",
-    "share_extension:share_instance_admin_actions:force_delete": "rule:admin_api",
-    "share_extension:share_instance_admin_actions:reset_status": "rule:admin_api",
-    "share_extension:consistency_group_admin_actions:force_delete": "rule:admin_api",
-    "share_extension:consistency_group_admin_actions:reset_status": "rule:admin_api",
-    "share_extension:cgsnapshot_admin_actions:force_delete": "rule:admin_api",
-    "share_extension:cgsnapshot_admin_actions:reset_status": "rule:admin_api",
-    "share_extension:types_manage": "",
-    "share_extension:types_extra_specs": "",
-    "share_extension:share_type_access": "",
-    "share_extension:share_type_access:addProjectAccess": "rule:admin_api",
-    "share_extension:share_type_access:removeProjectAccess": "rule:admin_api",
-    "share_extension:manage": "rule:admin_api",
-    "share_extension:unmanage": "rule:admin_api",
     "share_extension:availability_zones": "",
 
      "security_service:index": "",
      "security_service:get_all_security_services": "rule:admin_api",
-
-    "limits_extension:used_limits": "",
 
     "scheduler_stats:pools:index": "rule:admin_api",
     "scheduler_stats:pools:detail": "rule:admin_api",
@@ -73,9 +86,13 @@
     "consistency_group:update": "rule:default",
     "consistency_group:get": "rule:default",
     "consistency_group:get_all": "rule:default",
-
     "consistency_group:create_cgsnapshot" : "rule:default",
     "consistency_group:delete_cgsnapshot": "rule:default",
+    "consistency_group:force_delete": "rule:admin_api",
+    "consistency_group:reset_status": "rule:admin_api",
     "consistency_group:get_cgsnapshot": "rule:default",
-    "consistency_group:get_all_cgsnapshots": "rule:default"
+    "consistency_group:get_all_cgsnapshots": "rule:default",
+
+    "cgsnapshot:force_delete": "rule:admin_api",
+    "cgsnapshot:reset_status": "rule:admin_api"
 }

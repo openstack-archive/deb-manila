@@ -51,10 +51,11 @@ iniset $BASE/new/tempest/etc/tempest.conf share run_consistency_group_tests $RUN
 RUN_MANILA_MANAGE_TESTS=${RUN_MANILA_MANAGE_TESTS:-True}
 iniset $BASE/new/tempest/etc/tempest.conf share run_manage_unmanage_tests $RUN_MANILA_MANAGE_TESTS
 
+MANILA_CONF=${MANILA_CONF:-/etc/manila/manila.conf}
+
 if [[ -z "$MULTITENANCY_ENABLED" ]]; then
     # Define whether share drivers handle share servers or not.
     # Requires defined config option 'driver_handles_share_servers'.
-    MANILA_CONF=${MANILA_CONF:-/etc/manila/manila.conf}
     NO_SHARE_SERVER_HANDLING_MODES=0
     WITH_SHARE_SERVER_HANDLING_MODES=0
 
@@ -83,7 +84,7 @@ if [[ -z "$MULTITENANCY_ENABLED" ]]; then
     elif [[ $WITH_SHARE_SERVER_HANDLING_MODES -ge 1 ]]; then
         iniset $BASE/new/tempest/etc/tempest.conf share multitenancy_enabled True
     else
-        echo 'Should never get here. If get, then error occured.'
+        echo 'Should never get here unless an error occurred.'
         exit 1
     fi
 else
@@ -107,6 +108,11 @@ elif [[ "$JOB_NAME" =~ "no-share-servers"  ]]; then
     # because of lack of free space.
     MANILA_TEMPEST_CONCURRENCY=8
 fi
+
+# Also, we should wait until service VM is available
+# before running Tempest tests using Generic driver in DHSS=False mode.
+source $BASE/new/manila/contrib/ci/common.sh
+manila_wait_for_drivers_init $MANILA_CONF
 
 # check if tempest plugin was installed correctly
 echo 'import pkg_resources; print list(pkg_resources.iter_entry_points("tempest.test_plugins"))' | python

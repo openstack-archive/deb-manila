@@ -41,7 +41,6 @@ quobyte_manila_share_opts = [
     cfg.StrOpt('quobyte_api_url',
                help='URL of the Quobyte API server (http or https)'),
     cfg.StrOpt('quobyte_api_ca',
-               default=None,
                help='The X.509 CA file to verify the server cert.'),
     cfg.BoolOpt('quobyte_delete_shares',
                 default=False,
@@ -71,7 +70,7 @@ CONF.register_opts(quobyte_manila_share_opts)
 class QuobyteShareDriver(driver.ExecuteMixin, driver.ShareDriver,):
     """Map share commands to Quobyte volumes."""
 
-    DRIVER_VERSION = '1.0'
+    DRIVER_VERSION = '1.0.1'
 
     def __init__(self, *args, **kwargs):
         super(QuobyteShareDriver, self).__init__(False, *args, **kwargs)
@@ -191,21 +190,34 @@ class QuobyteShareDriver(driver.ExecuteMixin, driver.ShareDriver,):
             volume_uuid=volume_uuid,
             remove_export=True))
 
-    def create_snapshot(self, context, snapshot, share_server=None):
-        """Is called to create snapshot."""
-        raise NotImplementedError()
-
-    def create_share_from_snapshot(self, context, share, snapshot,
-                                   share_server=None):
-        """Is called to create share from snapshot."""
-        raise NotImplementedError()
-
-    def delete_snapshot(self, context, snapshot, share_server=None):
-        """TBD: Is called to remove snapshot."""
-        raise NotImplementedError()
-
     def ensure_share(self, context, share, share_server=None):
-        """Invoked to ensure that share is exported."""
+        """Invoked to ensure that share is exported.
+
+        :param context: The `context.RequestContext` object for the request
+        :param share: Share instance that will be checked.
+        :param share_server: Data structure with share server information.
+        Not used by this driver.
+        :returns: IP:<nfs_export_path> of share
+        :raises:
+            :ShareResourceNotFound: If the share instance cannot be found in
+            the backend
+        """
+
+        volume_uuid = self._resolve_volume_name(
+            share['name'],
+            self._get_project_name(context, share['project_id']))
+
+        LOG.debug("Ensuring Quobyte share %s" % share['name'])
+
+        if not volume_uuid:
+            raise (exception.ShareResourceNotFound(
+                share_id=share['id']))
+
+        result = self.rpc.call('exportVolume', dict(
+            volume_uuid=volume_uuid,
+            protocol='NFS'))
+
+        return '%(nfs_server_ip)s:%(nfs_export_path)s' % result
 
     def allow_access(self, context, share, access, share_server=None):
         """Allow access to a share."""

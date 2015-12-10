@@ -15,22 +15,37 @@
 
 import copy
 import inspect
+import random
 import traceback
 
 from oslo_concurrency import lockutils
 from oslo_log import log
 import six
-from tempest.common import isolated_creds  # noqa
-from tempest import config  # noqa
-from tempest import test  # noqa
+from tempest.common import credentials_factory as common_creds
+from tempest.common import dynamic_creds
+from tempest import config
+from tempest import test
 from tempest_lib.common.utils import data_utils
 from tempest_lib import exceptions
+import testtools
 
 from manila_tempest_tests import clients_share as clients
 from manila_tempest_tests import share_exceptions
 
 CONF = config.CONF
 LOG = log.getLogger(__name__)
+
+
+def rand_ip():
+    """This uses the TEST-NET-3 range of reserved IP addresses.
+
+    Using this range, which are reserved solely for use in
+    documentation and example source code, should avoid any potential
+    conflicts in real-world testing.
+    """
+    TEST_NET_3 = '203.0.113.'
+    final_octet = six.text_type(random.randint(0, 255))
+    return TEST_NET_3 + final_octet
 
 
 class handle_cleanup_exceptions(object):
@@ -76,6 +91,21 @@ def network_synchronized(f):
     return wrapped_func
 
 
+def is_microversion_supported(microversion):
+    if (float(microversion) > float(CONF.share.max_api_microversion) or
+            float(microversion) < float(CONF.share.min_api_microversion)):
+        return False
+    return True
+
+
+def skip_if_microversion_not_supported(microversion):
+    """Decorator for tests that are microversion-specific."""
+    if not is_microversion_supported(microversion):
+        reason = ("Skipped. Test requires microversion '%s'." % microversion)
+        return testtools.skip(reason)
+    return lambda f: f
+
+
 class BaseSharesTest(test.BaseTestCase):
     """Base test case class for all Manila API tests."""
 
@@ -93,6 +123,11 @@ class BaseSharesTest(test.BaseTestCase):
 
     # Will be cleaned up in tearDown method
     method_isolated_creds = []
+
+    def skip_if_microversion_not_supported(self, microversion):
+        if not is_microversion_supported(microversion):
+            raise self.skipException(
+                "Microversion '%s' is not supported." % microversion)
 
     @classmethod
     def get_client_with_isolated_creds(cls,
@@ -116,7 +151,12 @@ class BaseSharesTest(test.BaseTestCase):
                 name = name[0:32]
 
         # Choose type of isolated creds
-        ic = isolated_creds.IsolatedCreds(name=name)
+        ic = dynamic_creds.DynamicCredentialProvider(
+            identity_version=CONF.identity.auth_version,
+            name=name,
+            admin_role=CONF.identity.admin_role,
+            admin_creds=common_creds.get_configured_credentials(
+                'identity_admin'))
         if "admin" in type_of_creds:
             creds = ic.get_admin_creds()
         elif "alt" in type_of_creds:
@@ -134,7 +174,7 @@ class BaseSharesTest(test.BaseTestCase):
 
         # Set place where will be deleted isolated creds
         ic_res = {
-            "method": ic.clear_isolated_creds,
+            "method": ic.clear_creds,
             "deleted": False,
         }
         if cleanup_in_class:
@@ -146,7 +186,7 @@ class BaseSharesTest(test.BaseTestCase):
         if CONF.share.multitenancy_enabled:
             if not CONF.service_available.neutron:
                 raise cls.skipException("Neutron support is required")
-            nc = os.network_client
+            nc = os.networks_client
             share_network_id = cls.provide_share_network(client, nc, ic)
             client.share_network_id = share_network_id
             resource = {
@@ -184,7 +224,7 @@ class BaseSharesTest(test.BaseTestCase):
             if not CONF.service_available.neutron:
                 raise cls.skipException("Neutron support is required")
             sc = cls.os.shares_client
-            nc = cls.os.network_client
+            nc = cls.os.networks_client
             share_network_id = cls.provide_share_network(sc, nc)
             cls.os.shares_client.share_network_id = share_network_id
             cls.os.shares_v2_client.share_network_id = share_network_id
@@ -204,7 +244,7 @@ class BaseSharesTest(test.BaseTestCase):
 
     @classmethod
     @network_synchronized
-    def provide_share_network(cls, shares_client, network_client,
+    def provide_share_network(cls, shares_client, networks_client,
                               isolated_creds_client=None):
         """Used for finding/creating share network for multitenant driver.
 
@@ -212,8 +252,8 @@ class BaseSharesTest(test.BaseTestCase):
         share-network will be used for creation of service vm.
 
         :param shares_client: shares client, which requires share-network
-        :param network_client: network client from same tenant as shares
-        :param isolated_creds_client: IsolatedCreds instance
+        :param networks_client: network client from same tenant as shares
+        :param isolated_creds_client: DynamicCredentialProvider instance
             If provided, then its networking will be used if needed.
             If not provided, then common network will be used if needed.
         :returns: str -- share network id for shares_client tenant
@@ -236,7 +276,7 @@ class BaseSharesTest(test.BaseTestCase):
                 search_word = "reusable"
                 sn_name = "autogenerated_by_tempest_%s" % search_word
                 service_net_name = "share-service"
-                networks = network_client.list_networks()
+                networks = networks_client.list_networks()
                 if "networks" in networks.keys():
                     networks = networks["networks"]
                 for network in networks:
@@ -249,7 +289,12 @@ class BaseSharesTest(test.BaseTestCase):
 
                 # Create suitable network
                 if (net_id is None or subnet_id is None):
-                    ic = isolated_creds.IsolatedCreds(name=service_net_name)
+                    ic = dynamic_creds.DynamicCredentialProvider(
+                        identity_version=CONF.identity.auth_version,
+                        name=service_net_name,
+                        admin_role=CONF.identity.admin_role,
+                        admin_creds=common_creds.get_configured_credentials(
+                            'identity_admin'))
                     net_data = ic._create_network_resources(sc.tenant_id)
                     network, subnet, router = net_data
                     net_id = network["id"]
@@ -505,7 +550,7 @@ class BaseSharesTest(test.BaseTestCase):
     def create_share_type(cls, name, is_public=True, client=None,
                           cleanup_in_class=True, **kwargs):
         if client is None:
-            client = cls.shares_client
+            client = cls.shares_v2_client
         share_type = client.create_share_type(name, is_public, **kwargs)
         resource = {
             "type": "share_type",
@@ -612,8 +657,8 @@ class BaseSharesTest(test.BaseTestCase):
         data = {
             "name": data_utils.rand_name("ss-name"),
             "description": data_utils.rand_name("ss-desc"),
-            "dns_ip": data_utils.rand_name("ss-dns_ip"),
-            "server": data_utils.rand_name("ss-server"),
+            "dns_ip": rand_ip(),
+            "server": rand_ip(),
             "domain": data_utils.rand_name("ss-domain"),
             "user": data_utils.rand_name("ss-user"),
             "password": data_utils.rand_name("ss-password"),
@@ -700,9 +745,14 @@ class BaseSharesAdminTest(BaseSharesTest):
 
     @classmethod
     def resource_setup(cls):
-        cls.username = CONF.identity.admin_username
-        cls.password = CONF.identity.admin_password
-        cls.tenant_name = CONF.identity.admin_tenant_name
+        if hasattr(CONF.identity, 'admin_username'):
+            cls.username = CONF.identity.admin_username
+            cls.password = CONF.identity.admin_password
+            cls.tenant_name = CONF.identity.admin_tenant_name
+        else:
+            cls.username = CONF.auth.admin_username
+            cls.password = CONF.auth.admin_password
+            cls.tenant_name = CONF.auth.admin_tenant_name
         cls.verify_nonempty(cls.username, cls.password, cls.tenant_name)
         cls.os = clients.AdminManager()
         admin_share_network_id = CONF.share.admin_share_network_id

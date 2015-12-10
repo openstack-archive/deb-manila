@@ -378,7 +378,7 @@ class IsilonApiTest(test.TestCase):
         r = self.isilon_api.create_snapshot(snapshot_name, snapshot_path)
 
         self.assertEqual(1, len(m.request_history))
-        self.assertEqual(True, r)
+        self.assertTrue(r)
         expected_request_body = json.loads(
             '{{"name": "{0}", "path": "{1}"}}'
             .format(snapshot_name, snapshot_path)
@@ -433,7 +433,7 @@ class IsilonApiTest(test.TestCase):
             r = self.isilon_api.delete_nfs_share(share_number)
 
             self.assertEqual(1, len(m.request_history))
-            self.assertEqual(r, expected_return_value)
+            self.assertEqual(expected_return_value, r)
 
     @ddt.data((204, True), (404, False))
     def test_delete_smb_shares(self, data):
@@ -449,7 +449,7 @@ class IsilonApiTest(test.TestCase):
             r = self.isilon_api.delete_smb_share(share_name)
 
             self.assertEqual(1, len(m.request_history))
-            self.assertEqual(r, expected_return_value)
+            self.assertEqual(expected_return_value, r)
 
     @requests_mock.mock()
     def test_delete_snapshot(self, m):

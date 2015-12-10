@@ -34,8 +34,8 @@ import six
 from manila import db
 from manila import exception
 from manila.i18n import _LI, _LW
-from manila.openstack.common.scheduler import filters
-from manila.openstack.common.scheduler import weights
+from manila.scheduler.filters import base_host as base_host_filter
+from manila.scheduler.weighers import base_host as base_host_weigher
 from manila.share import utils as share_utils
 from manila import utils
 
@@ -126,6 +126,7 @@ class HostState(object):
         self.snapshot_support = True
         self.consistency_group_support = False
         self.dedupe = False
+        self.compression = False
 
         # PoolState for all pools
         self.pools = {}
@@ -288,6 +289,9 @@ class HostState(object):
         if 'dedupe' not in pool_cap:
             pool_cap['dedupe'] = self.dedupe
 
+        if 'compression' not in pool_cap:
+            pool_cap['compression'] = self.compression
+
     def update_backend(self, capability):
         self.share_backend_name = capability.get('share_backend_name')
         self.vendor_name = capability.get('vendor_name')
@@ -359,6 +363,8 @@ class PoolState(HostState):
                 'thin_provisioning', False)
             self.dedupe = capability.get(
                 'dedupe', False)
+            self.compression = capability.get(
+                'compression', False)
 
     def update_pools(self, capability):
         # Do nothing, since we don't have pools within pool, yet
@@ -373,11 +379,11 @@ class HostManager(object):
     def __init__(self):
         self.service_states = {}  # { <host>: {<service>: {cap k : v}}}
         self.host_state_map = {}
-        self.filter_handler = filters.HostFilterHandler('manila.scheduler.'
-                                                        'filters')
+        self.filter_handler = base_host_filter.HostFilterHandler(
+            'manila.scheduler.filters')
         self.filter_classes = self.filter_handler.get_all_classes()
-        self.weight_handler = weights.HostWeightHandler('manila.scheduler.'
-                                                        'weights')
+        self.weight_handler = base_host_weigher.HostWeightHandler(
+            'manila.scheduler.weighers')
         self.weight_classes = self.weight_handler.get_all_classes()
 
     def _choose_host_filters(self, filter_cls_names):

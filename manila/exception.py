@@ -384,6 +384,10 @@ class InvalidShare(Invalid):
     message = _("Invalid share: %(reason)s.")
 
 
+class ShareBusyException(Invalid):
+    message = _("Share is busy with an active task: %(reason)s.")
+
+
 class InvalidShareInstance(Invalid):
     message = _("Invalid share instance: %(reason)s.")
 
@@ -412,10 +416,6 @@ class InvalidShareAccess(Invalid):
 
 class InvalidShareAccessLevel(Invalid):
     message = _("Invalid or unsupported share access level: %(level)s.")
-
-
-class ShareIsBusy(ManilaException):
-    message = _("Deleting $(share_name) share that used.")
 
 
 class ShareBackendException(ManilaException):
@@ -595,16 +595,28 @@ class EMCVnxLockRequiredException(ManilaException):
     message = _("Unable to acquire lock(s).")
 
 
-class HP3ParInvalidClient(Invalid):
+class EMCVnxInvalidMoverID(ManilaException):
+    message = _("Invalid mover or vdm %(id)s.")
+
+
+class HPE3ParInvalidClient(Invalid):
     message = _("%(err)s")
 
 
-class HP3ParInvalid(Invalid):
+class HPE3ParInvalid(Invalid):
     message = _("%(err)s")
 
 
-class HP3ParUnexpectedError(ManilaException):
+class HPE3ParUnexpectedError(ManilaException):
     message = _("%(err)s")
+
+
+class GPFSException(ManilaException):
+    message = _("GPFS exception occurred.")
+
+
+class GPFSGaneshaException(ManilaException):
+    message = _("GPFS Ganesha exception occurred.")
 
 
 class GaneshaCommandFailure(ProcessExecutionError):
@@ -672,3 +684,12 @@ class InvalidConsistencyGroup(Invalid):
 
 class InvalidCGSnapshot(Invalid):
     message = _("Invalid CGSnapshot: %(reason)s")
+
+
+class DriverNotInitialized(ManilaException):
+    message = _("Share driver '%(driver)s' not initialized.")
+
+
+class ShareResourceNotFound(StorageResourceNotFound):
+    message = _("Share id %(share_id)s could not be found "
+                "in storage backend.")

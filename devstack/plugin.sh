@@ -76,7 +76,7 @@ fi
 # Common opts
 SHARE_NAME_PREFIX=${SHARE_NAME_PREFIX:-share-}
 MANILA_ENABLED_SHARE_PROTOCOLS=${ENABLED_SHARE_PROTOCOLS:-"NFS,CIFS"}
-MANILA_SCHEDULER_DRIVER=${MANILA_SCHEDULER_DRIVER:-manila.scheduler.filter_scheduler.FilterScheduler}
+MANILA_SCHEDULER_DRIVER=${MANILA_SCHEDULER_DRIVER:-manila.scheduler.drivers.filter.FilterScheduler}
 MANILA_SERVICE_SECGROUP="manila-service"
 
 # Following env var defines whether to apply downgrade migrations setting up DB or not.
@@ -461,23 +461,9 @@ function create_default_share_type {
     enabled_backends=(${MANILA_ENABLED_BACKENDS//,/ })
     driver_handles_share_servers=$(iniget $MANILA_CONF ${enabled_backends[0]} driver_handles_share_servers)
 
-    manila \
-        --debug \
-        --os-auth-url $KEYSTONE_AUTH_URI/v2.0 \
-        --os-tenant-name ${OS_PROJECT_NAME:-$OS_TENANT_NAME} \
-        --os-username $OS_USERNAME \
-        --os-password $OS_PASSWORD \
-        --os-region-name $OS_REGION_NAME \
-        type-create $MANILA_DEFAULT_SHARE_TYPE $driver_handles_share_servers
+    manila type-create $MANILA_DEFAULT_SHARE_TYPE $driver_handles_share_servers
     if [[ $MANILA_DEFAULT_SHARE_TYPE_EXTRA_SPECS ]]; then
-        manila \
-            --debug \
-            --os-auth-url $KEYSTONE_AUTH_URI/v2.0 \
-            --os-tenant-name ${OS_PROJECT_NAME:-$OS_TENANT_NAME} \
-            --os-username $OS_USERNAME \
-            --os-password $OS_PASSWORD \
-            --os-region-name $OS_REGION_NAME \
-            type-key $MANILA_DEFAULT_SHARE_TYPE set $MANILA_DEFAULT_SHARE_TYPE_EXTRA_SPECS
+        manila type-key $MANILA_DEFAULT_SHARE_TYPE set $MANILA_DEFAULT_SHARE_TYPE_EXTRA_SPECS
     fi
 }
 

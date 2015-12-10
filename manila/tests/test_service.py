@@ -39,7 +39,6 @@ test_service_opts = [
                default="manila.tests.test_service.FakeManager",
                help="Manager for testing"),
     cfg.StrOpt("test_service_listen",
-               default=None,
                help="Host to bind test service to"),
     cfg.IntOpt("test_service_listen_port",
                default=0,
@@ -73,12 +72,12 @@ class ServiceManagerTestCase(test.TestCase):
     def test_message_gets_to_manager(self):
         serv = service.Service('test', 'test', 'test', CONF.fake_manager)
         serv.start()
-        self.assertEqual(serv.test_method(), 'manager')
+        self.assertEqual('manager', serv.test_method())
 
     def test_override_manager_method(self):
         serv = ExtendedService('test', 'test', 'test', CONF.fake_manager)
         serv.start()
-        self.assertEqual(serv.test_method(), 'service')
+        self.assertEqual('service', serv.test_method())
 
 
 class ServiceFlagsTestCase(test.TestCase):

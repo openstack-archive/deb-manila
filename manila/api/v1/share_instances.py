@@ -19,11 +19,10 @@ from manila.api.openstack import wsgi
 from manila.api.views import share_instance as instance_view
 from manila import db
 from manila import exception
-from manila import policy
 from manila import share
 
 
-class ShareInstancesController(wsgi.Controller):
+class ShareInstancesController(wsgi.Controller, wsgi.AdminActionsMixin):
     """The share instances API controller for the OpenStack API."""
 
     resource_name = 'share_instance'
@@ -31,26 +30,49 @@ class ShareInstancesController(wsgi.Controller):
 
     def __init__(self):
         self.share_api = share.API()
-        super(ShareInstancesController, self).__init__()
+        super(self.__class__, self).__init__()
 
-    def _authorize(self, context, action):
-        try:
-            policy.check_policy(context, self.resource_name, action)
-        except exception.PolicyNotAuthorized:
-            raise exc.HTTPForbidden()
+    def _get(self, *args, **kwargs):
+        return db.share_instance_get(*args, **kwargs)
+
+    def _update(self, *args, **kwargs):
+        db.share_instance_update(*args, **kwargs)
+
+    def _delete(self, *args, **kwargs):
+        return self.share_api.delete_instance(*args, **kwargs)
+
+    @wsgi.Controller.api_version('2.3', '2.6')
+    @wsgi.action('os-reset_status')
+    def instance_reset_status_legacy(self, req, id, body):
+        return self._reset_status(req, id, body)
+
+    @wsgi.Controller.api_version('2.7')
+    @wsgi.action('reset_status')
+    def instance_reset_status(self, req, id, body):
+        return self._reset_status(req, id, body)
+
+    @wsgi.Controller.api_version('2.3', '2.6')
+    @wsgi.action('os-force_delete')
+    def instance_force_delete_legacy(self, req, id, body):
+        return self._force_delete(req, id, body)
+
+    @wsgi.Controller.api_version('2.7')
+    @wsgi.action('force_delete')
+    def instance_force_delete(self, req, id, body):
+        return self._force_delete(req, id, body)
 
     @wsgi.Controller.api_version("2.3")
+    @wsgi.Controller.authorize
     def index(self, req):
         context = req.environ['manila.context']
-        self._authorize(context, 'index')
 
         instances = db.share_instances_get_all(context)
         return self._view_builder.detail_list(req, instances)
 
     @wsgi.Controller.api_version("2.3")
+    @wsgi.Controller.authorize
     def show(self, req, id):
         context = req.environ['manila.context']
-        self._authorize(context, 'show')
 
         try:
             instance = db.share_instance_get(context, id)
@@ -60,9 +82,9 @@ class ShareInstancesController(wsgi.Controller):
         return self._view_builder.detail(req, instance)
 
     @wsgi.Controller.api_version("2.3")
+    @wsgi.Controller.authorize('index')
     def get_share_instances(self, req, share_id):
         context = req.environ['manila.context']
-        self._authorize(context, 'index')
 
         try:
             share = self.share_api.get(context, share_id)

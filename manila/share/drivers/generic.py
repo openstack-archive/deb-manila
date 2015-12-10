@@ -80,7 +80,6 @@ share_opts = [
                choices=['ext4', 'ext3'],
                help='Filesystem type of the share volume.'),
     cfg.StrOpt('cinder_volume_type',
-               default=None,
                help='Name or id of cinder volume type which will be used '
                     'for all volumes created by driver.'),
 ]
@@ -169,7 +168,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def check_for_setup_error(self):
         """Returns an error if prerequisites aren't met."""
-        pass
 
     def do_setup(self, context):
         """Any initialization the generic driver does while starting."""
@@ -177,6 +175,29 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.compute_api = compute.API()
         self.volume_api = volume.API()
         self._setup_helpers()
+
+        common_sv_available = False
+        share_server = None
+        sv_fetch_retry_interval = 5
+        while not (common_sv_available or self.driver_handles_share_servers):
+            try:
+                # Verify availability of common server
+                share_server = (
+                    self.service_instance_manager.get_common_server())
+                common_sv_available = self._is_share_server_active(
+                    context, share_server)
+            except Exception as ex:
+                LOG.error(ex)
+
+            if not common_sv_available:
+                time.sleep(sv_fetch_retry_interval)
+                LOG.warning(_LW("Waiting for the common service VM to become "
+                                "available. "
+                                "Driver is currently uninitialized. "
+                                "Share server: %(share_server)s "
+                                "Retry interval: %(retry_interval)s"),
+                            dict(share_server=share_server,
+                                 retry_interval=sv_fetch_retry_interval))
 
     def _setup_helpers(self):
         """Initializes protocol-specific NAS drivers."""

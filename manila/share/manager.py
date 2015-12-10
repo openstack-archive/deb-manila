@@ -98,7 +98,10 @@ CONF.import_opt('periodic_hooks_interval', 'manila.share.hook')
 # old/new path here to maintain backward compatibility.
 MAPPING = {
     'manila.share.drivers.netapp.cluster_mode.NetAppClusteredShareDriver':
-    'manila.share.drivers.netapp.common.NetAppDriver', }
+    'manila.share.drivers.netapp.common.NetAppDriver',
+    'manila.share.drivers.hp.hp_3par_driver.HP3ParShareDriver':
+    'manila.share.drivers.hpe.hpe_3par_driver.HPE3ParShareDriver',
+}
 
 QUOTAS = quota.QUOTAS
 
@@ -207,13 +210,39 @@ class ShareManager(manager.SchedulerDependentManager):
         """Initialization for a standalone service."""
 
         ctxt = context.get_admin_context()
-        self.driver.do_setup(ctxt)
-        self.driver.check_for_setup_error()
+        try:
+            self.driver.do_setup(ctxt)
+            self.driver.check_for_setup_error()
+        except Exception as e:
+            LOG.exception(
+                _LE("Error encountered during initialization of driver "
+                    "'%(name)s' on '%(host)s' host. %(exc)s"), {
+                        "name": self.driver.__class__.__name__,
+                        "host": self.host,
+                        "exc": e,
+                }
+            )
+            self.driver.initialized = False
+            # we don't want to continue since we failed
+            # to initialize the driver correctly.
+            return
+        else:
+            self.driver.initialized = True
 
         share_instances = self.db.share_instances_get_all_by_host(ctxt,
                                                                   self.host)
         LOG.debug("Re-exporting %s shares", len(share_instances))
         for share_instance in share_instances:
+            share_ref = self.db.share_get(ctxt, share_instance['share_id'])
+            if share_ref.is_busy:
+                LOG.info(
+                    _LI("Share instance %(id)s: skipping export, "
+                        "because it is busy with an active task: %(task)s."),
+                    {'id': share_instance['id'],
+                     'task': share_ref['task_state']},
+                )
+                continue
+
             if share_instance['status'] != constants.STATUS_AVAILABLE:
                 LOG.info(
                     _LI("Share instance %(id)s: skipping export, "
@@ -517,6 +546,7 @@ class ShareManager(manager.SchedulerDependentManager):
         return self.driver.get_driver_migration_info(ctxt, share_instance,
                                                      share_server)
 
+    @utils.require_driver_initialized
     def migrate_share(self, ctxt, share_id, host, force_host_copy=False):
         """Migrates a share from current host to another host."""
         LOG.debug("Entered migrate_share method for share %s." % share_id)
@@ -536,7 +566,7 @@ class ShareManager(manager.SchedulerDependentManager):
 
         self.db.share_update(
             ctxt, share_ref['id'],
-            {'task_state': constants.STATUS_TASK_STATE_MIGRATION_MIGRATING})
+            {'task_state': constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS})
 
         if not force_host_copy:
             try:
@@ -652,11 +682,11 @@ class ShareManager(manager.SchedulerDependentManager):
             helper.revert_access_rules(readonly_support, saved_rules)
             raise
 
+        helper.revert_access_rules(readonly_support, saved_rules)
+
         self.db.share_update(
             context, share['id'],
             {'task_state': constants.STATUS_TASK_STATE_MIGRATION_COMPLETING})
-
-        helper.revert_access_rules(readonly_support, saved_rules)
 
         self.db.share_instance_update(context, new_share_instance['id'],
                                       {'status': constants.STATUS_AVAILABLE})
@@ -673,6 +703,7 @@ class ShareManager(manager.SchedulerDependentManager):
         return self.db.share_instance_get(context, id, with_share_data=True)
 
     @add_hooks
+    @utils.require_driver_initialized
     def create_share_instance(self, context, share_instance_id,
                               request_spec=None, filter_properties=None,
                               snapshot_id=None):
@@ -692,9 +723,10 @@ class ShareManager(manager.SchedulerDependentManager):
         if share_network_id and not self.driver.driver_handles_share_servers:
             self.db.share_instance_update(
                 context, share_instance_id, {'status': constants.STATUS_ERROR})
-            raise exception.ManilaException(
-                "Driver does not expect share-network to be provided "
-                "with current configuration.")
+            raise exception.ManilaException(_(
+                "Creation of share instance %s failed: driver does not expect "
+                "share-network to be provided with current "
+                "configuration.") % share_instance_id)
 
         if snapshot_id is not None:
             snapshot_ref = self.db.share_snapshot_get(context, snapshot_id)
@@ -719,8 +751,9 @@ class ShareManager(manager.SchedulerDependentManager):
                 )
             except Exception:
                 with excutils.save_and_reraise_exception():
-                    LOG.error(_LE("Failed to get share server"
-                                  " for share instance creation."))
+                    error = _LE("Creation of share instance %s failed: "
+                                "failed to get share server.")
+                    LOG.error(error, share_instance_id)
                     self.db.share_instance_update(
                         context, share_instance_id,
                         {'status': constants.STATUS_ERROR}
@@ -767,7 +800,8 @@ class ShareManager(manager.SchedulerDependentManager):
                     {'status': constants.STATUS_ERROR}
                 )
         else:
-            LOG.info(_LI("Share instance created successfully."))
+            LOG.info(_LI("Share instance %s created successfully."),
+                     share_instance_id)
             self.db.share_instance_update(
                 context, share_instance_id,
                 {'status': constants.STATUS_AVAILABLE,
@@ -775,6 +809,7 @@ class ShareManager(manager.SchedulerDependentManager):
             )
 
     @add_hooks
+    @utils.require_driver_initialized
     def manage_share(self, context, share_id, driver_options):
         context = context.elevated()
         share_ref = self.db.share_get(context, share_id)
@@ -850,6 +885,7 @@ class ShareManager(manager.SchedulerDependentManager):
                                            user_id, resource, usage)
 
     @add_hooks
+    @utils.require_driver_initialized
     def unmanage_share(self, context, share_id):
         context = context.elevated()
         share_ref = self.db.share_get(context, share_id)
@@ -908,6 +944,7 @@ class ShareManager(manager.SchedulerDependentManager):
                               'deleted': True})
 
     @add_hooks
+    @utils.require_driver_initialized
     def delete_share_instance(self, context, share_instance_id):
         """Delete a share instance."""
         context = context.elevated()
@@ -940,6 +977,7 @@ class ShareManager(manager.SchedulerDependentManager):
                 self.delete_share_server(context, share_server)
 
     @periodic_task.periodic_task(spacing=600)
+    @utils.require_driver_initialized
     def delete_free_share_servers(self, ctxt):
         if not (self.driver.driver_handles_share_servers and
                 self.configuration.automatic_share_server_cleanup):
@@ -963,6 +1001,7 @@ class ShareManager(manager.SchedulerDependentManager):
                               share_instance, share_server)
 
     @add_hooks
+    @utils.require_driver_initialized
     def create_snapshot(self, context, share_id, snapshot_id):
         """Create snapshot for share."""
         snapshot_ref = self.db.share_snapshot_get(context, snapshot_id)
@@ -998,6 +1037,7 @@ class ShareManager(manager.SchedulerDependentManager):
         return snapshot_id
 
     @add_hooks
+    @utils.require_driver_initialized
     def delete_snapshot(self, context, snapshot_id):
         """Delete share snapshot."""
         context = context.elevated()
@@ -1043,6 +1083,7 @@ class ShareManager(manager.SchedulerDependentManager):
                 QUOTAS.commit(context, reservations, project_id=project_id)
 
     @add_hooks
+    @utils.require_driver_initialized
     def allow_access(self, context, share_instance_id, access_id):
         """Allow access to some share instance."""
         access_mapping = self.db.share_instance_access_get(context, access_id,
@@ -1065,7 +1106,15 @@ class ShareManager(manager.SchedulerDependentManager):
                 self.db.share_instance_access_update_state(
                     context, access_mapping['id'], access_mapping.STATE_ERROR)
 
+        LOG.info(_LI("'%(access_to)s' has been successfully allowed "
+                     "'%(access_level)s' access on share instance "
+                     "%(share_instance_id)s."),
+                 {'access_to': access_ref['access_to'],
+                  'access_level': access_ref['access_level'],
+                  'share_instance_id': share_instance_id})
+
     @add_hooks
+    @utils.require_driver_initialized
     def deny_access(self, context, share_instance_id, access_id):
         """Deny access to some share."""
         access_ref = self.db.share_access_get(context, access_id)
@@ -1073,6 +1122,11 @@ class ShareManager(manager.SchedulerDependentManager):
             context, share_instance_id, with_share_data=True)
         share_server = self._get_share_server(context, share_instance)
         self._deny_access(context, access_ref, share_instance, share_server)
+
+        LOG.info(_LI("'(access_to)s' has been successfully denied access to "
+                     "share instance %(share_instance_id)s."),
+                 {'access_to': access_ref['access_to'],
+                  'share_instance_id': share_instance_id})
 
     def _deny_access(self, context, access_ref, share_instance, share_server):
         access_mapping = self.db.share_instance_access_get(
@@ -1087,6 +1141,7 @@ class ShareManager(manager.SchedulerDependentManager):
                     context, access_mapping['id'], access_mapping.STATE_ERROR)
 
     @periodic_task.periodic_task(spacing=CONF.periodic_interval)
+    @utils.require_driver_initialized
     def _report_driver_status(self, context):
         LOG.info(_LI('Updating share status'))
         share_stats = self.driver.get_share_stats(refresh=True)
@@ -1101,6 +1156,7 @@ class ShareManager(manager.SchedulerDependentManager):
         self.update_service_capabilities(share_stats)
 
     @periodic_task.periodic_task(spacing=CONF.periodic_hooks_interval)
+    @utils.require_driver_initialized
     def _execute_periodic_hook(self, context):
         """Executes periodic-based hooks."""
         # TODO(vponomaryov): add also access rules and share servers
@@ -1121,6 +1177,7 @@ class ShareManager(manager.SchedulerDependentManager):
                     for server in share_servers)
 
     @add_hooks
+    @utils.require_driver_initialized
     def publish_service_capabilities(self, context):
         """Collect driver status and then publish it."""
         self._report_driver_status(context)
@@ -1268,6 +1325,7 @@ class ShareManager(manager.SchedulerDependentManager):
                 reason=msg % network_info['segmentation_id'])
 
     @add_hooks
+    @utils.require_driver_initialized
     def delete_share_server(self, context, share_server):
 
         @utils.synchronized(
@@ -1326,6 +1384,7 @@ class ShareManager(manager.SchedulerDependentManager):
                 "between 10 minutes and 1 hour.")
 
     @add_hooks
+    @utils.require_driver_initialized
     def extend_share(self, context, share_id, new_size, reservations):
         context = context.elevated()
         share = self.db.share_get(context, share_id)
@@ -1362,6 +1421,7 @@ class ShareManager(manager.SchedulerDependentManager):
         LOG.info(_LI("Extend share completed successfully."), resource=share)
 
     @add_hooks
+    @utils.require_driver_initialized
     def shrink_share(self, context, share_id, new_size):
         context = context.elevated()
         share = self.db.share_get(context, share_id)
@@ -1417,6 +1477,7 @@ class ShareManager(manager.SchedulerDependentManager):
 
         LOG.info(_LI("Shrink share completed successfully."), resource=share)
 
+    @utils.require_driver_initialized
     def create_consistency_group(self, context, cg_id):
         context = context.elevated()
         group_ref = self.db.consistency_group_get(context, cg_id)
@@ -1524,6 +1585,7 @@ class ShareManager(manager.SchedulerDependentManager):
 
         return group_ref['id']
 
+    @utils.require_driver_initialized
     def delete_consistency_group(self, context, cg_id):
         context = context.elevated()
         group_ref = self.db.consistency_group_get(context, cg_id)
@@ -1565,6 +1627,7 @@ class ShareManager(manager.SchedulerDependentManager):
 
         # TODO(ameade): Add notification for delete.end
 
+    @utils.require_driver_initialized
     def create_cgsnapshot(self, context, cgsnapshot_id):
         context = context.elevated()
         snap_ref = self.db.cgsnapshot_get(context, cgsnapshot_id)
@@ -1621,6 +1684,7 @@ class ShareManager(manager.SchedulerDependentManager):
 
         return snap_ref['id']
 
+    @utils.require_driver_initialized
     def delete_cgsnapshot(self, context, cgsnapshot_id):
         context = context.elevated()
         snap_ref = self.db.cgsnapshot_get(context, cgsnapshot_id)

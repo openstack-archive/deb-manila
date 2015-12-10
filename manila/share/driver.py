@@ -45,11 +45,9 @@ share_opts = [
         help='The percentage of backend capacity reserved.'),
     cfg.StrOpt(
         'share_backend_name',
-        default=None,
         help='The backend name for a given driver implementation.'),
     cfg.StrOpt(
         'network_config_group',
-        default=None,
         help="Name of the configuration group in the Manila conf file "
              "to look for network config options."
              "If not set, the share backend's config group will be used."
@@ -96,18 +94,15 @@ share_opts = [
              'when performing share migration (seconds).'),
     cfg.StrOpt(
         'migration_mounting_backend_ip',
-        default=None,
         help="Backend IP in admin network to use for mounting "
              "shares during migration."),
     cfg.StrOpt(
         'migration_data_copy_node_ip',
-        default=None,
         help="The IP of the node responsible for copying data during "
              "migration, such as the data copy service node, reachable by "
              "the backend."),
     cfg.StrOpt(
         'migration_protocol_mount_command',
-        default=None,
         help="The command for mounting shares for this backend. Must specify"
              "the executable and all necessary parameters for the protocol "
              "supported. It is advisable to separate protocols per backend."),
@@ -140,6 +135,14 @@ ganesha_opts = [
     cfg.StrOpt('ganesha_config_path',
                default='$ganesha_config_dir/ganesha.conf',
                help='Path to main Ganesha config file.'),
+    cfg.StrOpt('ganesha_nfs_export_options',
+               default='maxread = 65536, prefread = 65536',
+               help='Options to use when exporting a share using ganesha '
+                    'NFS server. Note that these defaults can be overridden '
+                    'when a share is created by passing metadata with key '
+                    'name export_options.  Also note the complete set of '
+                    'default ganesha export options is specified in '
+                    'ganesha_utils. (GPFS only.)'),
     cfg.StrOpt('ganesha_service_name',
                default='ganesha.nfsd',
                help='Name of the ganesha nfs service.'),
@@ -221,6 +224,7 @@ class ShareDriver(object):
         """
         super(ShareDriver, self).__init__()
         self.configuration = kwargs.get('configuration', None)
+        self.initialized = False
         self._stats = {}
 
         self.pools = []
