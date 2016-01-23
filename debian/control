@@ -145,7 +145,8 @@ Description: OpenStack shared file system as a service - common files
 
 Package: manila-api
 Architecture: all
-Depends: manila-common (= ${binary:Version}),
+Depends: adduser,
+         manila-common (= ${binary:Version}),
          python-openstackclient,
          q-text-as-data,
          ${misc:Depends},
