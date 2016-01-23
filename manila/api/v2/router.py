@@ -20,14 +20,11 @@
 WSGI middleware for OpenStack Share API v2.
 """
 
-from oslo_log import log
-
 from manila.api import extensions
 import manila.api.openstack
 from manila.api.v1 import limits
 from manila.api.v1 import scheduler_stats
 from manila.api.v1 import security_service
-from manila.api.v1 import share_instances
 from manila.api.v1 import share_manage
 from manila.api.v1 import share_metadata
 from manila.api.v1 import share_networks
@@ -41,11 +38,12 @@ from manila.api.v2 import consistency_groups
 from manila.api.v2 import quota_class_sets
 from manila.api.v2 import quota_sets
 from manila.api.v2 import services
+from manila.api.v2 import share_export_locations
+from manila.api.v2 import share_instance_export_locations
+from manila.api.v2 import share_instances
 from manila.api.v2 import share_types
 from manila.api.v2 import shares
 from manila.api import versions
-
-LOG = log.getLogger(__name__)
 
 
 class APIRouter(manila.api.openstack.APIRouter):
@@ -157,10 +155,41 @@ class APIRouter(manila.api.openstack.APIRouter):
                         collection={"detail": "GET"},
                         member={"action": "POST"})
 
+        self.resources["share_instance_export_locations"] = (
+            share_instance_export_locations.create_resource())
+        mapper.connect("share_instances",
+                       ("/{project_id}/share_instances/{share_instance_id}/"
+                        "export_locations"),
+                       controller=self.resources[
+                           "share_instance_export_locations"],
+                       action="index",
+                       conditions={"method": ["GET"]})
+        mapper.connect("share_instances",
+                       ("/{project_id}/share_instances/{share_instance_id}/"
+                        "export_locations/{export_location_uuid}"),
+                       controller=self.resources[
+                           "share_instance_export_locations"],
+                       action="show",
+                       conditions={"method": ["GET"]})
+
         mapper.connect("share_instance",
                        "/{project_id}/shares/{share_id}/instances",
                        controller=self.resources["share_instances"],
                        action="get_share_instances",
+                       conditions={"method": ["GET"]})
+
+        self.resources["share_export_locations"] = (
+            share_export_locations.create_resource())
+        mapper.connect("shares",
+                       "/{project_id}/shares/{share_id}/export_locations",
+                       controller=self.resources["share_export_locations"],
+                       action="index",
+                       conditions={"method": ["GET"]})
+        mapper.connect("shares",
+                       ("/{project_id}/shares/{share_id}/"
+                        "export_locations/{export_location_uuid}"),
+                       controller=self.resources["share_export_locations"],
+                       action="show",
                        conditions={"method": ["GET"]})
 
         self.resources["snapshots"] = share_snapshots.create_resource()

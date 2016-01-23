@@ -1116,6 +1116,7 @@ class ShareManagerTestCase(test.TestCase):
                              mock_unmanage)
 
         self.mock_object(self.share_manager.db, 'share_update')
+        self.mock_object(self.share_manager.db, 'share_instance_delete')
 
     @ddt.data(True, False)
     def test_unmanage_share_invalid_driver(self, driver_handles_share_servers):
@@ -1150,14 +1151,14 @@ class ShareManagerTestCase(test.TestCase):
                                    mock_unmanage=mock.Mock())
         share = db_utils.create_share()
         share_id = share['id']
+        share_instance_id = share.instance['id']
 
         self.share_manager.unmanage_share(self.context, share_id)
 
         self.share_manager.driver.unmanage.\
             assert_called_once_with(mock.ANY)
-        self.share_manager.db.share_update.assert_called_once_with(
-            mock.ANY, share_id,
-            {'status': constants.STATUS_UNMANAGED, 'deleted': True})
+        self.share_manager.db.share_instance_delete.assert_called_once_with(
+            mock.ANY, share_instance_id)
 
     def test_unmanage_share_valid_share_with_quota_error(self):
         manager.CONF.set_default('driver_handles_share_servers', False)
@@ -1166,14 +1167,14 @@ class ShareManagerTestCase(test.TestCase):
         self.mock_object(quota.QUOTAS, 'reserve',
                          mock.Mock(side_effect=Exception()))
         share = db_utils.create_share()
+        share_instance_id = share.instance['id']
 
         self.share_manager.unmanage_share(self.context, share['id'])
 
         self.share_manager.driver.unmanage.\
             assert_called_once_with(mock.ANY)
-        self.share_manager.db.share_update.assert_called_once_with(
-            mock.ANY, share['id'],
-            {'status': constants.STATUS_UNMANAGED, 'deleted': True})
+        self.share_manager.db.share_instance_delete.assert_called_once_with(
+            mock.ANY, share_instance_id)
 
     def test_unmanage_share_remove_access_rules_error(self):
         manager.CONF.set_default('driver_handles_share_servers', False)
@@ -1199,6 +1200,7 @@ class ShareManagerTestCase(test.TestCase):
         self.mock_object(quota.QUOTAS, 'reserve', mock.Mock(return_value=[]))
         share = db_utils.create_share()
         share_id = share['id']
+        share_instance_id = share.instance['id']
 
         self.share_manager.unmanage_share(self.context, share_id)
 
@@ -1207,9 +1209,8 @@ class ShareManagerTestCase(test.TestCase):
         self.share_manager._remove_share_access_rules.assert_called_once_with(
             mock.ANY, mock.ANY, mock.ANY, mock.ANY
         )
-        self.share_manager.db.share_update.assert_called_once_with(
-            mock.ANY, share_id,
-            {'status': constants.STATUS_UNMANAGED, 'deleted': True})
+        self.share_manager.db.share_instance_delete.assert_called_once_with(
+            mock.ANY, share_instance_id)
 
     def test_remove_share_access_rules(self):
         self.mock_object(self.share_manager.db,
@@ -2472,7 +2473,13 @@ class ShareManagerTestCase(test.TestCase):
         status_success = {
             'task_state': constants.STATUS_TASK_STATE_MIGRATION_SUCCESS
         }
-        share_server = 'fake-share-server'
+        share_server = {
+            'id': 'fake_share_server_id',
+            'share_network_id': 'fake_share_network_id',
+            'host': 'fake_host',
+            'status': 'fake_status',
+            'backend_details': {'foo': 'bar'},
+        }
         migration_info = 'fake-info'
 
         manager = self.share_manager
@@ -2518,7 +2525,13 @@ class ShareManagerTestCase(test.TestCase):
         status_success = {
             'task_state': constants.STATUS_TASK_STATE_MIGRATION_SUCCESS
         }
-        share_server = 'fake-share-server'
+        share_server = {
+            'id': 'fake_share_server_id',
+            'share_network_id': 'fake_share_network_id',
+            'host': 'fake_host',
+            'status': 'fake_status',
+            'backend_details': {'foo': 'bar'},
+        }
         migration_info = 'fake-info'
 
         manager = self.share_manager
@@ -2559,7 +2572,13 @@ class ShareManagerTestCase(test.TestCase):
         status_success = {
             'task_state': constants.STATUS_TASK_STATE_MIGRATION_SUCCESS
         }
-        share_server = 'fake-share-server'
+        share_server = {
+            'id': 'fake_share_server_id',
+            'share_network_id': 'fake_share_network_id',
+            'host': 'fake_host',
+            'status': 'fake_status',
+            'backend_details': {'foo': 'bar'},
+        }
         migration_info = 'fake-info'
 
         manager = self.share_manager
@@ -2604,7 +2623,13 @@ class ShareManagerTestCase(test.TestCase):
         status_error = {
             'task_state': constants.STATUS_TASK_STATE_MIGRATION_ERROR
         }
-        share_server = 'fake-share-server'
+        share_server = {
+            'id': 'fake_share_server_id',
+            'share_network_id': 'fake_share_network_id',
+            'host': 'fake_host',
+            'status': 'fake_status',
+            'backend_details': {'foo': 'bar'},
+        }
         migration_info = 'fake-info'
 
         manager = self.share_manager
@@ -2723,8 +2748,20 @@ class ShareManagerTestCase(test.TestCase):
         }
         status_inactive = {'status': constants.STATUS_INACTIVE}
         status_available = {'status': constants.STATUS_AVAILABLE}
-        share_server = 'fake-server'
-        new_share_server = 'new-fake-server'
+        share_server = {
+            'id': 'fake_share_server_id',
+            'share_network_id': 'fake_share_network_id',
+            'host': 'fake_host',
+            'status': 'fake_status',
+            'backend_details': {'foo': 'bar'},
+        }
+        new_share_server = {
+            'id': 'fake_share_server_id2',
+            'share_network_id': 'fake_share_network_id2',
+            'host': 'fake_host2',
+            'status': 'fake_status2',
+            'backend_details': {'foo2': 'bar2'},
+        }
         src_migration_info = 'fake-src-migration-info'
         dest_migration_info = 'fake-dest-migration-info'
 

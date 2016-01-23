@@ -573,6 +573,13 @@ class ShareManager(manager.SchedulerDependentManager):
 
                 share_server = self._get_share_server(ctxt.elevated(),
                                                       share_instance)
+                share_server = {
+                    'id': share_server['id'],
+                    'share_network_id': share_server['share_network_id'],
+                    'host': share_server['host'],
+                    'status': share_server['status'],
+                    'backend_details': share_server['backend_details'],
+                } if share_server else share_server
 
                 dest_driver_migration_info = rpcapi.get_driver_migration_info(
                     ctxt, share_instance, share_server)
@@ -663,6 +670,13 @@ class ShareManager(manager.SchedulerDependentManager):
                                                   share_instance)
             new_share_server = self._get_share_server(context.elevated(),
                                                       new_share_instance)
+            new_share_server = {
+                'id': new_share_server['id'],
+                'share_network_id': new_share_server['share_network_id'],
+                'host': new_share_server['host'],
+                'status': new_share_server['status'],
+                'backend_details': new_share_server['backend_details'],
+            } if new_share_server else new_share_server
 
             src_migration_info = self.driver.get_migration_info(
                 context, share_instance, share_server)
@@ -939,9 +953,8 @@ class ShareManager(manager.SchedulerDependentManager):
                     _LE("Can not remove access rules of share: %s."), e)
                 return
 
-        self.db.share_update(context, share_id,
-                             {'status': constants.STATUS_UNMANAGED,
-                              'deleted': True})
+        self.db.share_instance_delete(context, share_instance['id'])
+        LOG.info(_LI("Share %s: unmanaged successfully."), share_id)
 
     @add_hooks
     @utils.require_driver_initialized
@@ -1173,8 +1186,8 @@ class ShareManager(manager.SchedulerDependentManager):
         """Get info about relationships between pools and share_servers."""
         share_servers = self.db.share_server_get_all_by_host(context,
                                                              self.host)
-        return dict((server['id'], self.driver.get_share_server_pools(server))
-                    for server in share_servers)
+        return {server['id']: self.driver.get_share_server_pools(server)
+                for server in share_servers}
 
     @add_hooks
     @utils.require_driver_initialized

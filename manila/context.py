@@ -54,12 +54,14 @@ class RequestContext(object):
         :param kwargs: Extra arguments that might be present, but we ignore
             because they possibly came in from older rpc messages.
         """
+        user = kwargs.pop('user', None)
+        tenant = kwargs.pop('tenant', None)
         if kwargs:
-            LOG.warn(_LW('Arguments dropped when creating context: %s'),
-                     str(kwargs))
+            LOG.warning(_LW('Arguments dropped when creating context: %s.'),
+                        str(kwargs))
 
-        self.user_id = user_id
-        self.project_id = project_id
+        self.user_id = user_id or user
+        self.project_id = project_id or tenant
         self.roles = roles or []
         self.is_admin = is_admin
         if self.is_admin is None:
@@ -112,7 +114,7 @@ class RequestContext(object):
                 'read_deleted': self.read_deleted,
                 'roles': self.roles,
                 'remote_address': self.remote_address,
-                'timestamp': timeutils.strtime(self.timestamp),
+                'timestamp': self.timestamp.isoformat(),
                 'request_id': self.request_id,
                 'auth_token': self.auth_token,
                 'quota_class': self.quota_class,

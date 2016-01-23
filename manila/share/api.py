@@ -146,20 +146,22 @@ class API(base.Base):
                 return (usages[name]['reserved'] + usages[name]['in_use'])
 
             if 'gigabytes' in overs:
-                LOG.warn(_LW("Quota exceeded for %(s_pid)s, tried to create "
-                             "%(s_size)sG share (%(d_consumed)dG of "
-                             "%(d_quota)dG already consumed)"), {
-                                 's_pid': context.project_id,
-                                 's_size': size,
-                                 'd_consumed': _consumed('gigabytes'),
-                                 'd_quota': quotas['gigabytes']})
+                LOG.warning(_LW("Quota exceeded for %(s_pid)s, "
+                                "tried to create "
+                                "%(s_size)sG share (%(d_consumed)dG of "
+                                "%(d_quota)dG already consumed)."), {
+                                    's_pid': context.project_id,
+                                    's_size': size,
+                                    'd_consumed': _consumed('gigabytes'),
+                                    'd_quota': quotas['gigabytes']})
                 raise exception.ShareSizeExceedsAvailableQuota()
             elif 'shares' in overs:
-                LOG.warn(_LW("Quota exceeded for %(s_pid)s, tried to create "
-                             "share (%(d_consumed)d shares "
-                             "already consumed)"), {
-                                 's_pid': context.project_id,
-                                 'd_consumed': _consumed('shares')})
+                LOG.warning(_LW("Quota exceeded for %(s_pid)s, "
+                                "tried to create "
+                                "share (%(d_consumed)d shares "
+                                "already consumed)."), {
+                                    's_pid': context.project_id,
+                                    'd_consumed': _consumed('shares')})
                 raise exception.ShareLimitExceeded(allowed=quotas['shares'])
 
         try:
@@ -287,10 +289,29 @@ class API(base.Base):
             # NOTE(ameade): Do not cast to driver if creating from cgsnapshot
             return
 
-        share_dict = share.to_dict()
-        share_dict.update(
-            {'metadata': self.db.share_metadata_get(context, share['id'])}
-        )
+        share_properties = {
+            'size': share['size'],
+            'user_id': share['user_id'],
+            'project_id': share['project_id'],
+            'metadata': self.db.share_metadata_get(context, share['id']),
+            'share_server_id': share['share_server_id'],
+            'snapshot_support': share['snapshot_support'],
+            'share_proto': share['share_proto'],
+            'share_type_id': share['share_type_id'],
+            'is_public': share['is_public'],
+            'consistency_group_id': share['consistency_group_id'],
+            'source_cgsnapshot_member_id': share[
+                'source_cgsnapshot_member_id'],
+            'snapshot_id': share['snapshot_id'],
+        }
+        share_instance_properties = {
+            'availability_zone_id': share_instance['availability_zone_id'],
+            'share_network_id': share_instance['share_network_id'],
+            'share_server_id': share_instance['share_server_id'],
+            'share_id': share_instance['share_id'],
+            'host': share_instance['host'],
+            'status': share_instance['status'],
+        }
 
         share_type = None
         if share['share_type_id']:
@@ -298,8 +319,8 @@ class API(base.Base):
                 context, share['share_type_id'])
 
         request_spec = {
-            'share_properties': share_dict,
-            'share_instance_properties': share_instance.to_dict(),
+            'share_properties': share_properties,
+            'share_instance_properties': share_instance_properties,
             'share_proto': share['share_proto'],
             'share_id': share['id'],
             'snapshot_id': share['snapshot_id'],
@@ -465,8 +486,17 @@ class API(base.Base):
         policy.check_policy(context, 'share_server', 'delete', server)
         shares = self.db.share_instances_get_all_by_share_server(context,
                                                                  server['id'])
+
         if shares:
             raise exception.ShareServerInUse(share_server_id=server['id'])
+
+        cgs = self.db.consistency_group_get_all_by_share_server(context,
+                                                                server['id'])
+        if cgs:
+            LOG.error(_LE("share server '%(ssid)s' in use by CGs"),
+                      {'ssid': server['id']})
+            raise exception.ShareServerInUse(share_server_id=server['id'])
+
         # NOTE(vponomaryov): There is no share_server status update here,
         # it is intentional.
         # Status will be changed in manila.share.manager after verification
@@ -501,18 +531,18 @@ class API(base.Base):
             if 'snapshot_gigabytes' in overs:
                 msg = _LW("Quota exceeded for %(s_pid)s, tried to create "
                           "%(s_size)sG snapshot (%(d_consumed)dG of "
-                          "%(d_quota)dG already consumed)")
-                LOG.warn(msg, {'s_pid': context.project_id,
-                               's_size': size,
-                               'd_consumed': _consumed('gigabytes'),
-                               'd_quota': quotas['snapshot_gigabytes']})
+                          "%(d_quota)dG already consumed).")
+                LOG.warning(msg, {'s_pid': context.project_id,
+                                  's_size': size,
+                                  'd_consumed': _consumed('gigabytes'),
+                                  'd_quota': quotas['snapshot_gigabytes']})
                 raise exception.SnapshotSizeExceedsAvailableQuota()
             elif 'snapshots' in overs:
                 msg = _LW("Quota exceeded for %(s_pid)s, tried to create "
                           "snapshot (%(d_consumed)d snapshots "
-                          "already consumed)")
-                LOG.warn(msg, {'s_pid': context.project_id,
-                               'd_consumed': _consumed('snapshots')})
+                          "already consumed).")
+                LOG.warning(msg, {'s_pid': context.project_id,
+                                  'd_consumed': _consumed('snapshots')})
                 raise exception.SnapshotLimitExceeded(
                     allowed=quotas['snapshots'])
         options = {'share_id': share['id'],
@@ -588,8 +618,31 @@ class API(base.Base):
         share_type_id = share['share_type_id']
         if share_type_id:
             share_type = share_types.get_share_type(context, share_type_id)
-        request_spec = {'share_properties': share,
-                        'share_instance_properties': share_instance.to_dict(),
+
+        share_properties = {
+            'size': share['size'],
+            'user_id': share['user_id'],
+            'project_id': share['project_id'],
+            'share_server_id': share['share_server_id'],
+            'snapshot_support': share['snapshot_support'],
+            'share_proto': share['share_proto'],
+            'share_type_id': share['share_type_id'],
+            'is_public': share['is_public'],
+            'consistency_group_id': share['consistency_group_id'],
+            'source_cgsnapshot_member_id': share[
+                'source_cgsnapshot_member_id'],
+            'snapshot_id': share['snapshot_id'],
+        }
+        share_instance_properties = {
+            'availability_zone_id': share_instance['availability_zone_id'],
+            'share_network_id': share_instance['share_network_id'],
+            'share_server_id': share_instance['share_server_id'],
+            'share_id': share_instance['share_id'],
+            'host': share_instance['host'],
+            'status': share_instance['status'],
+        }
+        request_spec = {'share_properties': share_properties,
+                        'share_instance_properties': share_instance_properties,
                         'share_type': share_type,
                         'share_id': share['id']}
 
@@ -815,10 +868,10 @@ class API(base.Base):
                 try:
                     self.deny_access_to_instance(ctx, share_instance, access)
                 except exception.NotFound:
-                    LOG.warn(_LW("Access rule %(access_id)s not found "
-                                 "for instance %(instance_id)s.") % {
-                        'access_id': access['id'],
-                        'instance_id': share_instance['id']})
+                    LOG.warning(_LW("Access rule %(access_id)s not found "
+                                    "for instance %(instance_id)s.") % {
+                                'access_id': access['id'],
+                                'instance_id': share_instance['id']})
         else:
             msg = _("Access policy should be %(active)s or in %(error)s "
                     "state") % {"active": constants.STATUS_ACTIVE,
@@ -884,21 +937,22 @@ class API(base.Base):
 
         for k, v in six.iteritems(metadata):
             if not k:
-                msg = _("Metadata property key is blank")
-                LOG.warn(msg)
+                msg = _("Metadata property key is blank.")
+                LOG.warning(msg)
                 raise exception.InvalidShareMetadata(message=msg)
             if len(k) > 255:
-                msg = _("Metadata property key is greater than 255 characters")
-                LOG.warn(msg)
+                msg = _("Metadata property key is "
+                        "greater than 255 characters.")
+                LOG.warning(msg)
                 raise exception.InvalidShareMetadataSize(message=msg)
             if not v:
-                msg = _("Metadata property value is blank")
-                LOG.warn(msg)
+                msg = _("Metadata property value is blank.")
+                LOG.warning(msg)
                 raise exception.InvalidShareMetadata(message=msg)
             if len(v) > 1023:
                 msg = _("Metadata property value is "
-                        "greater than 1023 characters")
-                LOG.warn(msg)
+                        "greater than 1023 characters.")
+                LOG.warning(msg)
                 raise exception.InvalidShareMetadataSize(message=msg)
 
     @policy.wrap_check_policy('share')

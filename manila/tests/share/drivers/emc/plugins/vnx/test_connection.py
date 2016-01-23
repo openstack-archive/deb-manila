@@ -15,12 +15,14 @@
 
 import copy
 
+import ddt
 import mock
 from oslo_log import log
 
 from manila import exception
 from manila.share.drivers.emc.plugins.vnx import connection
 from manila.share.drivers.emc.plugins.vnx import connector
+from manila.share.drivers.emc.plugins.vnx import object_manager
 from manila import test
 from manila.tests import fake_share
 from manila.tests.share.drivers.emc.plugins.vnx import fakes
@@ -29,16 +31,12 @@ from manila.tests.share.drivers.emc.plugins.vnx import utils
 LOG = log.getLogger(__name__)
 
 
+@ddt.ddt
 class StorageConnectionTestCase(test.TestCase):
     @mock.patch.object(connector.XMLAPIConnector, "_do_setup", mock.Mock())
     def setUp(self):
         super(StorageConnectionTestCase, self).setUp()
         self.emc_share_driver = fakes.FakeEMCShareDriver()
-
-        self.cifs_server_name = fakes.FakeData.vdm_name
-        self.pool_name = fakes.FakeData.pool_name
-        self.vdm_name = fakes.FakeData.vdm_name
-        self.mover_name = fakes.FakeData.mover_name
 
         self.connection = connection.VNXStorageConnection(LOG)
 
@@ -53,51 +51,91 @@ class StorageConnectionTestCase(test.TestCase):
         self.cifs_server = fakes.CIFSServerTestData()
         self.dns = fakes.DNSDomainTestData()
 
-        hook = utils.RequestSideEffect()
-        hook.append(self.mover.resp_get_ref_succeed())
-        hook.append(self.pool.resp_get_succeed())
-
         with mock.patch.object(connector.XMLAPIConnector, 'request',
-                               mock.Mock(side_effect=hook)):
+                               mock.Mock()):
             self.connection.connect(self.emc_share_driver, None)
 
-            expected_calls = [
-                mock.call(self.mover.req_get_ref()),
-                mock.call(self.pool.req_get()),
-            ]
-            connector.XMLAPIConnector.request.assert_has_calls(expected_calls)
-
-    @mock.patch.object(connector.XMLAPIConnector, "_do_setup", mock.Mock())
-    def test_connect_with_invalid_mover_name(self):
-        hook = utils.RequestSideEffect()
-        hook.append(self.mover.resp_get_error())
-
-        with mock.patch.object(connector.XMLAPIConnector, 'request',
-                               mock.Mock(side_effect=hook)):
-            self.assertRaises(exception.InvalidParameterValue,
-                              self.connection.connect,
-                              self.emc_share_driver, None)
-
-            expected_calls = [mock.call(self.mover.req_get_ref())]
-            connector.XMLAPIConnector.request.assert_has_calls(expected_calls)
-
-    @mock.patch.object(connector.XMLAPIConnector, "_do_setup", mock.Mock())
-    def test_connect_with_invalid_pool_name(self):
+    def test_check_for_setup_error(self):
         hook = utils.RequestSideEffect()
         hook.append(self.mover.resp_get_ref_succeed())
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
+
+        with mock.patch.object(connection.VNXStorageConnection,
+                               '_get_managed_storage_pools',
+                               mock.Mock()):
+            self.connection.check_for_setup_error()
+
+        expected_calls = [mock.call(self.mover.req_get_ref())]
+        xml_req_mock.assert_has_calls(expected_calls)
+
+    def test_check_for_setup_error_with_invalid_mover_name(self):
+        hook = utils.RequestSideEffect()
+        hook.append(self.mover.resp_get_error())
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
+
+        self.assertRaises(exception.InvalidParameterValue,
+                          self.connection.check_for_setup_error)
+
+        expected_calls = [mock.call(self.mover.req_get_ref())]
+        xml_req_mock.assert_has_calls(expected_calls)
+
+    @ddt.data({'pool_conf': None,
+               'real_pools': ['fake_pool', 'nas_pool'],
+               'matched_pool': set()},
+              {'pool_conf': '*',
+               'real_pools': ['fake_pool', 'nas_pool'],
+               'matched_pool': {'fake_pool', 'nas_pool'}},
+              {'pool_conf': 'fake_*',
+               'real_pools': ['fake_pool', 'nas_pool', 'Perf_Pool'],
+               'matched_pool': {'fake_pool'}},
+              {'pool_conf': '*pool',
+               'real_pools': ['fake_pool', 'NAS_Pool', 'Perf_POOL'],
+               'matched_pool': {'fake_pool'}},
+              {'pool_conf': 'nas_pool',
+               'real_pools': ['fake_pool', 'nas_pool', 'perf_pool'],
+               'matched_pool': {'nas_pool'}})
+    @ddt.unpack
+    def test__get_managed_storage_pools(self, pool_conf, real_pools,
+                                        matched_pool):
+        with mock.patch.object(object_manager.StoragePool,
+                               'get_all',
+                               mock.Mock(return_value=('ok', real_pools))):
+            pool = self.connection._get_managed_storage_pools(pool_conf)
+            self.assertEqual(matched_pool, pool)
+
+    def test__get_managed_storage_pools_failed_to_get_pool_info(self):
+        hook = utils.RequestSideEffect()
         hook.append(self.pool.resp_get_error())
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
 
-        with mock.patch.object(connector.XMLAPIConnector, 'request',
-                               mock.Mock(side_effect=hook)):
+        pool_conf = fakes.FakeData.pool_name
+        self.assertRaises(exception.EMCVnxXMLAPIError,
+                          self.connection._get_managed_storage_pools,
+                          pool_conf)
+
+        expected_calls = [mock.call(self.pool.req_get())]
+        xml_req_mock.assert_has_calls(expected_calls)
+
+    @ddt.data(
+        {'pool_conf': 'fake_*',
+         'real_pools': ['nas_pool', 'Perf_Pool']},
+        {'pool_conf': '*pool',
+         'real_pools': ['NAS_Pool', 'Perf_POOL']},
+        {'pool_conf': 'nas_pool',
+         'real_pools': ['fake_pool', 'perf_pool']},
+    )
+    @ddt.unpack
+    def test__get_managed_storage_pools_without_matched_pool(self, pool_conf,
+                                                             real_pools):
+        with mock.patch.object(object_manager.StoragePool,
+                               'get_all',
+                               mock.Mock(return_value=('ok', real_pools))):
             self.assertRaises(exception.InvalidParameterValue,
-                              self.connection.connect,
-                              self.emc_share_driver, None)
-
-            expected_calls = [
-                mock.call(self.mover.req_get_ref()),
-                mock.call(self.pool.req_get()),
-            ]
-            connector.XMLAPIConnector.request.assert_has_calls(expected_calls)
+                              self.connection._get_managed_storage_pools,
+                              pool_conf)
 
     def test_create_cifs_share(self):
         share_server = fakes.SHARE_SERVER
@@ -107,6 +145,7 @@ class StorageConnectionTestCase(test.TestCase):
         hook.append(self.vdm.resp_get_succeed())
         hook.append(self.cifs_server.resp_get_succeed(
             mover_id=self.vdm.vdm_id, is_vdm=True, join_domain=True))
+        hook.append(self.pool.resp_get_succeed())
         hook.append(self.fs.resp_task_succeed())
         hook.append(self.cifs_share.resp_task_succeed())
         xml_req_mock = utils.EMCMock(side_effect=hook)
@@ -122,6 +161,7 @@ class StorageConnectionTestCase(test.TestCase):
         expected_calls = [
             mock.call(self.vdm.req_get()),
             mock.call(self.cifs_server.req_get(self.vdm.vdm_id)),
+            mock.call(self.pool.req_get()),
             mock.call(self.fs.req_create_on_vdm()),
             mock.call(self.cifs_share.req_create(self.vdm.vdm_id)),
         ]
@@ -138,6 +178,7 @@ class StorageConnectionTestCase(test.TestCase):
         share = fakes.NFS_SHARE
 
         hook = utils.RequestSideEffect()
+        hook.append(self.pool.resp_get_succeed())
         hook.append(self.vdm.resp_get_succeed())
         hook.append(self.fs.resp_task_succeed())
         xml_req_mock = utils.EMCMock(side_effect=hook)
@@ -151,6 +192,7 @@ class StorageConnectionTestCase(test.TestCase):
         location = self.connection.create_share(None, share, share_server)
 
         expected_calls = [
+            mock.call(self.pool.req_get()),
             mock.call(self.vdm.req_get()),
             mock.call(self.fs.req_create_on_vdm()),
         ]
@@ -206,6 +248,7 @@ class StorageConnectionTestCase(test.TestCase):
         hook.append(self.vdm.resp_get_succeed())
         hook.append(self.cifs_server.resp_get_without_interface(
             mover_id=self.vdm.vdm_id, is_vdm=True, join_domain=True))
+        hook.append(self.pool.resp_get_succeed())
         hook.append(self.fs.resp_task_succeed())
         xml_req_mock = utils.EMCMock(side_effect=hook)
         self.connection.manager.connectors['XML'].request = xml_req_mock
@@ -217,10 +260,20 @@ class StorageConnectionTestCase(test.TestCase):
         expected_calls = [
             mock.call(self.vdm.req_get()),
             mock.call(self.cifs_server.req_get(self.vdm.vdm_id)),
+            mock.call(self.pool.req_get()),
             mock.call(self.fs.req_create_on_vdm()),
 
         ]
         xml_req_mock.assert_has_calls(expected_calls)
+
+    def test_create_cifs_share_without_pool_name(self):
+        share_server = fakes.SHARE_SERVER
+        share = fake_share.fake_share(host='HostA@BackendB',
+                                      share_proto='CIFS')
+
+        self.assertRaises(exception.InvalidHost,
+                          self.connection.create_share,
+                          None, share, share_server)
 
     def test_create_cifs_share_from_snapshot(self):
         share_server = fakes.SHARE_SERVER
@@ -348,6 +401,16 @@ class StorageConnectionTestCase(test.TestCase):
                           self.connection.create_share_from_snapshot,
                           None, share, snapshot, share_server)
 
+    def test_create_share_from_snapshot_without_pool_name(self):
+        share_server = fakes.SHARE_SERVER
+        share = fake_share.fake_share(host='HostA@BackendB',
+                                      share_proto='CIFS')
+        snapshot = fake_share.fake_snapshot()
+
+        self.assertRaises(exception.InvalidHost,
+                          self.connection.create_share_from_snapshot,
+                          None, share, snapshot, share_server)
+
     def test_delete_cifs_share(self):
         share_server = fakes.SHARE_SERVER
         share = fakes.CIFS_SHARE
@@ -405,7 +468,7 @@ class StorageConnectionTestCase(test.TestCase):
         xml_req_mock.assert_has_calls(expected_calls)
 
         ssh_calls = [
-            mock.call(self.nfs_share.cmd_get(), True),
+            mock.call(self.nfs_share.cmd_get(), False),
             mock.call(self.nfs_share.cmd_delete(), True),
         ]
         ssh_cmd_mock.assert_has_calls(ssh_calls)
@@ -451,6 +514,37 @@ class StorageConnectionTestCase(test.TestCase):
         ]
         xml_req_mock.assert_has_calls(expected_calls)
 
+    def test_extend_share(self):
+        share_server = fakes.SHARE_SERVER
+        share = fakes.CIFS_SHARE
+        new_size = fakes.FakeData.new_size
+
+        hook = utils.RequestSideEffect()
+        hook.append(self.fs.resp_get_succeed())
+        hook.append(self.pool.resp_get_succeed())
+        hook.append(self.fs.resp_task_succeed())
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
+
+        self.connection.extend_share(share, new_size, share_server)
+
+        expected_calls = [
+            mock.call(self.fs.req_get()),
+            mock.call(self.pool.req_get()),
+            mock.call(self.fs.req_extend()),
+        ]
+        xml_req_mock.assert_has_calls(expected_calls)
+
+    def test_extend_share_without_pool_name(self):
+        share_server = fakes.SHARE_SERVER
+        share = fake_share.fake_share(host='HostA@BackendB',
+                                      share_proto='CIFS')
+        new_size = fakes.FakeData.new_size
+
+        self.assertRaises(exception.InvalidHost,
+                          self.connection.extend_share,
+                          share, new_size, share_server)
+
     def test_create_snapshot(self):
         share_server = fakes.SHARE_SERVER
         snapshot = fake_share.fake_snapshot(
@@ -470,6 +564,25 @@ class StorageConnectionTestCase(test.TestCase):
             mock.call(self.fs.req_get()),
             mock.call(self.snap.req_create()),
         ]
+        xml_req_mock.assert_has_calls(expected_calls)
+
+    def test_create_snapshot_with_incorrect_share_info(self):
+        share_server = fakes.SHARE_SERVER
+        snapshot = fake_share.fake_snapshot(
+            id=fakes.FakeData.snapshot_name,
+            share_id=fakes.FakeData.filesystem_name,
+            share_name=fakes.FakeData.share_name)
+
+        hook = utils.RequestSideEffect()
+        hook.append(self.fs.resp_get_but_not_found())
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
+
+        self.assertRaises(exception.EMCVnxXMLAPIError,
+                          self.connection.create_snapshot,
+                          None, snapshot, share_server)
+
+        expected_calls = [mock.call(self.fs.req_get())]
         xml_req_mock.assert_has_calls(expected_calls)
 
     def test_delete_snapshot(self):
@@ -496,6 +609,7 @@ class StorageConnectionTestCase(test.TestCase):
     def test_setup_server(self):
         hook = utils.RequestSideEffect()
         hook.append(self.vdm.resp_get_but_not_found())
+        hook.append(self.mover.resp_get_ref_succeed())
         hook.append(self.vdm.resp_task_succeed())
         hook.append(self.mover.resp_task_succeed())
         hook.append(self.mover.resp_task_succeed())
@@ -518,6 +632,7 @@ class StorageConnectionTestCase(test.TestCase):
 
         expected_calls = [
             mock.call(self.vdm.req_get()),
+            mock.call(self.mover.req_get_ref()),
             mock.call(self.vdm.req_create()),
             mock.call(self.mover.req_create_interface(
                 if_name=if_name_1,
@@ -540,6 +655,7 @@ class StorageConnectionTestCase(test.TestCase):
     def test_setup_server_with_existing_vdm(self):
         hook = utils.RequestSideEffect()
         hook.append(self.vdm.resp_get_succeed())
+        hook.append(self.mover.resp_get_ref_succeed())
         hook.append(self.mover.resp_task_succeed())
         hook.append(self.mover.resp_task_succeed())
         hook.append(self.dns.resp_task_succeed())
@@ -560,6 +676,7 @@ class StorageConnectionTestCase(test.TestCase):
 
         expected_calls = [
             mock.call(self.vdm.req_get()),
+            mock.call(self.mover.req_get_ref()),
             mock.call(self.mover.req_create_interface(
                 if_name=if_name_1,
                 ip=fakes.FakeData.network_allocations_ip1)),
@@ -588,6 +705,7 @@ class StorageConnectionTestCase(test.TestCase):
     def test_setup_server_without_valid_physical_device(self):
         hook = utils.RequestSideEffect()
         hook.append(self.vdm.resp_get_but_not_found())
+        hook.append(self.mover.resp_get_ref_succeed())
         hook.append(self.vdm.resp_task_succeed())
         hook.append(self.vdm.resp_get_succeed())
         hook.append(self.cifs_server.resp_get_without_value())
@@ -607,6 +725,7 @@ class StorageConnectionTestCase(test.TestCase):
 
         expected_calls = [
             mock.call(self.vdm.req_get()),
+            mock.call(self.mover.req_get_ref()),
             mock.call(self.vdm.req_create()),
             mock.call(self.vdm.req_get()),
             mock.call(self.cifs_server.req_get(self.vdm.vdm_id)),
@@ -623,6 +742,7 @@ class StorageConnectionTestCase(test.TestCase):
     def test_setup_server_with_exception(self):
         hook = utils.RequestSideEffect()
         hook.append(self.vdm.resp_get_but_not_found())
+        hook.append(self.mover.resp_get_ref_succeed())
         hook.append(self.vdm.resp_task_succeed())
         hook.append(self.mover.resp_task_succeed())
         hook.append(self.mover.resp_task_error())
@@ -648,6 +768,7 @@ class StorageConnectionTestCase(test.TestCase):
 
         expected_calls = [
             mock.call(self.vdm.req_get()),
+            mock.call(self.mover.req_get_ref()),
             mock.call(self.vdm.req_create()),
             mock.call(self.mover.req_create_interface(
                 if_name=if_name_1,
@@ -677,6 +798,7 @@ class StorageConnectionTestCase(test.TestCase):
         hook.append(self.cifs_server.resp_task_succeed())
         hook.append(self.cifs_server.resp_get_succeed(
             mover_id=self.vdm.vdm_id, is_vdm=True, join_domain=False))
+        hook.append(self.mover.resp_get_ref_succeed())
         hook.append(self.mover.resp_task_succeed())
         hook.append(self.mover.resp_task_succeed())
         hook.append(self.vdm.resp_task_succeed())
@@ -698,6 +820,7 @@ class StorageConnectionTestCase(test.TestCase):
             mock.call(self.cifs_server.req_modify(
                 mover_id=self.vdm.vdm_id, is_vdm=True, join_domain=False)),
             mock.call(self.cifs_server.req_delete(self.vdm.vdm_id)),
+            mock.call(self.mover.req_get_ref()),
             mock.call(self.mover.req_delete_interface(
                 fakes.FakeData.network_allocations_ip1)),
             mock.call(self.mover.req_delete_interface(
@@ -718,6 +841,7 @@ class StorageConnectionTestCase(test.TestCase):
     def test_teardown_server_without_security_services(self):
         hook = utils.RequestSideEffect()
         hook.append(self.vdm.resp_get_succeed())
+        hook.append(self.mover.resp_get_ref_succeed())
         hook.append(self.mover.resp_task_succeed())
         hook.append(self.mover.resp_task_succeed())
         hook.append(self.vdm.resp_task_succeed())
@@ -734,6 +858,7 @@ class StorageConnectionTestCase(test.TestCase):
 
         expected_calls = [
             mock.call(self.vdm.req_get()),
+            mock.call(self.mover.req_get_ref()),
             mock.call(self.mover.req_delete_interface(
                 fakes.FakeData.network_allocations_ip1)),
             mock.call(self.mover.req_delete_interface(
@@ -771,6 +896,7 @@ class StorageConnectionTestCase(test.TestCase):
         hook = utils.RequestSideEffect()
         hook.append(self.vdm.resp_get_succeed())
         hook.append(self.cifs_server.resp_get_error())
+        hook.append(self.mover.resp_get_ref_succeed())
         hook.append(self.cifs_server.resp_task_succeed())
         hook.append(self.cifs_server.resp_get_succeed(
             mover_id=self.vdm.vdm_id, is_vdm=True, join_domain=False))
@@ -792,6 +918,50 @@ class StorageConnectionTestCase(test.TestCase):
         expected_calls = [
             mock.call(self.vdm.req_get()),
             mock.call(self.cifs_server.req_get(self.vdm.vdm_id)),
+            mock.call(self.mover.req_get_ref()),
+            mock.call(self.mover.req_delete_interface(
+                fakes.FakeData.network_allocations_ip1)),
+            mock.call(self.mover.req_delete_interface(
+                fakes.FakeData.network_allocations_ip2)),
+            mock.call(self.vdm.req_delete()),
+        ]
+        xml_req_mock.assert_has_calls(expected_calls)
+
+        ssh_calls = [
+            mock.call(self.vdm.cmd_get_interfaces(), False),
+            mock.call(self.vdm.cmd_detach_nfs_interface(), True),
+        ]
+        ssh_cmd_mock.assert_has_calls(ssh_calls)
+
+    def test_teardown_server_with_invalid_cifs_server_modification(self):
+        hook = utils.RequestSideEffect()
+        hook.append(self.vdm.resp_get_succeed())
+        hook.append(self.cifs_server.resp_get_succeed(
+            mover_id=self.vdm.vdm_id, is_vdm=True, join_domain=True))
+        hook.append(self.cifs_server.resp_task_error())
+        hook.append(self.cifs_server.resp_task_succeed())
+        hook.append(self.mover.resp_get_ref_succeed())
+        hook.append(self.mover.resp_task_succeed())
+        hook.append(self.mover.resp_task_succeed())
+        hook.append(self.vdm.resp_task_succeed())
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
+
+        ssh_hook = utils.SSHSideEffect()
+        ssh_hook.append(self.vdm.output_get_interfaces())
+        ssh_hook.append()
+        ssh_cmd_mock = mock.Mock(side_effect=ssh_hook)
+        self.connection.manager.connectors['SSH'].run_ssh = ssh_cmd_mock
+
+        self.connection.teardown_server(fakes.SERVER_DETAIL,
+                                        fakes.SECURITY_SERVICE)
+
+        expected_calls = [
+            mock.call(self.vdm.req_get()),
+            mock.call(self.cifs_server.req_get(self.vdm.vdm_id)),
+            mock.call(self.cifs_server.req_modify(self.vdm.vdm_id)),
+            mock.call(self.cifs_server.req_delete(self.vdm.vdm_id)),
+            mock.call(self.mover.req_get_ref()),
             mock.call(self.mover.req_delete_interface(
                 fakes.FakeData.network_allocations_ip1)),
             mock.call(self.mover.req_delete_interface(
@@ -1137,9 +1307,103 @@ class StorageConnectionTestCase(test.TestCase):
         ]
         xml_req_mock.assert_has_calls(expected_calls)
 
-        self.assertEqual(fakes.FakeData.pool_total_size,
-                         fakes.STATS['total_capacity_gb'])
+        for pool in fakes.STATS['pools']:
+            if pool['pool_name'] == fakes.FakeData.pool_name:
+                self.assertEqual(fakes.FakeData.pool_total_size,
+                                 pool['total_capacity_gb'])
 
-        free_size = (fakes.FakeData.pool_total_size -
-                     fakes.FakeData.pool_used_size)
-        self.assertEqual(free_size, fakes.STATS['free_capacity_gb'])
+                free_size = (fakes.FakeData.pool_total_size -
+                             fakes.FakeData.pool_used_size)
+                self.assertEqual(free_size, pool['free_capacity_gb'])
+
+    def test_update_share_stats_without_matched_config_pools(self):
+        self.connection.pools = set('fake_pool')
+
+        hook = utils.RequestSideEffect()
+        hook.append(self.mover.resp_get_ref_succeed())
+        hook.append(self.pool.resp_get_succeed())
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
+
+        self.assertRaises(exception.EMCVnxXMLAPIError,
+                          self.connection.update_share_stats,
+                          fakes.STATS)
+
+        expected_calls = [
+            mock.call(self.mover.req_get_ref()),
+            mock.call(self.pool.req_get()),
+        ]
+        xml_req_mock.assert_has_calls(expected_calls)
+
+    def test_get_pool(self):
+        share = fakes.CIFS_SHARE
+
+        hook = utils.RequestSideEffect()
+        hook.append(self.fs.resp_get_succeed())
+        hook.append(self.pool.resp_get_succeed())
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
+
+        pool_name = self.connection.get_pool(share)
+
+        expected_calls = [
+            mock.call(self.fs.req_get()),
+            mock.call(self.pool.req_get()),
+        ]
+        xml_req_mock.assert_has_calls(expected_calls)
+
+        self.assertEqual(fakes.FakeData.pool_name, pool_name)
+
+    def test_get_pool_failed_to_get_filesystem_info(self):
+        share = fakes.CIFS_SHARE
+
+        hook = utils.RequestSideEffect()
+        hook.append(self.fs.resp_get_error())
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
+
+        self.assertRaises(exception.EMCVnxXMLAPIError,
+                          self.connection.get_pool,
+                          share)
+
+        expected_calls = [mock.call(self.fs.req_get())]
+        xml_req_mock.assert_has_calls(expected_calls)
+
+    def test_get_pool_failed_to_get_pool_info(self):
+        share = fakes.CIFS_SHARE
+
+        hook = utils.RequestSideEffect()
+        hook.append(self.fs.resp_get_succeed())
+        hook.append(self.pool.resp_get_error())
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
+
+        self.assertRaises(exception.EMCVnxXMLAPIError,
+                          self.connection.get_pool,
+                          share)
+
+        expected_calls = [
+            mock.call(self.fs.req_get()),
+            mock.call(self.pool.req_get()),
+        ]
+        xml_req_mock.assert_has_calls(expected_calls)
+
+    def test_get_pool_failed_to_find_matched_pool_name(self):
+        share = fakes.CIFS_SHARE
+
+        hook = utils.RequestSideEffect()
+        hook.append(self.fs.resp_get_succeed())
+        hook.append(self.pool.resp_get_succeed(name='unmatch_pool_name',
+                                               id='unmatch_pool_id'))
+        xml_req_mock = utils.EMCMock(side_effect=hook)
+        self.connection.manager.connectors['XML'].request = xml_req_mock
+
+        self.assertRaises(exception.EMCVnxXMLAPIError,
+                          self.connection.get_pool,
+                          share)
+
+        expected_calls = [
+            mock.call(self.fs.req_get()),
+            mock.call(self.pool.req_get()),
+        ]
+        xml_req_mock.assert_has_calls(expected_calls)

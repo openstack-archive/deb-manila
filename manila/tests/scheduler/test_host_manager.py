@@ -147,6 +147,7 @@ class HostManagerTestCase(test.TestCase):
         self.mock_object(
             db, 'service_get_all_by_topic',
             mock.Mock(return_value=fakes.SHARE_SERVICES_WITH_POOLS))
+        self.mock_object(utils, 'service_is_up', mock.Mock(return_value=True))
 
         with mock.patch.dict(self.host_manager.service_states,
                              fakes.SHARE_SERVICE_STATES_WITH_POOLS):
@@ -168,7 +169,7 @@ class HostManagerTestCase(test.TestCase):
         self.mock_object(
             db, 'service_get_all_by_topic',
             mock.Mock(return_value=fakes.SHARE_SERVICES_NO_POOLS))
-        host_manager.LOG.warn = mock.Mock()
+        host_manager.LOG.warning = mock.Mock()
 
         with mock.patch.dict(self.host_manager.service_states,
                              fakes.SERVICE_STATES_NO_POOLS):
@@ -247,7 +248,7 @@ class HostManagerTestCase(test.TestCase):
                     },
                 },
             ]
-            self.assertTrue(isinstance(res, list))
+            self.assertIsInstance(res, list)
             self.assertEqual(len(expected), len(res))
             for pool in expected:
                 self.assertIn(pool, res)
@@ -258,7 +259,7 @@ class HostManagerTestCase(test.TestCase):
         self.mock_object(
             db, 'service_get_all_by_topic',
             mock.Mock(return_value=fakes.SHARE_SERVICES_WITH_POOLS))
-        host_manager.LOG.warn = mock.Mock()
+        host_manager.LOG.warning = mock.Mock()
 
         with mock.patch.dict(self.host_manager.service_states,
                              fakes.SHARE_SERVICE_STATES_WITH_POOLS):
@@ -388,8 +389,8 @@ class HostManagerTestCase(test.TestCase):
                     },
                 },
             ]
-            self.assertTrue(isinstance(res, list))
-            self.assertTrue(isinstance(self.host_manager.host_state_map, dict))
+            self.assertIsInstance(res, list)
+            self.assertIsInstance(self.host_manager.host_state_map, dict)
             self.assertEqual(len(expected), len(res))
             for pool in expected:
                 self.assertIn(pool, res)
@@ -400,7 +401,7 @@ class HostManagerTestCase(test.TestCase):
         self.mock_object(
             db, 'service_get_all_by_topic',
             mock.Mock(return_value=fakes.SHARE_SERVICES_NO_POOLS))
-        host_manager.LOG.warn = mock.Mock()
+        host_manager.LOG.warning = mock.Mock()
 
         with mock.patch.dict(self.host_manager.service_states,
                              fakes.SERVICE_STATES_NO_POOLS):
@@ -468,8 +469,8 @@ class HostManagerTestCase(test.TestCase):
                     },
                 },
             ]
-            self.assertTrue(isinstance(res, list))
-            self.assertTrue(isinstance(self.host_manager.host_state_map, dict))
+            self.assertIsInstance(res, list)
+            self.assertIsInstance(self.host_manager.host_state_map, dict)
             self.assertEqual(len(expected), len(res))
             self.assertEqual(len(expected),
                              len(self.host_manager.host_state_map))
@@ -482,7 +483,7 @@ class HostManagerTestCase(test.TestCase):
         self.mock_object(
             db, 'service_get_all_by_topic',
             mock.Mock(return_value=fakes.SHARE_SERVICES_WITH_POOLS))
-        host_manager.LOG.warn = mock.Mock()
+        host_manager.LOG.warning = mock.Mock()
 
         with mock.patch.dict(self.host_manager.service_states,
                              fakes.SHARE_SERVICE_STATES_WITH_POOLS):
@@ -588,7 +589,7 @@ class HostStateTestCase(test.TestCase):
                  'total_capacity_gb': 500,
                  'free_capacity_gb': 230,
                  'allocated_capacity_gb': 270,
-                 'QoS_support': 'False',
+                 'qos': 'False',
                  'reserved_percentage': 0,
                  'dying_disks': 100,
                  'super_hero_1': 'spider-man',
@@ -599,11 +600,10 @@ class HostStateTestCase(test.TestCase):
                  'total_capacity_gb': 1024,
                  'free_capacity_gb': 1024,
                  'allocated_capacity_gb': 0,
-                 'QoS_support': 'False',
+                 'qos': 'False',
                  'reserved_percentage': 0,
                  'dying_disks': 200,
                  'super_hero_1': 'superman',
-                 'super_hero_2': ' ',
                  'super_hero_2': 'Hulk',
                  }
             ],
@@ -638,7 +638,7 @@ class HostStateTestCase(test.TestCase):
                  'total_capacity_gb': 10000,
                  'free_capacity_gb': 10000,
                  'allocated_capacity_gb': 0,
-                 'QoS_support': 'False',
+                 'qos': 'False',
                  'reserved_percentage': 0,
                  },
             ],

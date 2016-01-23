@@ -15,6 +15,7 @@
 
 import copy
 
+import ddt
 import mock
 from oslo_concurrency import processutils
 
@@ -291,7 +292,7 @@ class FileSystemTestCase(StorageObjectTestCase):
         for prop in property_map:
             self.assertIn(prop, out)
 
-        self.assertEqual(None, out['dataServicePolicies'])
+        self.assertIsNone(out['dataServicePolicies'])
 
         id = context.get_id(self.fs.filesystem_name)
         self.assertEqual(self.fs.filesystem_id, id)
@@ -1338,7 +1339,6 @@ class SnapshotTestCase(StorageObjectTestCase):
 
     def test_create_snapshot(self):
         self.hook.append(self.fs.resp_get_succeed())
-        self.hook.append(self.pool.resp_get_succeed())
         self.hook.append(self.snap.resp_task_succeed())
 
         context = self.manager.getStorageContext('Snapshot')
@@ -1346,18 +1346,16 @@ class SnapshotTestCase(StorageObjectTestCase):
 
         context.create(name=self.snap.snapshot_name,
                        fs_name=self.fs.filesystem_name,
-                       pool_name=self.pool.pool_name)
+                       pool_id=self.pool.pool_id)
 
         expected_calls = [
             mock.call(self.fs.req_get()),
-            mock.call(self.pool.req_get()),
             mock.call(self.snap.req_create()),
         ]
         context.conn['XML'].request.assert_has_calls(expected_calls)
 
     def test_create_snapshot_but_already_exist(self):
         self.hook.append(self.fs.resp_get_succeed())
-        self.hook.append(self.pool.resp_get_succeed())
         self.hook.append(self.snap.resp_create_but_already_exist())
 
         context = self.manager.getStorageContext('Snapshot')
@@ -1365,19 +1363,17 @@ class SnapshotTestCase(StorageObjectTestCase):
 
         context.create(name=self.snap.snapshot_name,
                        fs_name=self.fs.filesystem_name,
-                       pool_name=self.pool.pool_name,
+                       pool_id=self.pool.pool_id,
                        ckpt_size=self.snap.snapshot_size)
 
         expected_calls = [
             mock.call(self.fs.req_get()),
-            mock.call(self.pool.req_get()),
             mock.call(self.snap.req_create_with_size()),
         ]
         context.conn['XML'].request.assert_has_calls(expected_calls)
 
     def test_create_snapshot_with_error(self):
         self.hook.append(self.fs.resp_get_succeed())
-        self.hook.append(self.pool.resp_get_succeed())
         self.hook.append(self.snap.resp_task_error())
 
         context = self.manager.getStorageContext('Snapshot')
@@ -1387,12 +1383,11 @@ class SnapshotTestCase(StorageObjectTestCase):
                           context.create,
                           name=self.snap.snapshot_name,
                           fs_name=self.fs.filesystem_name,
-                          pool_name=self.pool.pool_name,
+                          pool_id=self.pool.pool_id,
                           ckpt_size=self.snap.snapshot_size)
 
         expected_calls = [
             mock.call(self.fs.req_get()),
-            mock.call(self.pool.req_get()),
             mock.call(self.snap.req_create_with_size()),
         ]
         context.conn['XML'].request.assert_has_calls(expected_calls)
@@ -1526,6 +1521,7 @@ class SnapshotTestCase(StorageObjectTestCase):
         context.conn['XML'].request.assert_has_calls(expected_calls)
 
 
+@ddt.ddt
 class MoverInterfaceTestCase(StorageObjectTestCase):
     def setUp(self):
         super(self.__class__, self).setUp()
@@ -1605,6 +1601,36 @@ class MoverInterfaceTestCase(StorageObjectTestCase):
         expected_calls = [
             mock.call(self.mover.req_get_ref()),
             mock.call(self.mover.req_create_interface()),
+        ]
+        context.conn['XML'].request.assert_has_calls(expected_calls)
+
+    @ddt.data(fakes.MoverTestData().resp_task_succeed(),
+              fakes.MoverTestData().resp_task_error())
+    def test_create_mover_interface_with_conflict_vlan_id(self, xml_resp):
+        self.hook.append(self.mover.resp_get_ref_succeed())
+        self.hook.append(
+            self.mover.resp_create_interface_with_conflicted_vlan_id())
+        self.hook.append(xml_resp)
+
+        context = self.manager.getStorageContext('MoverInterface')
+        context.conn['XML'].request = utils.EMCMock(side_effect=self.hook)
+
+        interface = {
+            'name': self.mover.interface_name1,
+            'device_name': self.mover.device_name,
+            'ip': self.mover.ip_address1,
+            'mover_name': self.mover.mover_name,
+            'net_mask': self.mover.net_mask,
+            'vlan_id': self.mover.vlan_id,
+        }
+        self.assertRaises(exception.EMCVnxXMLAPIError,
+                          context.create,
+                          interface)
+
+        expected_calls = [
+            mock.call(self.mover.req_get_ref()),
+            mock.call(self.mover.req_create_interface()),
+            mock.call(self.mover.req_delete_interface()),
         ]
         context.conn['XML'].request.assert_has_calls(expected_calls)
 
@@ -2732,7 +2758,7 @@ class NFSShareTestCase(StorageObjectTestCase):
                        mover_name=self.vdm.vdm_name)
 
         ssh_calls = [
-            mock.call(self.nfs_share.cmd_get(), True),
+            mock.call(self.nfs_share.cmd_get(), False),
             mock.call(self.nfs_share.cmd_delete(), True),
         ]
         context.conn['SSH'].run_ssh.assert_has_calls(ssh_calls)
@@ -2748,7 +2774,7 @@ class NFSShareTestCase(StorageObjectTestCase):
         context.delete(name=self.nfs_share.share_name,
                        mover_name=self.vdm.vdm_name)
 
-        ssh_calls = [mock.call(self.nfs_share.cmd_get(), True)]
+        ssh_calls = [mock.call(self.nfs_share.cmd_get(), False)]
         context.conn['SSH'].run_ssh.assert_has_calls(ssh_calls)
 
     @mock.patch('time.sleep')
@@ -2768,7 +2794,7 @@ class NFSShareTestCase(StorageObjectTestCase):
                        mover_name=self.vdm.vdm_name)
 
         ssh_calls = [
-            mock.call(self.nfs_share.cmd_get(), True),
+            mock.call(self.nfs_share.cmd_get(), False),
             mock.call(self.nfs_share.cmd_delete(), True),
             mock.call(self.nfs_share.cmd_delete(), True),
         ]
@@ -2793,7 +2819,7 @@ class NFSShareTestCase(StorageObjectTestCase):
                           mover_name=self.vdm.vdm_name)
 
         ssh_calls = [
-            mock.call(self.nfs_share.cmd_get(), True),
+            mock.call(self.nfs_share.cmd_get(), False),
             mock.call(self.nfs_share.cmd_delete(), True),
         ]
         context.conn['SSH'].run_ssh.assert_has_calls(ssh_calls)
@@ -2813,13 +2839,14 @@ class NFSShareTestCase(StorageObjectTestCase):
         context.get(name=self.nfs_share.share_name,
                     mover_name=self.vdm.vdm_name)
 
-        ssh_calls = [mock.call(self.nfs_share.cmd_get(), True)]
+        ssh_calls = [mock.call(self.nfs_share.cmd_get(), False)]
         context.conn['SSH'].run_ssh.assert_has_calls(ssh_calls)
 
     def test_get_nfs_share_not_found(self):
         expt_not_found = processutils.ProcessExecutionError(
             stdout=self.nfs_share.output_get_but_not_found())
         self.ssh_hook.append(ex=expt_not_found)
+        self.ssh_hook.append(self.nfs_share.output_get_but_not_found())
 
         context = self.manager.getStorageContext('NFSShare')
         context.conn['SSH'].run_ssh = mock.Mock(side_effect=self.ssh_hook)
@@ -2827,7 +2854,13 @@ class NFSShareTestCase(StorageObjectTestCase):
         context.get(name=self.nfs_share.share_name,
                     mover_name=self.vdm.vdm_name)
 
-        ssh_calls = [mock.call(self.nfs_share.cmd_get(), True)]
+        context.get(name=self.nfs_share.share_name,
+                    mover_name=self.vdm.vdm_name)
+
+        ssh_calls = [
+            mock.call(self.nfs_share.cmd_get(), False),
+            mock.call(self.nfs_share.cmd_get(), False),
+        ]
         context.conn['SSH'].run_ssh.assert_has_calls(ssh_calls)
 
     def test_get_nfs_share_with_error(self):
@@ -2843,7 +2876,7 @@ class NFSShareTestCase(StorageObjectTestCase):
                           name=self.nfs_share.share_name,
                           mover_name=self.vdm.vdm_name)
 
-        ssh_calls = [mock.call(self.nfs_share.cmd_get(), True)]
+        ssh_calls = [mock.call(self.nfs_share.cmd_get(), False)]
         context.conn['SSH'].run_ssh.assert_has_calls(ssh_calls)
 
     def test_allow_share_access(self):
