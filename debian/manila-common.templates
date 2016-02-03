@@ -56,12 +56,6 @@ Type: password
 _Description: Authentication server password:
  Please specify the password to use with the authentication server.
 
-Template: manila/volume_group
-Type: string
-_Description: Manila volume group:
- Please specify the name of the LVM volume group on which Manila
- will create partitions.
-
 Template: manila/rabbit_host
 Type: string
 Default: localhost
