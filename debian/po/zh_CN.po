@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: manila\n"
 "Report-Msgid-Bugs-To: manila@packages.debian.org\n"
-"POT-Creation-Date: 2015-11-10 14:57+0000\n"
+"POT-Creation-Date: 2016-02-03 16:45+0800\n"
 "PO-Revision-Date: 2012-08-27 17:14+0800\n"
 "Last-Translator: ben <duyujie.dyj@gmail.com>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -163,20 +163,6 @@ msgstr ""
 #. Type: string
 #. Description
 #: ../manila-common.templates:7001
-msgid "Manila volume group:"
-msgstr ""
-
-#. Type: string
-#. Description
-#: ../manila-common.templates:7001
-msgid ""
-"Please specify the name of the LVM volume group on which Manila will create "
-"partitions."
-msgstr ""
-
-#. Type: string
-#. Description
-#: ../manila-common.templates:8001
 msgid "IP address of your RabbitMQ host:"
 msgstr ""
 
@@ -186,8 +172,8 @@ msgstr ""
 #. Description
 #. Type: password
 #. Description
-#: ../manila-common.templates:8001 ../manila-common.templates:9001
-#: ../manila-common.templates:10001
+#: ../manila-common.templates:7001 ../manila-common.templates:8001
+#: ../manila-common.templates:9001
 msgid ""
 "In order to interoperate with other components of OpenStack, this package "
 "needs to connect to a central RabbitMQ server."
@@ -195,7 +181,7 @@ msgstr ""
 
 #. Type: string
 #. Description
-#: ../manila-common.templates:8001
+#: ../manila-common.templates:7001
 #, fuzzy
 #| msgid "Please specify the flavor of pipeline to be used by Manila."
 msgid "Please specify the IP address of that server."
@@ -203,25 +189,25 @@ msgstr "请指定Manila使用的pipeline类型。"
 
 #. Type: string
 #. Description
-#: ../manila-common.templates:9001
+#: ../manila-common.templates:8001
 msgid "Username for connection to the RabbitMQ server:"
 msgstr ""
 
 #. Type: string
 #. Description
-#: ../manila-common.templates:9001
+#: ../manila-common.templates:8001
 msgid "Please specify the username used to connect to the RabbitMQ server."
 msgstr ""
 
 #. Type: password
 #. Description
-#: ../manila-common.templates:10001
+#: ../manila-common.templates:9001
 msgid "Password for connection to the RabbitMQ server:"
 msgstr ""
 
 #. Type: password
 #. Description
-#: ../manila-common.templates:10001
+#: ../manila-common.templates:9001
 msgid "Please specify the password used to connect to the RabbitMQ server."
 msgstr ""
 

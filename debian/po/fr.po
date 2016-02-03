@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: manila\n"
 "Report-Msgid-Bugs-To: manila@packages.debian.org\n"
-"POT-Creation-Date: 2015-11-10 14:57+0000\n"
+"POT-Creation-Date: 2016-02-03 16:45+0800\n"
 "PO-Revision-Date: 2015-11-28 14:49+0100\n"
 "Last-Translator: Jean-Pierre Giraud <jean-pierregiraud@neuf.fr>\n"
 "Language-Team: French <debian-l10n-french@lists.debian.org>\n"
@@ -28,16 +28,12 @@ msgstr "Installer une base de données pour Manila ?"
 #. Type: boolean
 #. Description
 #: ../manila-common.templates:2001
-#| msgid ""
-#| "No database has been set up for manila-registry or glance-api to use. "
-#| "Before continuing, you should make sure you have the following "
-#| "information:"
 msgid ""
 "No database has been set up for Manila to use. Before continuing, you should "
 "make sure you have the following information:"
 msgstr ""
-"Aucune base de données n'a été installée pour Manila. "
-"Avant de continuer, assurez-vous d'avoir :"
+"Aucune base de données n'a été installée pour Manila. Avant de continuer, "
+"assurez-vous d'avoir :"
 
 #. Type: boolean
 #. Description
@@ -68,9 +64,6 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../manila-common.templates:2001
-#| msgid ""
-#| "You can change this setting later on by running \"dpkg-reconfigure -plow "
-#| "manila-common\"."
 msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
 "manila\"."
@@ -87,17 +80,13 @@ msgstr "Nom d'hôte du serveur d'authentification."
 #. Type: string
 #. Description
 #: ../manila-common.templates:3001
-#| msgid ""
-#| "Please specify the hostname of the authentication server for Manila. "
-#| "Typically this is also the hostname of the OpenStack Identity Service "
-#| "(Keystone)."
 msgid ""
 "Please specify the hostname of the authentication server. Typically this is "
 "also the hostname of the OpenStack Identity Service (Keystone)."
 msgstr ""
 "Veuillez indiquer le nom d'hôte du serveur d'authentification. "
-"Habituellement, c'est également le nom d'hôte du Service "
-"d'Identité OpenStack (Keystone)."
+"Habituellement, c'est également le nom d'hôte du Service d'Identité "
+"OpenStack (Keystone)."
 
 #. Type: string
 #. Description
@@ -157,22 +146,6 @@ msgstr ""
 #. Type: string
 #. Description
 #: ../manila-common.templates:7001
-msgid "Manila volume group:"
-msgstr "Groupe de volumes de Manila :"
-
-#. Type: string
-#. Description
-#: ../manila-common.templates:7001
-msgid ""
-"Please specify the name of the LVM volume group on which Manila will create "
-"partitions."
-msgstr ""
-"Veuillez indiquer le nom du groupe de volumes LVM dans lequel Manila "
-"créera des partitions."
-
-#. Type: string
-#. Description
-#: ../manila-common.templates:8001
 msgid "IP address of your RabbitMQ host:"
 msgstr "Adresse IP de l'hôte RabbitMQ :"
 
@@ -182,8 +155,8 @@ msgstr "Adresse IP de l'hôte RabbitMQ :"
 #. Description
 #. Type: password
 #. Description
-#: ../manila-common.templates:8001 ../manila-common.templates:9001
-#: ../manila-common.templates:10001
+#: ../manila-common.templates:7001 ../manila-common.templates:8001
+#: ../manila-common.templates:9001
 msgid ""
 "In order to interoperate with other components of OpenStack, this package "
 "needs to connect to a central RabbitMQ server."
@@ -193,19 +166,19 @@ msgstr ""
 
 #. Type: string
 #. Description
-#: ../manila-common.templates:8001
+#: ../manila-common.templates:7001
 msgid "Please specify the IP address of that server."
 msgstr "Veuillez indiquer l'adresse IP de ce serveur."
 
 #. Type: string
 #. Description
-#: ../manila-common.templates:9001
+#: ../manila-common.templates:8001
 msgid "Username for connection to the RabbitMQ server:"
 msgstr "Nom d'utilisateur pour la connexion au serveur RabbitMQ : "
 
 #. Type: string
 #. Description
-#: ../manila-common.templates:9001
+#: ../manila-common.templates:8001
 msgid "Please specify the username used to connect to the RabbitMQ server."
 msgstr ""
 "Veuillez indiquer le nom d'utilisateur à utiliser pour se connecter au "
@@ -213,13 +186,13 @@ msgstr ""
 
 #. Type: password
 #. Description
-#: ../manila-common.templates:10001
+#: ../manila-common.templates:9001
 msgid "Password for connection to the RabbitMQ server:"
 msgstr "Mot de passe pour la connexion au serveur RabbitMQ : "
 
 #. Type: password
 #. Description
-#: ../manila-common.templates:10001
+#: ../manila-common.templates:9001
 msgid "Please specify the password used to connect to the RabbitMQ server."
 msgstr ""
 "Veuillez indiquer le mot de passe à utiliser pour se connecter au serveur "
@@ -328,6 +301,16 @@ msgstr ""
 "OpenStack gère l'utilisation de zones disponibles, avec chaque région "
 "représentant un lieu. Veuillez entrer une zone que vous souhaitez utiliser "
 "lors de l'enregistrement d'un point d'accès."
+
+#~ msgid "Manila volume group:"
+#~ msgstr "Groupe de volumes de Manila :"
+
+#~ msgid ""
+#~ "Please specify the name of the LVM volume group on which Manila will "
+#~ "create partitions."
+#~ msgstr ""
+#~ "Veuillez indiquer le nom du groupe de volumes LVM dans lequel Manila "
+#~ "créera des partitions."
 
 #~ msgid "keystone"
 #~ msgstr "keystone"
