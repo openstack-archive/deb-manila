@@ -422,6 +422,10 @@ class ShareBackendException(ManilaException):
     message = _("Share backend error: %(msg)s.")
 
 
+class ExportLocationNotFound(NotFound):
+    message = _("Export location %(uuid)s could not be found.")
+
+
 class ShareSnapshotNotFound(NotFound):
     message = _("Snapshot %(snapshot_id)s could not be found.")
 
@@ -565,6 +569,7 @@ class StorageResourceException(ManilaException):
 
 class StorageResourceNotFound(StorageResourceException):
     message = _("Storage resource %(name)s not found.")
+    code = 404
 
 
 class SnapshotNotFound(StorageResourceNotFound):
@@ -661,6 +666,14 @@ class HNASBackendException(ManilaException):
 
 class HNASConnException(ManilaException):
     message = _("HNAS Connection Exception: %(msg)s")
+
+
+class HNASItemNotFoundException(StorageResourceNotFound):
+    message = _("HNAS Item Not Found Exception: %(msg)s")
+
+
+class HNASNothingToCloneException(ManilaException):
+    message = _("HNAS Nothing To Clone Exception: %(msg)s")
 
 
 # ConsistencyGroup

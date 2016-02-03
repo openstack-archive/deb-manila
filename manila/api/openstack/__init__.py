@@ -24,7 +24,6 @@ import routes
 from manila.api.openstack import wsgi
 from manila.i18n import _
 from manila.i18n import _LW
-from manila import utils
 from manila import wsgi as base_wsgi
 
 LOG = log.getLogger(__name__)
@@ -55,15 +54,12 @@ class ProjectMapper(APIMapper):
 
 
 class APIRouter(base_wsgi.Router):
-    """
-    Routes requests on the OpenStack API to the appropriate controller
-    and method.
-    """
+    """Routes requests on the API to the appropriate controller and method."""
     ExtensionManager = None  # override in subclasses
 
     @classmethod
     def factory(cls, global_config, **local_config):
-        """Simple paste factory, :class:`manila.wsgi.Router` doesn't have"""
+        """Simple paste factory, :class:`manila.wsgi.Router` doesn't have."""
         return cls()
 
     def __init__(self, ext_mgr=None):
@@ -126,8 +122,9 @@ class APIRouter(base_wsgi.Router):
 
 class FaultWrapper(base_wsgi.Middleware):
     def __init__(self, application):
-        LOG.warn(_LW('manila.api.openstack:FaultWrapper is deprecated. Please '
-                     'use manila.api.middleware.fault:FaultWrapper instead.'))
+        LOG.warning(_LW('manila.api.openstack:FaultWrapper is deprecated. '
+                        'Please use '
+                        'manila.api.middleware.fault:FaultWrapper instead.'))
         # Avoid circular imports from here.
         from manila.api.middleware import fault
         super(FaultWrapper, self).__init__(fault.FaultWrapper(application))

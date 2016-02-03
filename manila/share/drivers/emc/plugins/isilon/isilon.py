@@ -20,6 +20,7 @@ import os
 
 from oslo_config import cfg
 from oslo_log import log
+from oslo_utils import units
 import six
 
 from manila import exception
@@ -69,6 +70,12 @@ class IsilonStorageConnection(base.StorageConnection):
                        {'proto': share['share_proto']})
             LOG.error(message)
             raise exception.InvalidShare(message=message)
+
+        # apply directory quota based on share size
+        max_share_size = share['size'] * units.Gi
+        self._isilon_api.quota_create(
+            self._get_container_path(share), 'directory', max_share_size)
+
         return location
 
     def create_share_from_snapshot(self, context, share, snapshot,
@@ -134,7 +141,7 @@ class IsilonStorageConnection(base.StorageConnection):
         if share_id is None:
             lw = _LW('Attempted to delete NFS Share "%s", but the share does '
                      'not appear to exist.')
-            LOG.warn(lw, share['name'])
+            LOG.warning(lw, share['name'])
         else:
             # attempt to delete the share
             export_deleted = self._isilon_api.delete_nfs_share(share_id)
@@ -149,7 +156,7 @@ class IsilonStorageConnection(base.StorageConnection):
         if smb_share is None:
             lw = _LW('Attempted to delete CIFS Share "%s", but the share does '
                      'not appear to exist.')
-            LOG.warn(lw, share['name'])
+            LOG.warning(lw, share['name'])
         else:
             share_deleted = self._isilon_api.delete_smb_share(share['name'])
             if not share_deleted:
@@ -163,6 +170,12 @@ class IsilonStorageConnection(base.StorageConnection):
 
     def ensure_share(self, context, share, share_server):
         """Invoked to ensure that share is exported."""
+
+    def extend_share(self, share, new_size, share_server=None):
+        """Extends a share."""
+        new_quota_size = new_size * units.Gi
+        self._isilon_api.quota_set(
+            self._get_container_path(share), 'directory', new_quota_size)
 
     def allow_access(self, context, share, access, share_server):
         """Allow access to the share."""
@@ -278,6 +291,9 @@ class IsilonStorageConnection(base.StorageConnection):
                    .format(self._server_url, share['name']))
             resp = self._isilon_api.request('PUT', url, data=share_params)
             resp.raise_for_status()
+
+    def check_for_setup_error(self):
+        """Check for setup error."""
 
     def connect(self, emc_share_driver, context):
         """Connect to an Isilon cluster."""

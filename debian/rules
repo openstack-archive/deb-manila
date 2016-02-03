@@ -21,6 +21,7 @@ override_dh_auto_install:
 	PYTHONPATH=. oslo-config-generator \
 		--namespace manila \
 		--namespace oslo.messaging \
+		--namespace oslo.middleware.cors \
 		--namespace oslo.db \
 		--namespace oslo.db.concurrency \
 		--namespace keystonemiddleware.auth_token \

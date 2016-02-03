@@ -15,7 +15,6 @@
 
 import copy
 import inspect
-import random
 import traceback
 
 from oslo_concurrency import lockutils
@@ -27,25 +26,13 @@ from tempest import config
 from tempest import test
 from tempest_lib.common.utils import data_utils
 from tempest_lib import exceptions
-import testtools
 
 from manila_tempest_tests import clients_share as clients
 from manila_tempest_tests import share_exceptions
+from manila_tempest_tests import utils
 
 CONF = config.CONF
 LOG = log.getLogger(__name__)
-
-
-def rand_ip():
-    """This uses the TEST-NET-3 range of reserved IP addresses.
-
-    Using this range, which are reserved solely for use in
-    documentation and example source code, should avoid any potential
-    conflicts in real-world testing.
-    """
-    TEST_NET_3 = '203.0.113.'
-    final_octet = six.text_type(random.randint(0, 255))
-    return TEST_NET_3 + final_octet
 
 
 class handle_cleanup_exceptions(object):
@@ -91,19 +78,7 @@ def network_synchronized(f):
     return wrapped_func
 
 
-def is_microversion_supported(microversion):
-    if (float(microversion) > float(CONF.share.max_api_microversion) or
-            float(microversion) < float(CONF.share.min_api_microversion)):
-        return False
-    return True
-
-
-def skip_if_microversion_not_supported(microversion):
-    """Decorator for tests that are microversion-specific."""
-    if not is_microversion_supported(microversion):
-        reason = ("Skipped. Test requires microversion '%s'." % microversion)
-        return testtools.skip(reason)
-    return lambda f: f
+skip_if_microversion_not_supported = utils.skip_if_microversion_not_supported
 
 
 class BaseSharesTest(test.BaseTestCase):
@@ -125,7 +100,7 @@ class BaseSharesTest(test.BaseTestCase):
     method_isolated_creds = []
 
     def skip_if_microversion_not_supported(self, microversion):
-        if not is_microversion_supported(microversion):
+        if not utils.is_microversion_supported(microversion):
             raise self.skipException(
                 "Microversion '%s' is not supported." % microversion)
 
@@ -233,8 +208,8 @@ class BaseSharesTest(test.BaseTestCase):
 
     def setUp(self):
         super(BaseSharesTest, self).setUp()
-        self.addCleanup(self.clear_resources)
         self.addCleanup(self.clear_isolated_creds)
+        self.addCleanup(self.clear_resources)
 
     @classmethod
     def resource_cleanup(cls):
@@ -363,7 +338,8 @@ class BaseSharesTest(test.BaseTestCase):
     def migrate_share(cls, share_id, dest_host, client=None, **kwargs):
         client = client or cls.shares_v2_client
         client.migrate_share(share_id, dest_host, **kwargs)
-        share = client.wait_for_migration_completed(share_id, dest_host)
+        share = client.wait_for_migration_completed(
+            share_id, dest_host, version=kwargs.get('version'))
         return share
 
     @classmethod
@@ -638,8 +614,8 @@ class BaseSharesTest(test.BaseTestCase):
                         client.delete_cgsnapshot(res_id)
                         client.wait_for_resource_deletion(cgsnapshot_id=res_id)
                     else:
-                        LOG.warn("Provided unsupported resource type for "
-                                 "cleanup '%s'. Skipping." % res["type"])
+                        LOG.warning("Provided unsupported resource type for "
+                                    "cleanup '%s'. Skipping." % res["type"])
                 res["deleted"] = True
 
     @classmethod
@@ -657,8 +633,8 @@ class BaseSharesTest(test.BaseTestCase):
         data = {
             "name": data_utils.rand_name("ss-name"),
             "description": data_utils.rand_name("ss-desc"),
-            "dns_ip": rand_ip(),
-            "server": rand_ip(),
+            "dns_ip": utils.rand_ip(),
+            "server": utils.rand_ip(),
             "domain": data_utils.rand_name("ss-domain"),
             "user": data_utils.rand_name("ss-user"),
             "password": data_utils.rand_name("ss-password"),

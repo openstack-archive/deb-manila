@@ -23,33 +23,51 @@ sudo chmod -R o+rx $BASE/new/devstack/files
 # Import devstack functions 'iniset', 'iniget' and 'trueorfalse'
 source $BASE/new/devstack/functions
 
-if [[ "$1" =~ "multibackend" ]]; then
-    # if arg $1 has "multibackend", then we assume multibackend installation
-    iniset $BASE/new/tempest/etc/tempest.conf share multi_backend True
+export TEMPEST_CONFIG=$BASE/new/tempest/etc/tempest.conf
 
-    iniset $BASE/new/tempest/etc/tempest.conf share run_migration_tests $(trueorfalse True RUN_MANILA_MIGRATION_TESTS)
+# === Handle script arguments ===
+
+# First argument is expected to contain value equal either to 'singlebackend'
+# or 'multibackend' that defines how many back-ends are used.
+BACK_END_TYPE=$1
+
+# Second argument is expected to have codename of a share driver.
+DRIVER=$2
+
+# Third argument is expected to contain either 'api' or 'scenario' values
+# that define test suites to be run.
+TEST_TYPE=$3
+
+# Fourth argument is expected to be boolean-like and it should be 'true'
+# when PostgreSQL DB back-end is used and 'false' when MySQL.
+POSTGRES_ENABLED=$4
+POSTGRES_ENABLED=$(trueorfalse True POSTGRES_ENABLED)
+
+if [[ "$BACK_END_TYPE" == "multibackend" ]]; then
+    iniset $TEMPEST_CONFIG share multi_backend True
+    iniset $TEMPEST_CONFIG share run_migration_tests $(trueorfalse True RUN_MANILA_MIGRATION_TESTS)
 
     # Set share backends names, they are defined within pre_test_hook
     export BACKENDS_NAMES="LONDON,PARIS"
 else
     export BACKENDS_NAMES="LONDON"
 fi
-iniset $BASE/new/tempest/etc/tempest.conf share backend_names $BACKENDS_NAMES
+iniset $TEMPEST_CONFIG share backend_names $BACKENDS_NAMES
 
 # Set two retries for CI jobs
-iniset $BASE/new/tempest/etc/tempest.conf share share_creation_retry_number 2
+iniset $TEMPEST_CONFIG share share_creation_retry_number 2
 
 # Suppress errors in cleanup of resources
 SUPPRESS_ERRORS=${SUPPRESS_ERRORS_IN_CLEANUP:-True}
-iniset $BASE/new/tempest/etc/tempest.conf share suppress_errors_in_cleanup $SUPPRESS_ERRORS
+iniset $TEMPEST_CONFIG share suppress_errors_in_cleanup $SUPPRESS_ERRORS
 
 # Enable consistency group tests
 RUN_MANILA_CG_TESTS=${RUN_MANILA_CG_TESTS:-True}
-iniset $BASE/new/tempest/etc/tempest.conf share run_consistency_group_tests $RUN_MANILA_CG_TESTS
+iniset $TEMPEST_CONFIG share run_consistency_group_tests $RUN_MANILA_CG_TESTS
 
 # Enable manage/unmanage tests
 RUN_MANILA_MANAGE_TESTS=${RUN_MANILA_MANAGE_TESTS:-True}
-iniset $BASE/new/tempest/etc/tempest.conf share run_manage_unmanage_tests $RUN_MANILA_MANAGE_TESTS
+iniset $TEMPEST_CONFIG share run_manage_unmanage_tests $RUN_MANILA_MANAGE_TESTS
 
 MANILA_CONF=${MANILA_CONF:-/etc/manila/manila.conf}
 
@@ -80,33 +98,47 @@ if [[ -z "$MULTITENANCY_ENABLED" ]]; then
         echo 'Allowed only same driver modes for all backends to be run with Tempest job.'
         exit 1
     elif [[ $NO_SHARE_SERVER_HANDLING_MODES -ge 1 ]]; then
-        iniset $BASE/new/tempest/etc/tempest.conf share multitenancy_enabled False
+        MULTITENANCY_ENABLED='False'
     elif [[ $WITH_SHARE_SERVER_HANDLING_MODES -ge 1 ]]; then
-        iniset $BASE/new/tempest/etc/tempest.conf share multitenancy_enabled True
+        MULTITENANCY_ENABLED='True'
     else
         echo 'Should never get here unless an error occurred.'
         exit 1
     fi
 else
-    iniset $BASE/new/tempest/etc/tempest.conf share multitenancy_enabled $MULTITENANCY_ENABLED
+    MULTITENANCY_ENABLED=$(trueorfalse True MULTITENANCY_ENABLED)
+fi
+
+# Set multitenancy configuration for Tempest
+iniset $TEMPEST_CONFIG share multitenancy_enabled $MULTITENANCY_ENABLED
+if [[ "$MULTITENANCY_ENABLED" == "False"  ]]; then
+    # Using approach without handling of share servers we have bigger load for
+    # volume creation in Cinder using Generic driver. So, reduce amount of
+    # threads to avoid errors for Cinder volume creations that appear
+    # because of lack of free space.
+    MANILA_TEMPEST_CONCURRENCY=8
 fi
 
 # let us control if we die or not
 set +o errexit
 cd $BASE/new/tempest
 
-export MANILA_TEMPEST_CONCURRENCY=${MANILA_TEMPEST_CONCURRENCY:-12}
+export MANILA_TEMPEST_CONCURRENCY=${MANILA_TEMPEST_CONCURRENCY:-20}
 export MANILA_TESTS=${MANILA_TESTS:-'manila_tempest_tests.tests.api'}
 
-if [[ "$JOB_NAME" =~ "scenario" ]]; then
+if [[ "$TEST_TYPE" == "scenario" ]]; then
     echo "Set test set to scenario only"
     MANILA_TESTS='manila_tempest_tests.tests.scenario'
-elif [[ "$JOB_NAME" =~ "no-share-servers"  ]]; then
-    # Using approach without handling of share servers we have bigger load for
-    # volume creation in Cinder using Generic driver. So, reduce amount of
-    # threads to avoid errors for Cinder volume creations that appear
-    # because of lack of free space.
-    MANILA_TEMPEST_CONCURRENCY=8
+elif [[ "$DRIVER" == "generic" ]]; then
+    if [[ "$POSTGRES_ENABLED" == "True" ]]; then
+        # Run only CIFS tests on PostgreSQL DB backend
+        # to reduce amount of tests per job using 'generic' share driver.
+        iniset $TEMPEST_CONFIG share enable_protocols cifs
+    else
+        # Run only NFS tests on MySQL DB backend to reduce amount of tests
+        # per job using 'generic' share driver.
+        iniset $TEMPEST_CONFIG share enable_protocols nfs
+    fi
 fi
 
 # Also, we should wait until service VM is available
@@ -116,6 +148,27 @@ manila_wait_for_drivers_init $MANILA_CONF
 
 # check if tempest plugin was installed correctly
 echo 'import pkg_resources; print list(pkg_resources.iter_entry_points("tempest.test_plugins"))' | python
+
+# Workaround for Tempest architectural changes
+# See bugs:
+# 1) https://bugs.launchpad.net/manila/+bug/1531049
+# 2) https://bugs.launchpad.net/tempest/+bug/1524717
+TEMPEST_CONFIG=$BASE/new/tempest/etc/tempest.conf
+ADMIN_TENANT_NAME=${ADMIN_TENANT_NAME:-"admin"}
+ADMIN_PASSWORD=${ADMIN_PASSWORD:-"secretadmin"}
+iniset $TEMPEST_CONFIG auth admin_username ${ADMIN_USERNAME:-"admin"}
+iniset $TEMPEST_CONFIG auth admin_password $ADMIN_PASSWORD
+iniset $TEMPEST_CONFIG auth admin_tenant_name $ADMIN_TENANT_NAME
+iniset $TEMPEST_CONFIG auth admin_domain_name ${ADMIN_DOMAIN_NAME:-"Default"}
+iniset $TEMPEST_CONFIG identity username ${TEMPEST_USERNAME:-"demo"}
+iniset $TEMPEST_CONFIG identity password $ADMIN_PASSWORD
+iniset $TEMPEST_CONFIG identity tenant_name ${TEMPEST_TENANT_NAME:-"demo"}
+iniset $TEMPEST_CONFIG identity alt_username ${ALT_USERNAME:-"alt_demo"}
+iniset $TEMPEST_CONFIG identity alt_password $ADMIN_PASSWORD
+iniset $TEMPEST_CONFIG identity alt_tenant_name ${ALT_TENANT_NAME:-"alt_demo"}
+iniset $TEMPEST_CONFIG validation ip_version_for_ssh 4
+iniset $TEMPEST_CONFIG validation ssh_timeout $BUILD_TIMEOUT
+iniset $TEMPEST_CONFIG validation network_for_ssh ${PRIVATE_NETWORK_NAME:-"private"}
 
 echo "Running tempest manila test suites"
 sudo -H -u jenkins tox -eall-plugin $MANILA_TESTS -- --concurrency=$MANILA_TEMPEST_CONCURRENCY

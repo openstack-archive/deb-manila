@@ -191,6 +191,21 @@ SHARE_TYPE = {
     'extra_specs': EXTRA_SPEC
 }
 
+OVERLAPPING_EXTRA_SPEC = {
+    'compression': '<is> True',
+    'netapp:compression': 'true',
+    'dedupe': '<is> True',
+    'netapp:dedup': 'false',
+    'thin_provisioning': '<is> False',
+    'netapp:thin_provisioned': 'true',
+}
+
+REMAPPED_OVERLAPPING_EXTRA_SPEC = {
+    'netapp:compression': 'true',
+    'netapp:dedup': 'true',
+    'netapp:thin_provisioned': 'false',
+}
+
 EXTRA_SPEC_SHARE = copy.deepcopy(SHARE)
 EXTRA_SPEC_SHARE['share_type_id'] = SHARE_TYPE_ID
 
@@ -422,8 +437,11 @@ POOLS = [
      'total_capacity_gb': 3.3,
      'free_capacity_gb': 1.1,
      'allocated_capacity_gb': 2.2,
-     'QoS_support': 'False',
+     'qos': 'False',
      'reserved_percentage': 0,
+     'dedupe': [True, False],
+     'compression': [True, False],
+     'thin_provisioning': [True, False],
      'netapp_raid_type': 'raid4',
      'netapp_disk_type': 'FCAL'
      },
@@ -431,8 +449,11 @@ POOLS = [
      'total_capacity_gb': 6.0,
      'free_capacity_gb': 2.0,
      'allocated_capacity_gb': 4.0,
-     'QoS_support': 'False',
+     'qos': 'False',
      'reserved_percentage': 0,
+     'dedupe': [True, False],
+     'compression': [True, False],
+     'thin_provisioning': [True, False],
      'netapp_raid_type': 'raid_dp',
      'netapp_disk_type': 'SSD'
      },
@@ -443,8 +464,11 @@ POOLS_VSERVER_CREDS = [
      'total_capacity_gb': 'unknown',
      'free_capacity_gb': 1.1,
      'allocated_capacity_gb': 0.0,
-     'QoS_support': 'False',
+     'qos': 'False',
      'reserved_percentage': 0,
+     'dedupe': [True, False],
+     'compression': [True, False],
+     'thin_provisioning': [True, False],
      'netapp_raid_type': 'raid4',
      'netapp_disk_type': 'FCAL'
      },
@@ -452,8 +476,11 @@ POOLS_VSERVER_CREDS = [
      'total_capacity_gb': 'unknown',
      'free_capacity_gb': 2.0,
      'allocated_capacity_gb': 0.0,
-     'QoS_support': 'False',
+     'qos': 'False',
      'reserved_percentage': 0,
+     'dedupe': [True, False],
+     'compression': [True, False],
+     'thin_provisioning': [True, False],
      'netapp_raid_type': 'raid_dp',
      'netapp_disk_type': 'SSD'
      },
@@ -484,4 +511,5 @@ def get_config_cmode():
     config.netapp_root_volume_aggregate = ROOT_VOLUME_AGGREGATE
     config.netapp_root_volume = ROOT_VOLUME
     config.netapp_lif_name_template = LIF_NAME_TEMPLATE
+    config.netapp_volume_snapshot_reserve_percent = 8
     return config

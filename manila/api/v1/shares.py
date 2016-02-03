@@ -197,9 +197,9 @@ class ShareMixin(object):
             'is_public',
         )
 
-        update_dict = dict([(key, share_data[key])
-                            for key in valid_update_keys
-                            if key in share_data])
+        update_dict = {key: share_data[key]
+                       for key in valid_update_keys
+                       if key in share_data}
 
         try:
             share = self.share_api.get(context, id)
@@ -462,7 +462,8 @@ class ShareMixin(object):
             raise webob.exc.HTTPNotFound(explanation=six.text_type(e))
 
         try:
-            size = int(body.get(action, action.split('os-')[-1])['new_size'])
+            size = int(body.get(action,
+                                body.get(action.split('os-')[-1]))['new_size'])
         except (KeyError, ValueError, TypeError):
             msg = _("New share size must be specified as an integer.")
             raise webob.exc.HTTPBadRequest(explanation=msg)

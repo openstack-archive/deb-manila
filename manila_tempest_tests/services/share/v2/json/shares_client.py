@@ -15,14 +15,15 @@
 
 import json
 import time
-import urllib
 
+from six.moves.urllib import parse as urlparse
+from tempest import config
 from tempest_lib.common.utils import data_utils
 from tempest_lib import exceptions
 
-from manila_tempest_tests.services.share.json import shares_client  # noqa
+from manila_tempest_tests.services.share.json import shares_client
 from manila_tempest_tests import share_exceptions
-from tempest import config  # noqa
+from manila_tempest_tests import utils
 
 CONF = config.CONF
 LATEST_MICROVERSION = CONF.share.max_api_microversion
@@ -105,7 +106,7 @@ class SharesV2Client(shares_client.SharesClient):
             cgsnapshots.
         """
         if action_name is None:
-            if float(version) > 2.6:
+            if utils.is_microversion_gt(version, "2.6"):
                 action_name = 'reset_status'
             else:
                 action_name = 'os-reset_status'
@@ -124,7 +125,7 @@ class SharesV2Client(shares_client.SharesClient):
         s_type: shares, snapshots
         """
         if action_name is None:
-            if float(version) > 2.6:
+            if utils.is_microversion_gt(version, "2.6"):
                 action_name = 'force_delete'
             else:
                 action_name = 'os-force_delete'
@@ -222,7 +223,7 @@ class SharesV2Client(shares_client.SharesClient):
                     version=LATEST_MICROVERSION):
         """Get list of shares w/o filters."""
         uri = 'shares/detail' if detailed else 'shares'
-        uri += '?%s' % urllib.urlencode(params) if params else ''
+        uri += '?%s' % urlparse.urlencode(params) if params else ''
         resp, body = self.get(uri, version=version)
         self.expected_success(200, resp.status)
         return self._parse_resp(body)
@@ -237,10 +238,27 @@ class SharesV2Client(shares_client.SharesClient):
         self.expected_success(200, resp.status)
         return self._parse_resp(body)
 
+    def get_share_export_location(
+            self, share_id, export_location_uuid, version=LATEST_MICROVERSION):
+        resp, body = self.get(
+            "shares/%(share_id)s/export_locations/%(el_uuid)s" % {
+                "share_id": share_id, "el_uuid": export_location_uuid},
+            version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def list_share_export_locations(
+            self, share_id, version=LATEST_MICROVERSION):
+        resp, body = self.get(
+            "shares/%(share_id)s/export_locations" % {"share_id": share_id},
+            version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
     def delete_share(self, share_id, params=None,
                      version=LATEST_MICROVERSION):
         uri = "shares/%s" % share_id
-        uri += '?%s' % (urllib.urlencode(params) if params else '')
+        uri += '?%s' % (urlparse.urlencode(params) if params else '')
         resp, body = self.delete(uri, version=version)
         self.expected_success(202, resp.status)
         return body
@@ -261,6 +279,24 @@ class SharesV2Client(shares_client.SharesClient):
     def get_share_instance(self, instance_id, version=LATEST_MICROVERSION):
         resp, body = self.get("share_instances/%s" % instance_id,
                               version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def get_share_instance_export_location(
+            self, instance_id, export_location_uuid,
+            version=LATEST_MICROVERSION):
+        resp, body = self.get(
+            "share_instances/%(instance_id)s/export_locations/%(el_uuid)s" % {
+                "instance_id": instance_id, "el_uuid": export_location_uuid},
+            version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def list_share_instance_export_locations(
+            self, instance_id, version=LATEST_MICROVERSION):
+        resp, body = self.get(
+            "share_instances/%s/export_locations" % instance_id,
+            version=version)
         self.expected_success(200, resp.status)
         return self._parse_resp(body)
 
@@ -292,7 +328,10 @@ class SharesV2Client(shares_client.SharesClient):
     def extend_share(self, share_id, new_size, version=LATEST_MICROVERSION,
                      action_name=None):
         if action_name is None:
-            action_name = 'extend' if float(version) > 2.6 else 'os-extend'
+            if utils.is_microversion_gt(version, "2.6"):
+                action_name = 'extend'
+            else:
+                action_name = 'os-extend'
         post_body = {
             action_name: {
                 "new_size": new_size,
@@ -307,7 +346,10 @@ class SharesV2Client(shares_client.SharesClient):
     def shrink_share(self, share_id, new_size, version=LATEST_MICROVERSION,
                      action_name=None):
         if action_name is None:
-            action_name = 'shrink' if float(version) > 2.6 else 'os-shrnk'
+            if utils.is_microversion_gt(version, "2.6"):
+                action_name = 'shrink'
+            else:
+                action_name = 'os-shrink'
         post_body = {
             action_name: {
                 "new_size": new_size,
@@ -323,7 +365,8 @@ class SharesV2Client(shares_client.SharesClient):
 
     def manage_share(self, service_host, protocol, export_path,
                      share_type_id, name=None, description=None,
-                     version=LATEST_MICROVERSION, url=None):
+                     is_public=False, version=LATEST_MICROVERSION,
+                     url=None):
         post_body = {
             "share": {
                 "export_path": export_path,
@@ -332,10 +375,11 @@ class SharesV2Client(shares_client.SharesClient):
                 "share_type": share_type_id,
                 "name": name,
                 "description": description,
+                "is_public": is_public,
             }
         }
         if url is None:
-            if float(version) > 2.6:
+            if utils.is_microversion_gt(version, "2.6"):
                 url = 'shares/manage'
             else:
                 url = 'os-share-manage'
@@ -347,10 +391,16 @@ class SharesV2Client(shares_client.SharesClient):
     def unmanage_share(self, share_id, version=LATEST_MICROVERSION, url=None,
                        action_name=None, body=None):
         if url is None:
-            url = 'shares' if float(version) > 2.6 else 'os-share-unmanage'
+            if utils.is_microversion_gt(version, "2.6"):
+                url = 'shares'
+            else:
+                url = 'os-share-unmanage'
         if action_name is None:
-            action_name = 'action' if float(version) > 2.6 else 'unmanage'
-        if body is None and float(version) > 2.6:
+            if utils.is_microversion_gt(version, "2.6"):
+                action_name = 'action'
+            else:
+                action_name = 'unmanage'
+        if body is None and utils.is_microversion_gt(version, "2.6"):
             body = json.dumps({'unmanage': {}})
         resp, body = self.post(
             "%(url)s/%(share_id)s/%(action_name)s" % {
@@ -362,16 +412,16 @@ class SharesV2Client(shares_client.SharesClient):
 
 ###############
 
-    def _get_access_action_name(self, version):
-        if float(version) > 2.6:
-            return 'allow_access'
-        return 'os-allow_access'
+    def _get_access_action_name(self, version, action):
+        if utils.is_microversion_gt(version, "2.6"):
+            return action.split('os-')[-1]
+        return action
 
     def create_access_rule(self, share_id, access_type="ip",
                            access_to="0.0.0.0", access_level=None,
                            version=LATEST_MICROVERSION, action_name=None):
         post_body = {
-            self._get_access_action_name(version): {
+            self._get_access_action_name(version, 'os-allow_access'): {
                 "access_type": access_type,
                 "access_to": access_to,
                 "access_level": access_level,
@@ -385,7 +435,7 @@ class SharesV2Client(shares_client.SharesClient):
 
     def list_access_rules(self, share_id, version=LATEST_MICROVERSION,
                           action_name=None):
-        body = {self._get_access_action_name(version): None}
+        body = {self._get_access_action_name(version, 'os-access_list'): None}
         resp, body = self.post(
             "shares/%s/action" % share_id, json.dumps(body), version=version)
         self.expected_success(200, resp.status)
@@ -394,7 +444,7 @@ class SharesV2Client(shares_client.SharesClient):
     def delete_access_rule(self, share_id, rule_id,
                            version=LATEST_MICROVERSION, action_name=None):
         post_body = {
-            self._get_access_action_name(version): {
+            self._get_access_action_name(version, 'os-deny_access'): {
                 "access_id": rule_id,
             }
         }
@@ -410,7 +460,7 @@ class SharesV2Client(shares_client.SharesClient):
                                 version=LATEST_MICROVERSION):
         """Get list of availability zones."""
         if url is None:
-            if float(version) > 2.6:
+            if utils.is_microversion_gt(version, "2.6"):
                 url = 'availability-zones'
             else:
                 url = 'os-availability-zone'
@@ -424,9 +474,12 @@ class SharesV2Client(shares_client.SharesClient):
                       version=LATEST_MICROVERSION):
         """List services."""
         if url is None:
-            url = 'services' if float(version) > 2.6 else 'os-services'
+            if utils.is_microversion_gt(version, "2.6"):
+                url = 'services'
+            else:
+                url = 'os-services'
         if params:
-            url += '?%s' % urllib.urlencode(params)
+            url += '?%s' % urlparse.urlencode(params)
         resp, body = self.get(url, version=version)
         self.expected_success(200, resp.status)
         return self._parse_resp(body)
@@ -436,14 +489,14 @@ class SharesV2Client(shares_client.SharesClient):
     def list_share_types(self, params=None, version=LATEST_MICROVERSION):
         uri = 'types'
         if params is not None:
-            uri += '?%s' % urllib.urlencode(params)
+            uri += '?%s' % urlparse.urlencode(params)
         resp, body = self.get(uri, version=version)
         self.expected_success(200, resp.status)
         return self._parse_resp(body)
 
     def create_share_type(self, name, is_public=True,
                           version=LATEST_MICROVERSION, **kwargs):
-        if float(version) > 2.6:
+        if utils.is_microversion_gt(version, "2.6"):
             is_public_keyname = 'share_type_access:is_public'
         else:
             is_public_keyname = 'os-share-type-access:is_public'
@@ -471,7 +524,7 @@ class SharesV2Client(shares_client.SharesClient):
                                   version=LATEST_MICROVERSION,
                                   action_name=None):
         if action_name is None:
-            if float(version) > 2.6:
+            if utils.is_microversion_gt(version, "2.6"):
                 action_name = 'share_type_access'
             else:
                 action_name = 'os-share-type-access'
@@ -485,7 +538,7 @@ class SharesV2Client(shares_client.SharesClient):
 ###############
 
     def _get_quotas_url(self, version):
-        if float(version) > 2.6:
+        if utils.is_microversion_gt(version, "2.6"):
             return 'quota-sets'
         return 'os-quota-sets'
 
@@ -586,7 +639,7 @@ class SharesV2Client(shares_client.SharesClient):
                                 version=LATEST_MICROVERSION):
         """Get list of consistency groups w/o filters."""
         uri = 'consistency-groups%s' % ('/detail' if detailed else '')
-        uri += '?%s' % (urllib.urlencode(params) if params else '')
+        uri += '?%s' % (urlparse.urlencode(params) if params else '')
         resp, body = self.get(uri, headers=EXPERIMENTAL, extra_headers=True,
                               version=version)
         self.expected_success(200, resp.status)
@@ -682,7 +735,7 @@ class SharesV2Client(shares_client.SharesClient):
                          version=LATEST_MICROVERSION):
         """Get list of cgsnapshots w/o filters."""
         uri = 'cgsnapshots/detail' if detailed else 'cgsnapshots'
-        uri += '?%s' % (urllib.urlencode(params) if params else '')
+        uri += '?%s' % (urlparse.urlencode(params) if params else '')
         resp, body = self.get(uri, headers=EXPERIMENTAL, extra_headers=True,
                               version=version)
         self.expected_success(200, resp.status)
@@ -756,7 +809,7 @@ class SharesV2Client(shares_client.SharesClient):
     def migrate_share(self, share_id, host, version=LATEST_MICROVERSION,
                       action_name=None):
         if action_name is None:
-            if float(version) > 2.6:
+            if utils.is_microversion_gt(version, "2.6"):
                 action_name = 'migrate_share'
             else:
                 action_name = 'os-migrate_share'

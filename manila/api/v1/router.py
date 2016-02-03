@@ -19,14 +19,11 @@
 WSGI middleware for OpenStack Share API v1.
 """
 
-from oslo_log import log
-
 from manila.api import extensions
 import manila.api.openstack
 from manila.api.v1 import limits
 from manila.api.v1 import scheduler_stats
 from manila.api.v1 import security_service
-from manila.api.v1 import share_instances
 from manila.api.v1 import share_manage
 from manila.api.v1 import share_metadata
 from manila.api.v1 import share_networks
@@ -41,8 +38,6 @@ from manila.api.v2 import quota_sets
 from manila.api.v2 import services
 from manila.api.v2 import share_types
 from manila.api import versions
-
-LOG = log.getLogger(__name__)
 
 
 class APIRouter(manila.api.openstack.APIRouter):
@@ -100,18 +95,6 @@ class APIRouter(manila.api.openstack.APIRouter):
                         controller=self.resources['shares'],
                         collection={'detail': 'GET'},
                         member={'action': 'POST'})
-
-        self.resources['share_instances'] = share_instances.create_resource()
-        mapper.resource("share_instance", "share_instances",
-                        controller=self.resources['share_instances'],
-                        collection={'detail': 'GET'},
-                        member={'action': 'POST'})
-
-        mapper.connect("share_instance",
-                       "/{project_id}/shares/{share_id}/instances",
-                       controller=self.resources['share_instances'],
-                       action='get_share_instances',
-                       conditions={"method": ['GET']})
 
         self.resources['snapshots'] = share_snapshots.create_resource()
         mapper.resource("snapshot", "snapshots",

@@ -147,10 +147,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _ssh_exec(self, server, command):
         connection = self.ssh_connections.get(server['instance_id'])
+        ssh_conn_timeout = self.configuration.ssh_conn_timeout
         if not connection:
             ssh_pool = utils.SSHPool(server['ip'],
                                      22,
-                                     None,
+                                     ssh_conn_timeout,
                                      server['username'],
                                      server.get('password'),
                                      server.get('pk_path'),
@@ -241,7 +242,15 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         location = helper.create_export(
             server_details,
             share['name'])
-        return location
+        return {
+            "path": location,
+            "is_admin_only": False,
+            "metadata": {
+                # TODO(vponomaryov): remove this fake metadata when proper
+                # appears.
+                "export_location_metadata_example": "example",
+            },
+        }
 
     def _format_device(self, server_details, volume):
         """Formats device attached to the service vm."""

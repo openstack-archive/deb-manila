@@ -29,6 +29,7 @@ from manila.share.drivers.emc import plugin_manager as manager
 
 LOG = log.getLogger(__name__)
 
+
 EMC_NAS_OPTS = [
     cfg.StrOpt('emc_nas_login',
                help='User name for the EMC server.'),
@@ -47,8 +48,10 @@ EMC_NAS_OPTS = [
     cfg.StrOpt('emc_nas_server_container',
                default='server_2',
                help='Container of share servers.'),
-    cfg.StrOpt('emc_nas_pool_name',
-               help='EMC pool name.'),
+    cfg.StrOpt('emc_nas_pool_names',
+               deprecated_name='emc_nas_pool_name',
+               default=None,
+               help='EMC pool names.'),
     cfg.StrOpt('emc_nas_root_dir',
                help='The root directory where shares will be located.'),
 ]
@@ -88,6 +91,10 @@ class EMCShareDriver(driver.ShareDriver):
 
         return location
 
+    def extend_share(self, share, new_size, share_server=None):
+        """Is called to extend share."""
+        self.plugin.extend_share(share, new_size, share_server)
+
     def create_snapshot(self, context, snapshot, share_server=None):
         """Is called to create snapshot."""
         self.plugin.create_snapshot(context, snapshot, share_server)
@@ -114,7 +121,7 @@ class EMCShareDriver(driver.ShareDriver):
 
     def check_for_setup_error(self):
         """Check for setup error."""
-        pass
+        self.plugin.check_for_setup_error()
 
     def do_setup(self, context):
         """Any initialization the share driver does while starting."""

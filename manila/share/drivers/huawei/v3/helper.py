@@ -14,6 +14,7 @@
 #    under the License.
 
 import base64
+import time
 from xml.etree import ElementTree as ET
 
 from oslo_log import log
@@ -25,6 +26,7 @@ from six.moves.urllib import request as urlreq  # pylint: disable=E0611
 from manila import exception
 from manila.i18n import _
 from manila.i18n import _LE
+from manila.i18n import _LW
 from manila.share.drivers.huawei import constants
 from manila import utils
 
@@ -331,17 +333,6 @@ class RestHelper(object):
 
         self._assert_rest_result(result, 'Start CIFS service error.')
 
-    def _find_pool_type(self, poolinfo):
-        root = self._read_xml()
-        for pool_type in ('Thin', 'Thick'):
-            pool_name_list = root.findtext(('Filesystem/%s_StoragePool'
-                                            % pool_type))
-            pool_name_list = pool_name_list.split(";")
-            for pool_name in pool_name_list:
-                pool_name = pool_name.strip().strip('\n')
-                if poolinfo['name'] == pool_name:
-                    poolinfo['type'] = pool_type
-
     def _find_pool_info(self, pool_name, result):
         if pool_name is None:
             return
@@ -355,7 +346,6 @@ class RestHelper(object):
                 poolinfo['CAPACITY'] = item['USERFREECAPACITY']
                 poolinfo['TOTALCAPACITY'] = item['USERTOTALCAPACITY']
                 poolinfo['CONSUMEDCAPACITY'] = item['USERCONSUMEDCAPACITY']
-                self._find_pool_type(poolinfo)
                 break
 
         return poolinfo
@@ -431,38 +421,92 @@ class RestHelper(object):
         self._assert_rest_result(result, 'Get access id by share error!')
 
         for item in result.get('data', []):
-            if access_to == item['NAME']:
+            if item['NAME'] in (access_to, '@' + access_to):
                 return item['ID']
 
     def _allow_access_rest(self, share_id, access_to,
                            share_proto, access_level):
         """Allow access to the share."""
-        access_type = self._get_share_client_type(share_proto)
-        url = "/" + access_type
+        if share_proto == 'NFS':
+            self._allow_nfs_access_rest(share_id, access_to, access_level)
+        elif share_proto == 'CIFS':
+            self._allow_cifs_access_rest(share_id, access_to, access_level)
+        else:
+            raise exception.InvalidInput(
+                reason=(_('Invalid NAS protocol supplied: %s.')
+                        % share_proto))
 
-        access = {}
-        if access_type == "NFS_SHARE_AUTH_CLIENT":
-            access = {
-                "TYPE": "16409",
-                "NAME": access_to,
-                "PARENTID": share_id,
-                "ACCESSVAL": access_level,
-                "SYNC": "0",
-                "ALLSQUASH": "1",
-                "ROOTSQUASH": "0",
-            }
-        elif access_type == "CIFS_SHARE_AUTH_CLIENT":
-            access = {
-                "NAME": access_to,
-                "PARENTID": share_id,
-                "PERMISSION": access_level,
-                "DOMAINTYPE": "2",
-            }
+    def _allow_nfs_access_rest(self, share_id, access_to, access_level):
+        url = "/NFS_SHARE_AUTH_CLIENT"
+        access = {
+            "TYPE": "16409",
+            "NAME": access_to,
+            "PARENTID": share_id,
+            "ACCESSVAL": access_level,
+            "SYNC": "0",
+            "ALLSQUASH": "1",
+            "ROOTSQUASH": "0",
+        }
         data = jsonutils.dumps(access)
         result = self.call(url, data, "POST")
 
         msg = 'Allow access error.'
         self._assert_rest_result(result, msg)
+
+    def _allow_cifs_access_rest(self, share_id, access_to, access_level):
+        url = "/CIFS_SHARE_AUTH_CLIENT"
+        domain_type = {
+            'local': '2',
+            'ad': '0'
+        }
+        error_msg = 'Allow access error.'
+        access_info = ('Access info (access_to: %(access_to)s, '
+                       'access_level: %(access_level)s, share_id: %(id)s)'
+                       % {'access_to': access_to,
+                          'access_level': access_level,
+                          'id': share_id})
+
+        def send_rest(access_to, domain_type):
+            access = {
+                "NAME": access_to,
+                "PARENTID": share_id,
+                "PERMISSION": access_level,
+                "DOMAINTYPE": domain_type,
+            }
+            data = jsonutils.dumps(access)
+            result = self.call(url, data, "POST")
+            error_code = result['error']['code']
+            if error_code == 0:
+                return True
+            elif error_code != constants.ERROR_USER_OR_GROUP_NOT_EXIST:
+                self._assert_rest_result(result, error_msg)
+            return False
+
+        if '\\' not in access_to:
+            # First, try to add user access.
+            LOG.debug('Try to add user access. %s.', access_info)
+            if send_rest(access_to, domain_type['local']):
+                return
+            # Second, if add user access failed,
+            # try to add group access.
+            LOG.debug('Failed with add user access, '
+                      'try to add group access. %s.', access_info)
+            # Group name starts with @.
+            if send_rest('@' + access_to, domain_type['local']):
+                return
+        else:
+            LOG.debug('Try to add domain user access. %s.', access_info)
+            if send_rest(access_to, domain_type['ad']):
+                return
+            # If add domain user access failed,
+            # try to add domain group access.
+            LOG.debug('Failed with add domain user access, '
+                      'try to add domain group access. %s.', access_info)
+            # Group name starts with @.
+            if send_rest('@' + access_to, domain_type['ad']):
+                return
+
+        raise exception.InvalidShare(reason=error_msg)
 
     def _get_share_client_type(self, share_proto):
         share_client_type = None
@@ -606,6 +650,10 @@ class RestHelper(object):
         fs['CAPACITY'] = result['data']['CAPACITY']
         fs['ALLOCTYPE'] = result['data']['ALLOCTYPE']
         fs['POOLNAME'] = result['data']['PARENTNAME']
+        fs['COMPRESSION'] = result['data']['ENABLECOMPRESSION']
+        fs['DEDUP'] = result['data']['ENABLEDEDUP']
+        fs['SMARTPARTITIONID'] = result['data']['CACHEPARTITIONID']
+        fs['SMARTCACHEID'] = result['data']['SMARTCACHEPARTITIONID']
         return fs
 
     def _get_share_path(self, share_name):
@@ -679,6 +727,18 @@ class RestHelper(object):
         msg = _("Change filesystem name error.")
         self._assert_rest_result(result, msg)
 
+    def _change_extra_specs(self, fsid, extra_specs):
+        url = "/filesystem/%s" % fsid
+        fs_param = {
+            "ENABLEDEDUP": extra_specs['dedupe'],
+            "ENABLECOMPRESSION": extra_specs['compression']
+        }
+        data = jsonutils.dumps(fs_param)
+        result = self.call(url, data, "PUT")
+
+        msg = _("Change extra_specs error.")
+        self._assert_rest_result(result, msg)
+
     def _get_partition_id_by_name(self, name):
         url = "/cachepartition"
         result = self.call(url, None, "GET")
@@ -689,6 +749,14 @@ class RestHelper(object):
                 if name == item['NAME']:
                     return item['ID']
         return None
+
+    def get_partition_info_by_id(self, partitionid):
+        url = '/cachepartition/' + partitionid
+        result = self.call(url, None, "GET")
+        self._assert_rest_result(result,
+                                 _('Get partition by partition id error.'))
+
+        return result['data']
 
     def _add_fs_to_partition(self, fs_id, partition_id):
         url = "/filesystem/associate/cachepartition"
@@ -701,6 +769,17 @@ class RestHelper(object):
         self._assert_rest_result(result,
                                  _('Add filesystem to partition error.'))
 
+    def _remove_fs_from_partition(self, fs_id, partition_id):
+        url = "/smartPartition/removeFs"
+        data = jsonutils.dumps({"ID": partition_id,
+                                "ASSOCIATEOBJTYPE": 40,
+                                "ASSOCIATEOBJID": fs_id,
+                                "TYPE": 268})
+        result = self.call(url, data, "PUT")
+
+        self._assert_rest_result(result,
+                                 _('Remove filesystem from partition error.'))
+
     def _get_cache_id_by_name(self, name):
         url = "/SMARTCACHEPARTITION"
         result = self.call(url, None, "GET")
@@ -712,6 +791,17 @@ class RestHelper(object):
                     return item['ID']
         return None
 
+    def get_cache_info_by_id(self, cacheid):
+        url = "/SMARTCACHEPARTITION/" + cacheid
+        data = jsonutils.dumps({"TYPE": "273",
+                                "ID": cacheid})
+
+        result = self.call(url, data, "GET")
+        self._assert_rest_result(
+            result, _('Get smartcache by cache id error.'))
+
+        return result['data']
+
     def _add_fs_to_cache(self, fs_id, cache_id):
         url = "/SMARTCACHEPARTITION/CREATE_ASSOCIATE"
         data = jsonutils.dumps({"ID": cache_id,
@@ -721,3 +811,448 @@ class RestHelper(object):
         result = self.call(url, data, "PUT")
 
         self._assert_rest_result(result, _('Add filesystem to cache error.'))
+
+    def get_qos(self):
+        url = "/ioclass"
+        result = self.call(url, None, "GET")
+        self._assert_rest_result(result, _('Get QoS information error.'))
+        return result
+
+    def find_available_qos(self, qos):
+        """"Find available QoS on the array."""
+        qos_id = None
+        fs_list = []
+        result = self.get_qos()
+
+        if 'data' in result:
+            for item in result['data']:
+                qos_flag = 0
+                for key in qos:
+                    if ((key not in item)
+                            or qos[key] != item[key]
+                            or int(item[key]) == 0):
+                        break
+                    qos_flag = qos_flag + 1
+
+                fs_num = len(item['FSLIST'].split(","))
+                # We use this QoS only if the filesystems in it is less
+                # than 64, else we cannot add filesystem to this QoS any more.
+                if (item['RUNNINGSTATUS'] == constants.STATUS_QOS_ACTIVE
+                        and fs_num < constants.MAX_FS_NUM_IN_QOS
+                        and constants.QOS_NAME_PREFIX in item['NAME']
+                        and item['LUNLIST'] == '[""]'
+                        and qos_flag == len(qos)):
+                    qos_id = item['ID']
+                    fs_list = item['FSLIST']
+                    break
+        return (qos_id, fs_list)
+
+    def add_share_to_qos(self, qos_id, fs_id, fs_list):
+        """Add filesystem to QoS."""
+        url = "/ioclass/" + qos_id
+        new_fs_list = []
+        fs_list_string = fs_list[1:-1]
+        for fs_string in fs_list_string.split(","):
+            tmp_fs_id = fs_string[1:-1]
+            if '' != tmp_fs_id and tmp_fs_id != fs_id:
+                new_fs_list.append(tmp_fs_id)
+
+        new_fs_list.append(fs_id)
+
+        data = jsonutils.dumps({"FSLIST": new_fs_list,
+                                "TYPE": 230,
+                                "ID": qos_id})
+        result = self.call(url, data, "PUT")
+        msg = _('Associate filesystem to Qos error.')
+        self._assert_rest_result(result, msg)
+
+    def create_qos_policy(self, qos, fs_id):
+        # Get local time.
+        localtime = time.strftime('%Y%m%d%H%M%S', time.localtime(time.time()))
+        # Package QoS name.
+        qos_name = constants.QOS_NAME_PREFIX + fs_id + '_' + localtime
+
+        mergedata = {
+            "TYPE": "230",
+            "NAME": qos_name,
+            "FSLIST": ["%s" % fs_id],
+            "CLASSTYPE": "1",
+            "SCHEDULEPOLICY": "2",
+            "SCHEDULESTARTTIME": "1410969600",
+            "STARTTIME": "08:00",
+            "DURATION": "86400",
+            "CYCLESET": "[1,2,3,4,5,6,0]",
+        }
+        mergedata.update(qos)
+        data = jsonutils.dumps(mergedata)
+        url = "/ioclass"
+
+        result = self.call(url, data)
+        self._assert_rest_result(result, _('Create QoS policy error.'))
+
+        return result['data']['ID']
+
+    def activate_deactivate_qos(self, qos_id, enablestatus):
+        """Activate or deactivate QoS.
+
+        enablestatus: true (activate)
+        enablestatus: false (deactivate)
+        """
+        url = "/ioclass/active/" + qos_id
+        data = jsonutils.dumps({
+            "TYPE": 230,
+            "ID": qos_id,
+            "ENABLESTATUS": enablestatus})
+        result = self.call(url, data, "PUT")
+        self._assert_rest_result(
+            result, _('Activate or deactivate QoS error.'))
+
+    def change_fs_priority_high(self, fs_id):
+        """Change fs priority to high."""
+        url = "/filesystem/" + fs_id
+        data = jsonutils.dumps({"IOPRIORITY": "3"})
+
+        result = self.call(url, data, "PUT")
+        self._assert_rest_result(
+            result, _('Change filesystem priority error.'))
+
+    def delete_qos_policy(self, qos_id):
+        """Delete a QoS policy."""
+        url = "/ioclass/" + qos_id
+        data = jsonutils.dumps({"TYPE": "230",
+                                "ID": qos_id})
+
+        result = self.call(url, data, 'DELETE')
+        self._assert_rest_result(result, _('Delete QoS policy error.'))
+
+    def get_qosid_by_fsid(self, fs_id):
+        """Get QoS id by fs id."""
+        url = "/filesystem/" + fs_id
+        result = self.call(url, None, "GET")
+        self._assert_rest_result(
+            result, _('Get QoS id by filesystem id error.'))
+
+        return result['data']['IOCLASSID']
+
+    def get_fs_list_in_qos(self, qos_id):
+        """Get the filesystem list in QoS."""
+        qos_info = self.get_qos_info(qos_id)
+
+        fs_list = []
+        fs_string = qos_info['FSLIST'][1:-1]
+
+        for fs in fs_string.split(","):
+            fs_id = fs[1:-1]
+            fs_list.append(fs_id)
+
+        return fs_list
+
+    def get_qos_info(self, qos_id):
+        """Get QoS information."""
+        url = "/ioclass/" + qos_id
+        result = self.call(url, None, "GET")
+        self._assert_rest_result(result, _('Get QoS information error.'))
+
+        return result['data']
+
+    def remove_fs_from_qos(self, fs_id, fs_list, qos_id):
+        """Remove filesystem from QoS."""
+        fs_list = [i for i in fs_list if i != fs_id]
+        url = "/ioclass/" + qos_id
+        data = jsonutils.dumps({"FSLIST": fs_list,
+                                "TYPE": 230,
+                                "ID": qos_id})
+        result = self.call(url, data, "PUT")
+
+        msg = _('Remove filesystem from QoS error.')
+        self._assert_rest_result(result, msg)
+
+    def _remove_fs_from_cache(self, fs_id, cache_id):
+        url = "/SMARTCACHEPARTITION/REMOVE_ASSOCIATE"
+        data = jsonutils.dumps({"ID": cache_id,
+                                "ASSOCIATEOBJTYPE": 40,
+                                "ASSOCIATEOBJID": fs_id,
+                                "TYPE": 273})
+        result = self.call(url, data, "PUT")
+
+        self._assert_rest_result(result,
+                                 _('Remove filesystem from cache error.'))
+
+    def get_all_eth_port(self):
+        url = "/ETH_PORT"
+        result = self.call(url, None, 'GET')
+        self._assert_rest_result(result, _('Get all eth port error.'))
+
+        all_eth = {}
+        if "data" in result:
+            all_eth = result['data']
+
+        return all_eth
+
+    def get_eth_port_by_id(self, port_id):
+        url = "/ETH_PORT/" + port_id
+        result = self.call(url, None, 'GET')
+        self._assert_rest_result(result, _('Get eth port by id error.'))
+
+        if "data" in result:
+            return result['data']
+
+        return None
+
+    def get_all_bond_port(self):
+        url = "/BOND_PORT"
+        result = self.call(url, None, 'GET')
+        self._assert_rest_result(result, _('Get all bond port error.'))
+
+        all_bond = {}
+        if "data" in result:
+            all_bond = result['data']
+
+        return all_bond
+
+    def get_port_id(self, port_name, port_type):
+        if port_type == constants.PORT_TYPE_ETH:
+            all_eth = self.get_all_eth_port()
+            for item in all_eth:
+                if port_name == item['LOCATION']:
+                    return item['ID']
+        elif port_type == constants.PORT_TYPE_BOND:
+            all_bond = self.get_all_bond_port()
+            for item in all_bond:
+                if port_name == item['NAME']:
+                    return item['ID']
+
+        return None
+
+    def get_all_vlan(self):
+        url = "/vlan"
+        result = self.call(url, None, 'GET')
+        self._assert_rest_result(result, _('Get all vlan error.'))
+
+        all_vlan = {}
+        if "data" in result:
+            all_vlan = result['data']
+
+        return all_vlan
+
+    def get_vlan(self, port_id, vlan_tag):
+        url = "/vlan"
+        result = self.call(url, None, 'GET')
+        self._assert_rest_result(result, _('Get vlan error.'))
+
+        vlan_tag = six.text_type(vlan_tag)
+        if "data" in result:
+            for item in result['data']:
+                if port_id == item['PORTID'] and vlan_tag == item['TAG']:
+                    return True, item['ID']
+
+        return False, None
+
+    def create_vlan(self, port_id, port_type, vlan_tag):
+        url = "/vlan"
+        data = jsonutils.dumps({"PORTID": port_id,
+                                "PORTTYPE": port_type,
+                                "TAG": six.text_type(vlan_tag),
+                                "TYPE": "280"})
+        result = self.call(url, data, "POST")
+        self._assert_rest_result(result, _('Create vlan error.'))
+
+        return result['data']['ID']
+
+    def check_vlan_exists_by_id(self, vlan_id):
+        all_vlan = self.get_all_vlan()
+        return any(vlan['ID'] == vlan_id for vlan in all_vlan)
+
+    def delete_vlan(self, vlan_id):
+        url = "/vlan/" + vlan_id
+        result = self.call(url, None, 'DELETE')
+        if result['error']['code'] == constants.ERROR_LOGICAL_PORT_EXIST:
+            LOG.warning(_LW('Cannot delete vlan because there is '
+                            'a logical port on vlan.'))
+            return
+
+        self._assert_rest_result(result, _('Delete vlan error.'))
+
+    def get_logical_port(self, home_port_id, ip, subnet):
+        url = "/LIF"
+        result = self.call(url, None, 'GET')
+        self._assert_rest_result(result, _('Get logical port error.'))
+
+        if "data" not in result:
+            return False, None
+
+        for item in result['data']:
+            if (home_port_id == item['HOMEPORTID']
+                    and ip == item['IPV4ADDR']
+                    and subnet == item['IPV4MASK']):
+                if item['OPERATIONALSTATUS'] != 'true':
+                    self._activate_logical_port(item['ID'])
+                return True, item['ID']
+
+        return False, None
+
+    def _activate_logical_port(self, logical_port_id):
+        url = "/LIF/" + logical_port_id
+        data = jsonutils.dumps({"OPERATIONALSTATUS": "true"})
+        result = self.call(url, data, 'PUT')
+        self._assert_rest_result(result, _('Activate logical port error.'))
+
+    def create_logical_port(self, home_port_id, home_port_type, ip, subnet):
+        url = "/LIF"
+        info = {
+            "ADDRESSFAMILY": 0,
+            "CANFAILOVER": "true",
+            "HOMEPORTID": home_port_id,
+            "HOMEPORTTYPE": home_port_type,
+            "IPV4ADDR": ip,
+            "IPV4GATEWAY": "",
+            "IPV4MASK": subnet,
+            "NAME": ip,
+            "OPERATIONALSTATUS": "true",
+            "ROLE": 2,
+            "SUPPORTPROTOCOL": 3,
+            "TYPE": "279",
+        }
+
+        data = jsonutils.dumps(info)
+        result = self.call(url, data, 'POST')
+        self._assert_rest_result(result, _('Create logical port error.'))
+
+        return result['data']['ID']
+
+    def check_logical_port_exists_by_id(self, logical_port_id):
+        all_logical_port = self.get_all_logical_port()
+        return any(port['ID'] == logical_port_id for port in all_logical_port)
+
+    def get_all_logical_port(self):
+        url = "/LIF"
+        result = self.call(url, None, 'GET')
+        self._assert_rest_result(result, _('Get all logical port error.'))
+
+        all_logical_port = {}
+        if "data" in result:
+            all_logical_port = result['data']
+
+        return all_logical_port
+
+    def delete_logical_port(self, logical_port_id):
+        url = "/LIF/" + logical_port_id
+        result = self.call(url, None, 'DELETE')
+        self._assert_rest_result(result, _('Delete logical port error.'))
+
+    def set_DNS_ip_address(self, dns_ip_list):
+        if len(dns_ip_list) > 3:
+            message = _('Most three ips can be set to DNS.')
+            LOG.error(message)
+            raise exception.InvalidInput(reason=message)
+
+        url = "/DNS_Server"
+        dns_info = {
+            "ADDRESS": jsonutils.dumps(dns_ip_list),
+            "TYPE": "260",
+        }
+        data = jsonutils.dumps(dns_info)
+        result = self.call(url, data, 'PUT')
+        self._assert_rest_result(result, _('Set DNS ip address error.'))
+
+        if "data" in result:
+            return result['data']
+
+        return None
+
+    def get_DNS_ip_address(self):
+        url = "/DNS_Server"
+        result = self.call(url, None, 'GET')
+        self._assert_rest_result(result, _('Get DNS ip address error.'))
+
+        ip_address = {}
+        if "data" in result:
+            ip_address = jsonutils.loads(result['data']['ADDRESS'])
+
+        return ip_address
+
+    def add_AD_config(self, user, password, domain, system_name):
+        url = "/AD_CONFIG"
+        info = {
+            "ADMINNAME": user,
+            "ADMINPWD": password,
+            "DOMAINSTATUS": 1,
+            "FULLDOMAINNAME": domain,
+            "OU": "",
+            "SYSTEMNAME": system_name,
+            "TYPE": "16414",
+        }
+        data = jsonutils.dumps(info)
+        result = self.call(url, data, 'PUT')
+        self._assert_rest_result(result, _('Add AD config error.'))
+
+    def delete_AD_config(self, user, password):
+        url = "/AD_CONFIG"
+        info = {
+            "ADMINNAME": user,
+            "ADMINPWD": password,
+            "DOMAINSTATUS": 0,
+            "TYPE": "16414",
+        }
+        data = jsonutils.dumps(info)
+        result = self.call(url, data, 'PUT')
+        self._assert_rest_result(result, _('Delete AD config error.'))
+
+    def get_AD_config(self):
+        url = "/AD_CONFIG"
+        result = self.call(url, None, 'GET')
+        self._assert_rest_result(result, _('Get AD config error.'))
+
+        if "data" in result:
+            return result['data']
+
+        return None
+
+    def get_AD_domain_name(self):
+        result = self.get_AD_config()
+        if result and result['DOMAINSTATUS'] == '1':
+            return True, result['FULLDOMAINNAME']
+
+        return False, None
+
+    def add_LDAP_config(self, server, domain):
+        url = "/LDAP_CONFIG"
+        info = {
+            "BASEDN": domain,
+            "LDAPSERVER": server,
+            "PORTNUM": 389,
+            "TRANSFERTYPE": "1",
+            "TYPE": "16413",
+            "USERNAME": "",
+        }
+        data = jsonutils.dumps(info)
+        result = self.call(url, data, 'PUT')
+        self._assert_rest_result(result, _('Add LDAP config error.'))
+
+    def delete_LDAP_config(self):
+        url = "/LDAP_CONFIG"
+        result = self.call(url, None, 'DELETE')
+        self._assert_rest_result(result, _('Delete LDAP config error.'))
+
+    def get_LDAP_config(self):
+        url = "/LDAP_CONFIG"
+        result = self.call(url, None, 'GET')
+        self._assert_rest_result(result, _('Get LDAP config error.'))
+
+        if "data" in result:
+            return result['data']
+
+        return None
+
+    def get_LDAP_domain_server(self):
+        result = self.get_LDAP_config()
+        if result and result['LDAPSERVER']:
+            return True, result['LDAPSERVER']
+
+        return False, None
+
+    def find_array_version(self):
+        url = "/system/"
+        result = self.call(url, None)
+        self._assert_rest_result(result, _('Find array version error.'))
+        return result['data']['PRODUCTVERSION']

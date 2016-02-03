@@ -30,6 +30,7 @@ from manila.common import constants
 from manila import context
 from manila import db
 from manila import exception
+from manila import policy
 from manila.share import api as share_api
 from manila.share import share_types
 from manila import test
@@ -813,6 +814,19 @@ class ShareAPITest(test.TestCase):
         expected['shares'][0]['task_state'] = None
         self._list_detail_test_common(req, expected)
 
+    def test_share_list_detail_without_export_locations(self):
+        env = {'QUERY_STRING': 'name=Share+Test+Name'}
+        req = fakes.HTTPRequest.blank('/shares/detail', environ=env,
+                                      version="2.9")
+        expected = self._list_detail_common_expected()
+        expected['shares'][0]['consistency_group_id'] = None
+        expected['shares'][0]['source_cgsnapshot_member_id'] = None
+        expected['shares'][0]['task_state'] = None
+        expected['shares'][0]['share_type_name'] = None
+        expected['shares'][0].pop('export_location')
+        expected['shares'][0].pop('export_locations')
+        self._list_detail_test_common(req, expected)
+
     def test_remove_invalid_options(self):
         ctx = context.RequestContext('fakeuser', 'fakeproject', is_admin=False)
         search_opts = {'a': 'a', 'b': 'b', 'c': 'c', 'd': 'd'}
@@ -945,16 +959,20 @@ class ShareActionsTest(test.TestCase):
         expected = _fake_access_get_all()
         self.assertEqual(expected, res_dict['access_list'])
 
-    def test_extend(self):
+    @ddt.unpack
+    @ddt.data(
+        {'body': {'os-extend': {'new_size': 2}}, 'version': '2.6'},
+        {'body': {'extend': {'new_size': 2}}, 'version': '2.7'},
+    )
+    def test_extend(self, body, version):
         id = 'fake_share_id'
         share = stubs.stub_share_get(None, None, id)
         self.mock_object(share_api.API, 'get', mock.Mock(return_value=share))
         self.mock_object(share_api.API, "extend")
 
-        size = '123'
-        body = {"os-extend": {'new_size': size}}
-        req = fakes.HTTPRequest.blank('/v1/shares/%s/action' % id)
-
+        size = '2'
+        req = fakes.HTTPRequest.blank(
+            '/v2/shares/%s/action' % id, version=version)
         actual_response = self.controller._extend(req, id, body)
 
         share_api.API.get.assert_called_once_with(mock.ANY, id)
@@ -988,16 +1006,20 @@ class ShareActionsTest(test.TestCase):
 
         self.assertRaises(target, self.controller._extend, req, id, body)
 
-    def test_shrink(self):
+    @ddt.unpack
+    @ddt.data(
+        {'body': {'os-shrink': {'new_size': 1}}, 'version': '2.6'},
+        {'body': {'shrink': {'new_size': 1}}, 'version': '2.7'},
+    )
+    def test_shrink(self, body, version):
         id = 'fake_share_id'
         share = stubs.stub_share_get(None, None, id)
         self.mock_object(share_api.API, 'get', mock.Mock(return_value=share))
         self.mock_object(share_api.API, "shrink")
 
-        size = '123'
-        body = {"os-shrink": {'new_size': size}}
-        req = fakes.HTTPRequest.blank('/v1/shares/%s/action' % id)
-
+        size = '1'
+        req = fakes.HTTPRequest.blank(
+            '/v2/shares/%s/action' % id, version=version)
         actual_response = self.controller._shrink(req, id, body)
 
         share_api.API.get.assert_called_once_with(mock.ANY, id)
@@ -1299,8 +1321,11 @@ class ShareManageTest(test.TestCase):
     def setUp(self):
         super(self.__class__, self).setUp()
         self.controller = shares.ShareController()
+        self.resource_name = self.controller.resource_name
         self.request = fakes.HTTPRequest.blank(
-            '/v2/share/manage', use_admin_context=True, version='2.7')
+            '/v2/shares/manage', use_admin_context=True, version='2.7')
+        self.mock_policy_check = self.mock_object(
+            policy, 'check_policy', mock.Mock(return_value=True))
 
     def _setup_manage_mocks(self, service_is_up=True):
         self.mock_object(db, 'service_get_by_host_and_topic', mock.Mock(
@@ -1318,7 +1343,6 @@ class ShareManageTest(test.TestCase):
                 mock.Mock(side_effect=exception.ServiceIsDown(service='fake')))
 
     @ddt.data({},
-              {'share': None},
               {'shares': {}},
               {'share': get_fake_manage_body('', None, None)})
     def test_share_manage_invalid_body(self, body):
@@ -1404,6 +1428,16 @@ class ShareManageTest(test.TestCase):
                              driver_options=dict(volume_id='quuz')),
     )
     def test_share_manage(self, data):
+        self._test_share_manage(data, "2.7")
+
+    @ddt.data(
+        get_fake_manage_body(name='foo', description='bar', is_public=True),
+        get_fake_manage_body(name='foo', description='bar', is_public=False)
+    )
+    def test_share_manage_with_is_public(self, data):
+        self._test_share_manage(data, "2.8")
+
+    def _test_share_manage(self, data, version):
         self._setup_manage_mocks()
         return_share = {'share_type_id': '', 'id': 'fake'}
         self.mock_object(
@@ -1418,11 +1452,20 @@ class ShareManageTest(test.TestCase):
         }
         driver_options = data['share'].get('driver_options', {})
 
-        actual_result = self.controller.manage(self.request, data)
+        if (api_version.APIVersionRequest(version) >=
+                api_version.APIVersionRequest('2.8')):
+            share['is_public'] = data['share']['is_public']
+
+        req = fakes.HTTPRequest.blank('/v2/shares/manage', version=version,
+                                      use_admin_context=True)
+
+        actual_result = self.controller.manage(req, data)
 
         share_api.API.manage.assert_called_once_with(
             mock.ANY, share, driver_options)
         self.assertIsNotNone(actual_result)
+        self.mock_policy_check.assert_called_once_with(
+            req.environ['manila.context'], self.resource_name, 'manage')
 
     def test_wrong_permissions(self):
         body = get_fake_manage_body()

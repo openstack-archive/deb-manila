@@ -62,8 +62,10 @@ def response(func):
 class FakeData(object):
     # Share informaiton
     share_id = '7cf7c200_d3af_4e05_b87e_9167c95df4f9'
+    host = 'HostA@BackendB#fake_pool_name'
     share_name = share_id
     share_size = 10
+    new_size = 20
     src_share_name = '7cf7c200_d3af_4e05_b87e_9167c95df4f0'
 
     # Snapshot information
@@ -768,9 +770,11 @@ class PoolTestData(StorageObjectTestData):
         )
 
     @response
-    def resp_get_succeed(self, name=None):
+    def resp_get_succeed(self, name=None, id=None):
         if not name:
             name = self.pool_name
+        if not id:
+            id = self.pool_id
         return (
             '<QueryStatus maxSeverity="ok"/>'
             '<StoragePool movers="1 2" memberVolumes="98" storageSystems="1" '
@@ -799,7 +803,7 @@ class PoolTestData(StorageObjectTestData):
             'potentialAdditionalSize="0" isBackendPool="true"/>'
             '</StoragePool>' %
             {'name': name,
-             'id': self.pool_id,
+             'id': id,
              'pool_used_size': self.pool_used_size,
              'pool_total_size': self.pool_total_size}
         )
@@ -934,6 +938,25 @@ class MoverTestData(StorageObjectTestData):
             '<Description></Description><Action></Action>'
             '</Problem>'
             '</Status>' % {'ip': self.ip_address1}
+        )
+
+    @response
+    def resp_create_interface_with_conflicted_vlan_id(self):
+        return (
+            '<Status maxSeverity="error">'
+            '<Problem messageCode="13421850371" component="CS_CORE" '
+            'message="160: Invalid VLAN change. Other interfaces on this '
+            'subnet are in a different VLAN." severity="error">'
+            '<Description>The operation cannot complete because other '
+            'interfaces on the same subnet are in a different VLAN. '
+            'The Data Mover requires all interfaces in the same subnet '
+            'to be in the same VLAN.</Description>'
+            '<Action>Specify a VLAN to match other interfaces in the same '
+            'subnet. To move multiple interfaces to a different VLAN, '
+            'first set the VLAN id on each interface to 0, '
+            'and then set their VLAN id\'s to the new VLAN number.</Action>'
+            '</Problem>'
+            '</Status>'
         )
 
     @start_task
@@ -1107,7 +1130,7 @@ class CIFSServerTestData(StorageObjectTestData):
         )
 
     @start_task
-    def req_modify(self, mover_id, is_vdm, join_domain):
+    def req_modify(self, mover_id, is_vdm=True, join_domain=False):
         return (
             '<ModifyW2KCifsServer mover="%(mover_id)s" '
             'moverIdIsVdm="%(is_vdm)s" name="%(cifsserver)s">'
@@ -1403,7 +1426,6 @@ class FakeEMCShareDriver(object):
         self.configuration.append_config_values = mock.Mock(return_value=0)
         self.configuration.emc_share_backend = FakeData.emc_share_backend
         self.configuration.emc_nas_server_container = FakeData.mover_name
-        self.configuration.emc_nas_pool_name = FakeData.pool_name
         self.configuration.emc_nas_server = FakeData.emc_nas_server
         self.configuration.emc_nas_login = FakeData.emc_nas_login
         self.configuration.emc_nas_password = FakeData.emc_nas_password
@@ -1415,6 +1437,7 @@ CIFS_SHARE = fake_share.fake_share(
     size=FakeData.share_size,
     share_network_id=FakeData.share_network_id,
     share_server_id=FakeData.share_server_id,
+    host=FakeData.host,
     share_proto='CIFS')
 
 NFS_SHARE = fake_share.fake_share(
@@ -1423,6 +1446,7 @@ NFS_SHARE = fake_share.fake_share(
     size=FakeData.share_size,
     share_network_id=FakeData.share_network_id,
     share_server_id=FakeData.share_server_id,
+    host=FakeData.host,
     share_proto='NFS')
 
 CIFS_RW_ACCESS = fake_share.fake_access(
@@ -1499,6 +1523,4 @@ STATS = dict(
     share_backend_name='VNX',
     vendor_name='EMC',
     storage_protocol='NFS_CIFS',
-    driver_version='2.0.0,',
-    total_capacity_gb='unknown',
-    free_capacity_gb='unknow')
+    driver_version='2.0.0,')

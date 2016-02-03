@@ -385,7 +385,7 @@ class ManilaExceptionResponseCode404(test.TestCase):
     def test_share_snapshot_not_found(self):
         # Verify response code for exception.ShareSnapshotNotFound
         snapshot_id = "fake_snapshot_id"
-        e = exception.VolumeSnapshotNotFound(snapshot_id=snapshot_id)
+        e = exception.ShareSnapshotNotFound(snapshot_id=snapshot_id)
         self.assertEqual(404, e.code)
         self.assertIn(snapshot_id, e.msg)
 
@@ -448,11 +448,32 @@ class ManilaExceptionResponseCode404(test.TestCase):
         self.assertEqual(404, e.code)
         self.assertIn(instance_id, e.msg)
 
+    def test_storage_resource_not_found(self):
+        # verify response code for exception.StorageResourceNotFound
+        name = "fake_name"
+        e = exception.StorageResourceNotFound(name=name)
+        self.assertEqual(404, e.code)
+        self.assertIn(name, e.msg)
+
+    def test_snapshot_not_found(self):
+        # verify response code for exception.SnapshotNotFound
+        name = "fake_name"
+        e = exception.SnapshotNotFound(name=name)
+        self.assertEqual(404, e.code)
+        self.assertIn(name, e.msg)
+
+    def test_export_location_not_found(self):
+        # verify response code for exception.ExportLocationNotFound
+        uuid = "fake-export-location-uuid"
+        e = exception.ExportLocationNotFound(uuid=uuid)
+        self.assertEqual(404, e.code)
+        self.assertIn(uuid, e.msg)
+
     def test_share_resource_not_found(self):
-        # verify response code for exception.ShareNotFound
+        # verify response code for exception.ShareResourceNotFound
         share_id = "fake_share_id"
         e = exception.ShareResourceNotFound(share_id=share_id)
-        self.assertEqual(500, e.code)
+        self.assertEqual(404, e.code)
         self.assertIn(share_id, e.msg)
 
 

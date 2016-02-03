@@ -1,14 +1,17 @@
 manila (1:2.0.0~b1-2) experimental; urgency=medium
 
+  * Build-depends on git to fix sphinx-build.
   * Updated fr.po and nl.po debconf translation (Closes: #807765, #812352).
   * Removed volume_group from manila-common.templates.
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 03 Feb 2016 16:39:33 +0800
 
-manila (1:2.0.0~b1-1) experimental; urgency=medium
+manila (1:2.0.0~b2-1) experimental; urgency=medium
 
   * New upstream release.
   * Fixed (build-)depends for this release.
+  * Fixed debian/copyright ordering.
+  * Fixed config file generation namespace list.
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 10 Dec 2015 10:58:35 +0100
 

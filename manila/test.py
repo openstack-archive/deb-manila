@@ -31,7 +31,6 @@ from oslo_concurrency import lockutils
 from oslo_config import cfg
 from oslo_config import fixture as config_fixture
 import oslo_i18n
-from oslo_log import log
 from oslo_messaging import conffixture as messaging_conffixture
 import oslotest.base as base_test
 import six
@@ -52,8 +51,6 @@ test_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(test_opts)
-
-LOG = log.getLogger(__name__)
 
 _DB_CACHE = None
 
@@ -328,7 +325,7 @@ class TestCase(base_test.BaseTestCase):
         try:
             f = super(TestCase, self).assertIsInstance
         except AttributeError:
-            self.assertTrue(isinstance(a, b))
+            self.assertIsInstance(a, b)
         else:
             f(a, b, *args, **kwargs)
 
@@ -344,8 +341,8 @@ class TestCase(base_test.BaseTestCase):
     def _dict_from_object(self, obj, ignored_keys):
         if ignored_keys is None:
             ignored_keys = []
-        return dict([(k, v) for k, v in obj.iteritems()
-                     if k not in ignored_keys])
+        return {k: v for k, v in obj.iteritems()
+                if k not in ignored_keys}
 
     def _assertEqualListsOfObjects(self, objs1, objs2, ignored_keys=None):
         obj_to_dict = lambda o: self._dict_from_object(o, ignored_keys)

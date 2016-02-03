@@ -65,3 +65,12 @@ user documentation.
 2.7
 ---
   Rename old extension-like API URLs to core-API-like.
+
+2.8
+---
+  Allow to set share visibility explicitly using "manage" API.
+
+2.9
+---
+  Add export locations API. Remove export locations from "shares" and
+  "share instances" APIs.
