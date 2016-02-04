@@ -14,11 +14,11 @@ override_dh_auto_build:
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func manila-api.config
 
 override_dh_auto_install:
-	dh_auto_install -O--buildsystem=python_distutils
+	python2.7 setup.py install --install-layout=deb --root $(CURDIR)/debian/tmp
 
 	# Generate the config file
 	mkdir -p $(CURDIR)/debian/manila-common/usr/share/manila-common
-	PYTHONPATH=. oslo-config-generator \
+	PYTHONPATH=$(CURDIR)/debian/tmp/usr/lib/python2.7/dist-packages oslo-config-generator \
 		--namespace manila \
 		--namespace oslo.messaging \
 		--namespace oslo.middleware.cors \
@@ -26,8 +26,8 @@ override_dh_auto_install:
 		--namespace oslo.db.concurrency \
 		--namespace keystonemiddleware.auth_token \
 		--output-file $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
-	sed -i 's|^[# \t]*auth_protocol[\t #]*=.*|auth_protocol = http|' $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
-	sed -i 's|^[# \t]*#lock_path[\t #]*=.*|lock_path = /var/lock/manila|' $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
+	pkgos-fix-config-default $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf keystone_authtoken auth_protocol http
+	pkgos-fix-config-default $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf oslo_concurrency lock_path /var/lock/manila
 
 	# and copy the remaining
 	set -e ; for i in api-paste.ini policy.json rootwrap.conf ; do \
