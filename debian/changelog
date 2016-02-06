@@ -5,6 +5,7 @@ manila (1:2.0.0~b2-2) experimental; urgency=medium
   * Using $(CURDIR)/debian/tmp for generating config files.
   * Better config file generation.
   * Removed volume_group from manila-common.templates.
+  * VCS urls using https.
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 03 Feb 2016 16:39:33 +0800
 
