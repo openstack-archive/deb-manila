@@ -20,16 +20,11 @@ import time
 import ddt
 import mock
 
-from manila.common import constants
 from manila import exception
 from manila import network
 from manila.share import configuration
 from manila.share import driver
-from manila.share import migration
-from manila.share import rpcapi
-from manila.share import utils as share_utils
 from manila import test
-from manila.tests import db_utils
 from manila.tests import utils as test_utils
 from manila import utils
 
@@ -72,12 +67,15 @@ class ShareDriverTestCase(test.TestCase):
             self.assertTrue(share_driver.driver_handles_share_servers)
 
     def _instantiate_share_driver(self, network_config_group,
-                                  driver_handles_share_servers):
+                                  driver_handles_share_servers,
+                                  admin_network_config_group=None):
         self.mock_object(network, 'API')
         config = mock.Mock()
         config.append_config_values = mock.Mock()
         config.config_group = 'fake_config_group'
         config.network_config_group = network_config_group
+        if admin_network_config_group:
+            config.admin_network_config_group = admin_network_config_group
         config.safe_get = mock.Mock(return_value=driver_handles_share_servers)
 
         share_driver = driver.ShareDriver([True, False], configuration=config)
@@ -85,14 +83,26 @@ class ShareDriverTestCase(test.TestCase):
         self.assertTrue(hasattr(share_driver, 'configuration'))
         config.append_config_values.assert_called_once_with(driver.share_opts)
         if driver_handles_share_servers:
+            calls = []
             if network_config_group:
-                network.API.assert_called_once_with(
-                    config_group_name=config.network_config_group)
+                calls.append(mock.call(
+                    config_group_name=config.network_config_group))
             else:
-                network.API.assert_called_once_with(
-                    config_group_name=config.config_group)
+                calls.append(mock.call(
+                    config_group_name=config.config_group))
+            if admin_network_config_group:
+                calls.append(mock.call(
+                    config_group_name=config.admin_network_config_group,
+                    label='admin'))
+            network.API.assert_has_calls(calls)
+            self.assertTrue(hasattr(share_driver, 'network_api'))
+            self.assertTrue(hasattr(share_driver, 'admin_network_api'))
+            self.assertIsNotNone(share_driver.network_api)
+            self.assertIsNotNone(share_driver.admin_network_api)
         else:
             self.assertFalse(hasattr(share_driver, 'network_api'))
+            self.assertTrue(hasattr(share_driver, 'admin_network_api'))
+            self.assertIsNone(share_driver.admin_network_api)
             self.assertFalse(network.API.called)
         return share_driver
 
@@ -101,6 +111,11 @@ class ShareDriverTestCase(test.TestCase):
 
     def test_instantiate_share_driver_another_config_group(self):
         self._instantiate_share_driver("fake_network_config_group", True)
+
+    def test_instantiate_share_driver_with_admin_network(self):
+        self._instantiate_share_driver(
+            "fake_network_config_group", True,
+            "fake_admin_network_config_group")
 
     def test_instantiate_share_driver_no_configuration(self):
         self.mock_object(network, 'API')
@@ -198,15 +213,23 @@ class ShareDriverTestCase(test.TestCase):
             share_driver.teardown_server,
             'fake_share_server_details')
 
+    def _assert_is_callable(self, obj, attr):
+        self.assertTrue(callable(getattr(obj, attr)))
+
     @ddt.data('manage_existing',
               'unmanage')
     def test_drivers_methods_needed_by_manage_functionality(self, method):
         share_driver = self._instantiate_share_driver(None, False)
 
-        def assert_is_callable(obj, attr):
-            self.assertTrue(callable(getattr(obj, attr)))
+        self._assert_is_callable(share_driver, method)
 
-        assert_is_callable(share_driver, method)
+    @ddt.data('manage_existing_snapshot',
+              'unmanage_snapshot')
+    def test_drivers_methods_needed_by_manage_snapshot_functionality(
+            self, method):
+        share_driver = self._instantiate_share_driver(None, False)
+
+        self._assert_is_callable(share_driver, method)
 
     @ddt.data(True, False)
     def test_get_share_server_pools(self, value):
@@ -358,334 +381,179 @@ class ShareDriverTestCase(test.TestCase):
 
         self.assertEqual(share_instances, result)
 
-    def test_migrate_share(self):
+    def test_get_admin_network_allocations_number(self):
+        share_driver = self._instantiate_share_driver(None, True)
+
+        self.assertEqual(
+            0, share_driver.get_admin_network_allocations_number())
+
+    def test_allocate_admin_network_count_None(self):
+        share_driver = self._instantiate_share_driver(None, True)
+        ctxt = 'fake_context'
+        share_server = 'fake_share_server'
+        mock_get_admin_network_allocations_number = self.mock_object(
+            share_driver,
+            'get_admin_network_allocations_number',
+            mock.Mock(return_value=0))
+        self.mock_object(
+            share_driver.admin_network_api,
+            'allocate_network',
+            mock.Mock(side_effect=Exception('ShouldNotBeRaised')))
+
+        share_driver.allocate_admin_network(ctxt, share_server)
+
+        mock_get_admin_network_allocations_number.assert_called_once_with()
+        self.assertFalse(
+            share_driver.admin_network_api.allocate_network.called)
+
+    def test_allocate_admin_network_count_0(self):
+        share_driver = self._instantiate_share_driver(None, True)
+        ctxt = 'fake_context'
+        share_server = 'fake_share_server'
+        self.mock_object(
+            share_driver,
+            'get_admin_network_allocations_number',
+            mock.Mock(return_value=0))
+        self.mock_object(
+            share_driver.admin_network_api,
+            'allocate_network',
+            mock.Mock(side_effect=Exception('ShouldNotBeRaised')))
+
+        share_driver.allocate_admin_network(ctxt, share_server, count=0)
+
+        self.assertFalse(
+            share_driver.get_admin_network_allocations_number.called)
+        self.assertFalse(
+            share_driver.admin_network_api.allocate_network.called)
+
+    def test_allocate_admin_network_count_1_api_initialized(self):
+        share_driver = self._instantiate_share_driver(None, True)
+        ctxt = 'fake_context'
+        share_server = 'fake_share_server'
+        mock_get_admin_network_allocations_number = self.mock_object(
+            share_driver,
+            'get_admin_network_allocations_number',
+            mock.Mock(return_value=1))
+        self.mock_object(
+            share_driver.admin_network_api,
+            'allocate_network',
+            mock.Mock())
+
+        share_driver.allocate_admin_network(ctxt, share_server)
+
+        mock_get_admin_network_allocations_number.assert_called_once_with()
+        share_driver.admin_network_api.allocate_network.\
+            assert_called_once_with(ctxt, share_server, count=1)
+
+    def test_allocate_admin_network_count_1_api_not_initialized(self):
+        share_driver = self._instantiate_share_driver(None, True, None)
+        ctxt = 'fake_context'
+        share_server = 'fake_share_server'
+        share_driver._admin_network_api = None
+        mock_get_admin_network_allocations_number = self.mock_object(
+            share_driver,
+            'get_admin_network_allocations_number',
+            mock.Mock(return_value=1))
+
+        self.assertRaises(
+            exception.NetworkBadConfigurationException,
+            share_driver.allocate_admin_network,
+            ctxt, share_server,
+        )
+        mock_get_admin_network_allocations_number.assert_called_once_with()
+
+    def test_migration_start(self):
 
         driver.CONF.set_default('driver_handles_share_servers', False)
         share_driver = driver.ShareDriver(False)
 
         self.assertEqual((None, None),
-                         share_driver.migrate_share(None, None, None, None))
+                         share_driver.migration_start(None, None, None,
+                                                      None, None, None))
 
-    def test_get_driver_migration_info_default(self):
+    def test_migration_complete(self):
+
+        driver.CONF.set_default('driver_handles_share_servers', False)
+        share_driver = driver.ShareDriver(False)
+
+        share_driver.migration_complete(None, None, None, None)
+
+    def test_migration_cancel(self):
+
+        driver.CONF.set_default('driver_handles_share_servers', False)
+        share_driver = driver.ShareDriver(False)
+
+        self.assertRaises(NotImplementedError, share_driver.migration_cancel,
+                          None, None, None, None)
+
+    def test_migration_get_progress(self):
+
+        driver.CONF.set_default('driver_handles_share_servers', False)
+        share_driver = driver.ShareDriver(False)
+
+        self.assertRaises(NotImplementedError,
+                          share_driver.migration_get_progress,
+                          None, None, None, None)
+
+    def test_migration_get_driver_info_default(self):
 
         driver.CONF.set_default('driver_handles_share_servers', False)
         share_driver = driver.ShareDriver(False)
 
         self.assertIsNone(
-            share_driver.get_driver_migration_info(None, None, None), None)
+            share_driver.migration_get_driver_info(None, None, None), None)
 
-    def test_get_migration_info_default(self):
-        expected = {'mount': ['mount', '-t', 'fake_proto', '/fake/fake_id',
-                              '/tmp/fake_id'],
-                    'umount': ['umount', '/tmp/fake_id'],
-                    'access': {'access_type': 'ip',
-                               'access_level': 'rw',
-                               'access_to': None}}
+    @ddt.data(True, False)
+    def test_migration_get_info(self, admin):
+
+        expected = {'mount': 'mount -vt fake_proto /fake/fake_id %(path)s',
+                    'unmount': 'umount -v %(path)s'}
         fake_share = {'id': 'fake_id',
                       'share_proto': 'fake_proto',
-                      'export_locations': [{'path': '/fake/fake_id'}]}
+                      'export_locations': [{'path': '/fake/fake_id',
+                                            'is_admin_only': admin}]}
 
         driver.CONF.set_default('driver_handles_share_servers', False)
         share_driver = driver.ShareDriver(False)
         share_driver.configuration = configuration.Configuration(None)
 
-        migration_info = share_driver.get_migration_info(None,
-                                                         fake_share,
-                                                         "fake_server")
+        migration_info = share_driver.migration_get_info(
+            None, fake_share, "fake_server")
 
         self.assertEqual(expected, migration_info)
 
-    def test_get_migration_info_parameters(self):
+    def test_update_access(self):
+        share_driver = driver.ShareDriver(True, configuration=None)
+        self.assertRaises(
+            NotImplementedError,
+            share_driver.update_access,
+            'ctx',
+            'fake_share',
+            'fake_access_rules'
+        )
 
-        expected = {'mount': ['fake_mount', '/200.200.200.200/fake_id',
-                              '/tmp/fake_id'],
-                    'umount': ['umount', '/tmp/fake_id'],
-                    'access': {'access_type': 'ip',
-                               'access_level': 'rw',
-                               'access_to': '100.100.100.100'}}
+    def test_create_replica(self):
+        share_driver = self._instantiate_share_driver(None, True)
+        self.assertRaises(NotImplementedError,
+                          share_driver.create_replica,
+                          'fake_context', ['r1', 'r2'],
+                          'fake_new_replica', [])
 
-        fake_share = {'id': 'fake_id',
-                      'export_locations': [{'path': '/5.5.5.5/fake_id'}]}
+    def test_delete_replica(self):
+        share_driver = self._instantiate_share_driver(None, True)
+        self.assertRaises(NotImplementedError,
+                          share_driver.delete_replica,
+                          'fake_context', ['r1', 'r2'],
+                          'fake_replica')
 
-        driver.CONF.set_default('driver_handles_share_servers', False)
-        driver.CONF.set_default('migration_protocol_mount_command',
-                                'fake_mount')
-        driver.CONF.set_default('migration_mounting_backend_ip',
-                                '200.200.200.200')
-        driver.CONF.set_default('migration_data_copy_node_ip',
-                                '100.100.100.100')
+    def test_promote_replica(self):
+        share_driver = self._instantiate_share_driver(None, True)
+        self.assertRaises(NotImplementedError,
+                          share_driver.promote_replica,
+                          'fake_context', [], 'fake_replica', [])
 
-        share_driver = driver.ShareDriver(False)
-        share_driver.configuration = configuration.Configuration(None)
-        migration_info = share_driver.get_migration_info(None,
-                                                         fake_share,
-                                                         "fake_server")
-
-        self.assertEqual(expected, migration_info)
-
-    def _setup_mocks_copy_share_data(self):
-
-        get_migration_info_value = {'mount': 'fake',
-                                    'umount': 'fake',
-                                    'access':
-                                    {'access_type': 'fake',
-                                     'access_to': 'fake'}}
-
-        self.mock_object(rpcapi.ShareAPI, 'get_migration_info',
-                         mock.Mock(return_value=get_migration_info_value))
-
-        self.mock_object(driver.ShareDriver, 'get_migration_info',
-                         mock.Mock(return_value=get_migration_info_value))
-
-        self.mock_object(share_utils.Copy, 'run')
-        self.mock_object(time, 'sleep')
-
-        driver.CONF.set_default('driver_handles_share_servers', False)
-        share_driver = driver.ShareDriver(
-            False, configuration=configuration.Configuration(None))
-
-        return share_driver
-
-    def test_copy_share_data(self):
-        fake_share = db_utils.create_share(
-            id='fakeid', status=constants.STATUS_AVAILABLE, host='fake_host')
-        fake_share_instance = {'id': 'fake_id', 'host': 'fake_host'}
-        share_driver = self._setup_mocks_copy_share_data()
-        remote = {'access': {'access_to': '192.168.0.1'},
-                  'mount': 'fake_mount',
-                  'umount': 'fake_umount'}
-        local = {'access': {'access_to': '192.168.1.1'},
-                 'mount': 'fake_mount',
-                 'umount': 'fake_umount'}
-        helper = migration.ShareMigrationHelper(None, None, None, None, None)
-
-        driver.CONF.set_default('migration_tmp_location', '/fake/path')
-        driver.CONF.set_default('migration_ignore_files', None)
-
-        self.mock_object(migration.ShareMigrationHelper,
-                         'deny_migration_access')
-        self.mock_object(migration.ShareMigrationHelper,
-                         'allow_migration_access',
-                         mock.Mock(return_value='fake_access_ref'))
-        self.mock_object(utils, 'execute')
-        self.mock_object(share_utils.Copy, 'get_progress', mock.Mock(
-            return_value={'total_progress': 100}))
-
-        share_driver.copy_share_data('ctx', helper, fake_share,
-                                     fake_share_instance, None,
-                                     fake_share_instance, None,
-                                     local, remote)
-
-        args = ((None, local['access'], False),
-                (None, remote['access'], False),
-                ('fake_access_ref', local['access']),
-                ('fake_access_ref', remote['access']))
-        migration.ShareMigrationHelper.deny_migration_access.assert_has_calls(
-            [mock.call(*a) for a in args])
-
-    def test_copy_share_data_failed(self):
-        fake_share = db_utils.create_share(
-            id='fakeid', status=constants.STATUS_AVAILABLE, host='fake_host')
-        fake_share_instance = {'id': 'fake_id', 'host': 'fake_host'}
-        share_driver = self._setup_mocks_copy_share_data()
-        remote = {'access': {'access_to': '192.168.0.1'},
-                  'mount': 'fake_mount',
-                  'umount': 'fake_umount'}
-        local = {'access': {'access_to': '192.168.1.1'},
-                 'mount': 'fake_mount',
-                 'umount': 'fake_umount'}
-        helper = migration.ShareMigrationHelper(None, None, None, None, None)
-
-        driver.CONF.set_default('migration_tmp_location', '/fake/path')
-        driver.CONF.set_default('migration_ignore_files', None)
-
-        self.mock_object(migration.ShareMigrationHelper,
-                         'deny_migration_access')
-        self.mock_object(migration.ShareMigrationHelper,
-                         'allow_migration_access',
-                         mock.Mock(return_value='fake_access_ref'))
-        self.mock_object(utils, 'execute')
-        self.mock_object(share_utils.Copy, 'get_progress', mock.Mock(
-            return_value=None))
-        self.assertRaises(exception.ShareMigrationFailed,
-                          share_driver.copy_share_data, 'ctx', helper,
-                          fake_share, fake_share_instance, None,
-                          fake_share_instance, None, local, remote)
-
-        args = ((None, local['access'], False),
-                (None, remote['access'], False))
-        migration.ShareMigrationHelper.deny_migration_access.assert_has_calls(
-            [mock.call(*a) for a in args])
-
-    def test_copy_share_data_local_access_exception(self):
-        fake_share = db_utils.create_share(
-            id='fakeid', status=constants.STATUS_AVAILABLE, host='fake_host')
-        fake_share_instance = {'id': 'fake_id', 'host': 'fake_host'}
-        share_driver = self._setup_mocks_copy_share_data()
-        remote = {'access': {'access_to': '192.168.0.1'},
-                  'mount': 'fake_mount',
-                  'umount': 'fake_umount'}
-        local = {'access': {'access_to': '192.168.1.1'},
-                 'mount': 'fake_mount',
-                 'umount': 'fake_umount'}
-        helper = migration.ShareMigrationHelper(None, None, None, None, None)
-
-        driver.CONF.set_default('migration_tmp_location', '/fake/path')
-        driver.CONF.set_default('migration_ignore_files', None)
-
-        self.mock_object(migration.ShareMigrationHelper,
-                         'deny_migration_access')
-        self.mock_object(
-            migration.ShareMigrationHelper,
-            'allow_migration_access',
-            mock.Mock(side_effect=[
-                exception.ShareMigrationFailed(reason='fake')]))
-        self.assertRaises(exception.ShareMigrationFailed,
-                          share_driver.copy_share_data, 'ctx', helper,
-                          fake_share, fake_share_instance, None,
-                          fake_share_instance, None, local, remote)
-
-        args = ((None, local['access'], False),
-                (None, remote['access'], False))
-        migration.ShareMigrationHelper.deny_migration_access.assert_has_calls(
-            [mock.call(*a) for a in args])
-
-    def test_copy_share_data_remote_access_exception(self):
-        fake_share = db_utils.create_share(
-            id='fakeid', status=constants.STATUS_AVAILABLE, host='fake_host')
-        fake_share_instance = {'id': 'fake_id', 'host': 'fake_host'}
-        share_driver = self._setup_mocks_copy_share_data()
-        remote = {'access': {'access_to': '192.168.0.1'},
-                  'mount': 'fake_mount',
-                  'umount': 'fake_umount'}
-        local = {'access': {'access_to': '192.168.1.1'},
-                 'mount': 'fake_mount',
-                 'umount': 'fake_umount'}
-        helper = migration.ShareMigrationHelper(None, None, None, None, None)
-
-        driver.CONF.set_default('migration_tmp_location', '/fake/path')
-        driver.CONF.set_default('migration_ignore_files', None)
-
-        self.mock_object(migration.ShareMigrationHelper,
-                         'deny_migration_access')
-        self.mock_object(
-            migration.ShareMigrationHelper,
-            'allow_migration_access',
-            mock.Mock(side_effect=[None,
-                                   exception.ShareMigrationFailed(
-                                       reason='fake')]))
-        self.mock_object(migration.ShareMigrationHelper,
-                         'cleanup_migration_access')
-        self.assertRaises(exception.ShareMigrationFailed,
-                          share_driver.copy_share_data, 'ctx', helper,
-                          fake_share, fake_share_instance, None,
-                          fake_share_instance, None, local, remote)
-
-        args = ((None, local['access'], False),
-                (None, remote['access'], False))
-        migration.ShareMigrationHelper.deny_migration_access.assert_has_calls(
-            [mock.call(*a) for a in args])
-
-    def test_copy_share_data_mount_for_migration_exception(self):
-        fake_share = db_utils.create_share(
-            id='fakeid', status=constants.STATUS_AVAILABLE, host='fake_host')
-        fake_share_instance = {'id': 'fake_id', 'host': 'fake_host'}
-        share_driver = self._setup_mocks_copy_share_data()
-        remote = {'access': {'access_to': '192.168.0.1'},
-                  'mount': 'fake_mount',
-                  'umount': 'fake_umount'}
-        local = {'access': {'access_to': '192.168.1.1'},
-                 'mount': 'fake_mount',
-                 'umount': 'fake_umount'}
-        helper = migration.ShareMigrationHelper(None, None, None, None, None)
-
-        msg = ('Failed to mount temporary folder for migration of share '
-               'instance fake_id to fake_id')
-
-        driver.CONF.set_default('migration_tmp_location', '/fake/path')
-
-        self.mock_object(migration.ShareMigrationHelper,
-                         'deny_migration_access')
-        self.mock_object(migration.ShareMigrationHelper,
-                         'allow_migration_access',
-                         mock.Mock(return_value='fake_access_ref'))
-        self.mock_object(migration.ShareMigrationHelper,
-                         'cleanup_migration_access')
-        self.mock_object(migration.ShareMigrationHelper,
-                         'cleanup_temp_folder')
-        self.mock_object(utils, 'execute', mock.Mock(
-            side_effect=[None, None, exception.ShareMigrationFailed(msg)]))
-
-        self.assertRaises(exception.ShareMigrationFailed,
-                          share_driver.copy_share_data,
-                          'ctx', helper, fake_share,
-                          fake_share_instance, None,
-                          fake_share_instance, None,
-                          local, remote)
-        args = ((None, local['access'], False),
-                (None, remote['access'], False))
-        migration.ShareMigrationHelper.deny_migration_access.assert_has_calls(
-            [mock.call(*a) for a in args])
-
-    def test_copy_share_data_mount_for_migration_exception2(self):
-        fake_share = db_utils.create_share(
-            id='fakeid', status=constants.STATUS_AVAILABLE, host='fake_host')
-        fake_share_instance = {'id': 'fake_id', 'host': 'fake_host'}
-        share_driver = self._setup_mocks_copy_share_data()
-        remote = {'access': {'access_to': '192.168.0.1'},
-                  'mount': 'fake_mount',
-                  'umount': 'fake_umount'}
-        local = {'access': {'access_to': '192.168.1.1'},
-                 'mount': 'fake_mount',
-                 'umount': 'fake_umount'}
-        helper = migration.ShareMigrationHelper(None, None, None, None, None)
-
-        msg = ('Failed to mount temporary folder for migration of share '
-               'instance fake_id to fake_id')
-
-        driver.CONF.set_default('migration_tmp_location', '/fake/path')
-
-        self.mock_object(migration.ShareMigrationHelper,
-                         'deny_migration_access')
-        self.mock_object(migration.ShareMigrationHelper,
-                         'allow_migration_access',
-                         mock.Mock(return_value='fake_access_ref'))
-        self.mock_object(migration.ShareMigrationHelper,
-                         'cleanup_migration_access')
-        self.mock_object(migration.ShareMigrationHelper,
-                         'cleanup_temp_folder')
-        self.mock_object(migration.ShareMigrationHelper,
-                         'cleanup_unmount_temp_folder')
-        self.mock_object(utils, 'execute', mock.Mock(
-            side_effect=[None, None, None,
-                         exception.ShareMigrationFailed(msg)]))
-
-        self.assertRaises(exception.ShareMigrationFailed,
-                          share_driver.copy_share_data,
-                          'ctx', helper, fake_share,
-                          fake_share_instance, None,
-                          fake_share_instance, None,
-                          local, remote)
-        args = ((None, local['access'], False),
-                (None, remote['access'], False))
-        migration.ShareMigrationHelper.deny_migration_access.assert_has_calls(
-            [mock.call(*a) for a in args])
-
-    def test_copy_share_data_access_rule_invalid(self):
-
-        fake_share = db_utils.create_share(
-            id='fakeid', status=constants.STATUS_AVAILABLE, host='fake_host')
-
-        share_driver = self._setup_mocks_copy_share_data()
-        remote = {'access': {'access_to': None},
-                  'mount': 'fake_mount',
-                  'umount': 'fake_umount'}
-        local = {'access': {'access_to': '192.168.1.1'},
-                 'mount': 'fake_mount',
-                 'umount': 'fake_umount'}
-
-        driver.CONF.set_default('migration_tmp_location', '/fake/path')
-
-        self.assertRaises(exception.ShareMigrationFailed,
-                          share_driver.copy_share_data, 'ctx', None,
-                          fake_share, None, None, None, None, local, remote)
+    def test_update_replica_state(self):
+        share_driver = self._instantiate_share_driver(None, True)
+        self.assertRaises(NotImplementedError,
+                          share_driver.update_replica_state,
+                          'fake_context', ['r1', 'r2'], 'fake_replica', [])

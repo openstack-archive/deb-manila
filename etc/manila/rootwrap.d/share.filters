@@ -7,6 +7,50 @@ chown: CommandFilter, chown, root
 # manila/utils.py : 'cat', '%s'
 cat: CommandFilter, cat, root
 
+# manila/share/drivers/lvm.py: 'mkfs.ext4', '/dev/mapper/%s'
+mkfs.ext4: CommandFilter, /sbin/mkfs.ext4, root
+
+# manila/share/drivers/lvm.py: 'mkfs.ext3', '/dev/mapper/%s'
+mkfs.ext3: CommandFilter, /sbin/mkfs.ext3, root
+
+# manila/share/drivers/lvm.py: 'smbd', '-s', '%s', '-D'
+smbd: CommandFilter, /usr/sbin/smbd, root
+smb: CommandFilter, /usr/sbin/smb, root
+
+# manila/share/drivers/lvm.py: 'rmdir', '%s'
+rmdir: CommandFilter, /bin/rmdir, root
+
+# manila/share/drivers/lvm.py: 'dd' 'count=0', 'if=%s' % srcstr, 'of=%s'
+dd: CommandFilter, dd, root
+
+# manila/share/drivers/lvm.py: 'fsck', '-pf', %s
+fsck: CommandFilter, fsck, root
+
+# manila/share/drivers/lvm.py: 'resize2fs', %s
+resize2fs: CommandFilter, resize2fs, root
+
+# manila/share/drivers/helpers.py: 'smbcontrol', 'all', 'close-share', '%s'
+smbcontrol: CommandFilter, /usr/bin/smbcontrol, root
+
+# manila/share/drivers/helpers.py: 'net', 'conf', 'addshare', '%s', '%s', 'writeable=y', 'guest_ok=y
+# manila/share/drivers/helpers.py: 'net', 'conf', 'delshare', '%s'
+# manila/share/drivers/helpers.py: 'net', 'conf', 'setparm', '%s', '%s', '%s'
+# manila/share/drivers/helpers.py: 'net', 'conf', 'getparm', '%s', 'hosts allow'
+net: CommandFilter, /usr/bin/net, root
+
+# manila/share/drivers/lvm.py: 'lvremove', '-f', "%s/%s
+lvremove: CommandFilter, lvremove, root
+
+# manila/share/drivers/lvm.py: 'lvextend', '-L', '%sG''-n', %s
+lvextend: CommandFilter, lvextend, root
+
+# manila/share/drivers/lvm.py: 'lvcreate', '-L', %s, '-n', %s
+lvcreate: CommandFilter, lvcreate, root
+
+# manila/share/drivers/lvm.py: 'vgs', '--noheadings', '-o', 'name'
+# manila/share/drivers/lvm.py: 'vgs', %s, '--rows', '--units', 'g'
+vgs: CommandFilter, vgs, root
+
 # manila/share/drivers/glusterfs.py: 'mkdir', '%s'
 # manila/share/drivers/ganesha/manager.py: 'mkdir', '-p', '%s'
 mkdir: CommandFilter, mkdir, root
@@ -15,7 +59,7 @@ mkdir: CommandFilter, mkdir, root
 rm: CommandFilter, rm, root
 
 # manila/share/drivers/glusterfs.py: 'mount', '-t', 'glusterfs', '%s', '%s'
-# manila/share/drivers/glusterfs_native.py: 'mount', '-t', 'glusterfs', '%s', '%s'
+# manila/share/drivers/glusterfs/glusterfs_native.py: 'mount', '-t', 'glusterfs', '%s', '%s'
 mount: CommandFilter, mount, root
 
 # manila/share/drivers/glusterfs.py: 'gluster', '--xml', 'volume', 'info', '%s'
@@ -28,11 +72,11 @@ ip: CommandFilter, ip, root
 # manila/network/linux/interface.py: 'ovs-vsctl', 'add-port', '%s', '%s'
 ovs-vsctl: CommandFilter, ovs-vsctl, root
 
-# manila/share/drivers/glusterfs_native.py: 'find', '%s', '-mindepth', '1', '!', '-path', '%s', '!', '-path', '%s', '-delete'
-# manila/share/drivers/glusterfs_native.py: 'find', '%s', '-mindepth', '1', '-delete'
+# manila/share/drivers/glusterfs/glusterfs_native.py: 'find', '%s', '-mindepth', '1', '!', '-path', '%s', '!', '-path', '%s', '-delete'
+# manila/share/drivers/glusterfs/glusterfs_native.py: 'find', '%s', '-mindepth', '1', '-delete'
 find: CommandFilter, find, root
 
-# manila/share/drivers/glusterfs_native.py: 'umount', '%s'
+# manila/share/drivers/glusterfs/glusterfs_native.py: 'umount', '%s'
 umount: CommandFilter, umount, root
 
 # GPFS commands
@@ -92,3 +136,27 @@ dbus-removeexport: RegExpFilter, dbus-send, root, dbus-send, --print-reply, --sy
 
 # manila/share/drivers/ganesha/manager.py:
 rmconf: RegExpFilter, sh, root, sh, -c, rm -f /.*/\*\.conf$
+
+# ZFS commands
+# manila/share/drivers/zfsonlinux/driver.py
+# manila/share/drivers/zfsonlinux/utils.py
+zpool: CommandFilter, zpool, root
+
+# manila/share/drivers/zfsonlinux/driver.py
+# manila/share/drivers/zfsonlinux/utils.py
+zfs: CommandFilter, zfs, root
+
+# manila/share/drivers/zfsonlinux/driver.py
+nsenter: CommandFilter, /usr/local/bin/nsenter, root
+
+# LXD driver commands
+# manila/share/drivers/lxd.py
+lxc: CommandFilter, lxc, root
+# manila/share/drivers/lxd.py
+brctl: CommandFilter, brctl, root
+
+# manila/data/utils.py: 'ls', '-pA1', '--group-directories-first', '%s'
+ls: CommandFilter, ls, root
+
+# manila/data/utils.py: 'touch', '--reference=%s', '%s'
+touch: CommandFilter, touch, root

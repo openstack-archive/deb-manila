@@ -31,6 +31,9 @@ import paramiko
 from six.moves import builtins
 
 import manila
+from manila.common import constants
+from manila import context
+from manila.db import api as db
 from manila import exception
 from manila import test
 from manila import utils
@@ -251,7 +254,7 @@ class GenericUtilsTestCase(test.TestCase):
         with tempfile.NamedTemporaryFile() as f:
             with utils.temporary_chown(f.name, owner_uid=2):
                 self.assertEqual(2, fake_execute.uid)
-            self.assertEqual(os.getuid(), fake_execute.uid)
+            self.assertEqual(fake_execute.uid, os.getuid())
 
     def test_service_is_up(self):
         fts_func = datetime.datetime.fromtimestamp
@@ -352,6 +355,47 @@ class GenericUtilsTestCase(test.TestCase):
     def test_check_ssh_injection_on_error0(self, cmd):
         self.assertRaises(exception.SSHInjectionThreat,
                           utils.check_ssh_injection, cmd)
+
+    @ddt.data(
+        (("3G", "G"), 3.0),
+        (("4.1G", "G"), 4.1),
+        (("5.23G", "G"), 5.23),
+        (("9728M", "G"), 9.5),
+        (("8192K", "G"), 0.0078125),
+        (("2T", "G"), 2048.0),
+        (("2.1T", "G"), 2150.4),
+        (("3P", "G"), 3145728.0),
+        (("3.4P", "G"), 3565158.4),
+        (("9728M", "M"), 9728.0),
+        (("9728.2381T", "T"), 9728.2381),
+        (("0", "G"), 0.0),
+        (("512", "M"), 0.00048828125),
+        (("2097152.", "M"), 2.0),
+        ((".1024", "K"), 0.0001),
+        (("2048G", "T"), 2.0),
+        (("65536G", "P"), 0.0625),
+    )
+    @ddt.unpack
+    def test_translate_string_size_to_float_positive(self, request, expected):
+        actual = utils.translate_string_size_to_float(*request)
+        self.assertEqual(expected, actual)
+
+    @ddt.data(
+        (None, "G"),
+        ("fake", "G"),
+        ("1fake", "G"),
+        ("2GG", "G"),
+        ("1KM", "G"),
+        ("K1M", "G"),
+        ("M1K", "G"),
+        ("", "G"),
+        (23, "G"),
+        (23.0, "G"),
+    )
+    @ddt.unpack
+    def test_translate_string_size_to_float_negative(self, string, multiplier):
+        actual = utils.translate_string_size_to_float(string, multiplier)
+        self.assertIsNone(actual)
 
 
 class MonkeyPatchTestCase(test.TestCase):
@@ -829,3 +873,72 @@ class RequireDriverInitializedTestCase(test.TestCase):
             expected_exception = exception.DriverNotInitialized
 
         self.assertRaises(expected_exception, FakeManager().call_me)
+
+
+class WaitUntilTrueTestCase(test.TestCase):
+
+    def test_wait_until_true_ok(self):
+        fake_predicate = mock.Mock(return_value=True)
+        exc = exception.ManilaException
+        utils.wait_until_true(fake_predicate, 1, 1, exc)
+        self.assertTrue(fake_predicate.called)
+
+    def test_wait_until_true_not_ok(self):
+        fake_predicate = mock.Mock(return_value=False)
+        exc = exception.ManilaException
+        self.assertRaises(exception.ManilaException, utils.wait_until_true,
+                          fake_predicate, 1, 1, exc)
+
+
+@ddt.ddt
+class ShareMigrationHelperTestCase(test.TestCase):
+    """Tests DataMigrationHelper."""
+
+    def setUp(self):
+        super(ShareMigrationHelperTestCase, self).setUp()
+        self.context = context.get_admin_context()
+
+    def test_wait_for_access_update(self):
+        sid = 1
+        fake_share_instances = [
+            {'id': sid, 'access_rules_status': constants.STATUS_OUT_OF_SYNC},
+            {'id': sid, 'access_rules_status': constants.STATUS_ACTIVE},
+        ]
+
+        self.mock_object(time, 'sleep')
+        self.mock_object(db, 'share_instance_get',
+                         mock.Mock(side_effect=fake_share_instances))
+
+        utils.wait_for_access_update(self.context, db,
+                                     fake_share_instances[0], 1)
+
+        db.share_instance_get.assert_has_calls(
+            [mock.call(mock.ANY, sid), mock.call(mock.ANY, sid)]
+        )
+        time.sleep.assert_called_once_with(1)
+
+    @ddt.data(
+        (
+            {'id': '1', 'access_rules_status': constants.STATUS_ERROR},
+            exception.ShareMigrationFailed
+        ),
+        (
+            {'id': '1', 'access_rules_status': constants.STATUS_OUT_OF_SYNC},
+            exception.ShareMigrationFailed
+        ),
+    )
+    @ddt.unpack
+    def test_wait_for_access_update_invalid(self, fake_instance, expected_exc):
+        self.mock_object(time, 'sleep')
+        self.mock_object(db, 'share_instance_get',
+                         mock.Mock(return_value=fake_instance))
+
+        now = time.time()
+        timeout = now + 100
+
+        self.mock_object(time, 'time',
+                         mock.Mock(side_effect=[now, timeout]))
+
+        self.assertRaises(expected_exc,
+                          utils.wait_for_access_update, self.context,
+                          db, fake_instance, 1)

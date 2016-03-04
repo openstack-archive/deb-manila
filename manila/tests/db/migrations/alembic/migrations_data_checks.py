@@ -34,6 +34,7 @@ See BaseMigrationChecks class for more information.
 """
 
 import abc
+import datetime
 
 from oslo_utils import uuidutils
 import six
@@ -253,3 +254,355 @@ class ShareInstanceExportLocationMetadataChecks(BaseMigrationChecks):
         self.test_case.assertRaises(
             sa_exc.NoSuchTableError,
             utils.load_table, self.elm_table_name, engine)
+
+
+@map_to_migration('344c1ac4747f')
+class AccessRulesStatusMigrationChecks(BaseMigrationChecks):
+
+    def _get_instance_data(self, data):
+        base_dict = {}
+        base_dict.update(data)
+        return base_dict
+
+    def setup_upgrade_data(self, engine):
+
+        share_table = utils.load_table('shares', engine)
+
+        share = {
+            'id': 1,
+            'share_proto': "NFS",
+            'size': 0,
+            'snapshot_id': None,
+            'user_id': 'fake',
+            'project_id': 'fake',
+        }
+
+        engine.execute(share_table.insert(share))
+
+        rules1 = [
+            {'id': 'r1', 'share_instance_id': 1, 'state': 'active',
+             'deleted': 'False'},
+            {'id': 'r2', 'share_instance_id': 1, 'state': 'active',
+             'deleted': 'False'},
+            {'id': 'r3', 'share_instance_id': 1, 'state': 'deleting',
+             'deleted': 'False'},
+        ]
+        rules2 = [
+            {'id': 'r4', 'share_instance_id': 2, 'state': 'active',
+             'deleted': 'False'},
+            {'id': 'r5', 'share_instance_id': 2, 'state': 'error',
+             'deleted': 'False'},
+        ]
+
+        rules3 = [
+            {'id': 'r6', 'share_instance_id': 3, 'state': 'new',
+             'deleted': 'False'},
+        ]
+
+        instance_fixtures = [
+            {'id': 1, 'deleted': 'False', 'host': 'fake1', 'share_id': 1,
+             'status': 'available', 'rules': rules1},
+            {'id': 2, 'deleted': 'False', 'host': 'fake2', 'share_id': 1,
+             'status': 'available', 'rules': rules2},
+            {'id': 3, 'deleted': 'False', 'host': 'fake3', 'share_id': 1,
+             'status': 'available', 'rules': rules3},
+            {'id': 4, 'deleted': 'False', 'host': 'fake4', 'share_id': 1,
+             'status': 'deleting', 'rules': []},
+        ]
+
+        share_instances_table = utils.load_table('share_instances', engine)
+        share_instances_rules_table = utils.load_table(
+            'share_instance_access_map', engine)
+
+        for fixture in instance_fixtures:
+            rules = fixture.pop('rules')
+            engine.execute(share_instances_table.insert(fixture))
+
+            for rule in rules:
+                engine.execute(share_instances_rules_table.insert(rule))
+
+    def check_upgrade(self, engine, _):
+        instances_table = utils.load_table('share_instances', engine)
+
+        valid_statuses = {
+            '1': 'active',
+            '2': 'error',
+            '3': 'out_of_sync',
+            '4': None,
+        }
+
+        instances = engine.execute(instances_table.select().where(
+            instances_table.c.id in valid_statuses.keys()))
+
+        for instance in instances:
+            self.test_case.assertEqual(valid_statuses[instance['id']],
+                                       instance['access_rules_status'])
+
+    def check_downgrade(self, engine):
+        share_instances_rules_table = utils.load_table(
+            'share_instance_access_map', engine)
+
+        valid_statuses = {
+            '1': 'active',
+            '2': 'error',
+            '3': 'error',
+            '4': None,
+        }
+
+        for rule in engine.execute(share_instances_rules_table.select()):
+            valid_state = valid_statuses[rule['share_instance_id']]
+            self.test_case.assertEqual(valid_state, rule['state'])
+
+
+@map_to_migration('293fac1130ca')
+class ShareReplicationMigrationChecks(BaseMigrationChecks):
+
+    valid_share_display_names = ('FAKE_SHARE_1', 'FAKE_SHARE_2',
+                                 'FAKE_SHARE_3')
+    valid_share_ids = []
+    valid_replication_types = ('writable', 'readable', 'dr')
+
+    def _load_tables_and_get_data(self, engine):
+        share_table = utils.load_table('shares', engine)
+        share_instances_table = utils.load_table('share_instances', engine)
+
+        shares = engine.execute(
+            share_table.select().where(share_table.c.id.in_(
+                self.valid_share_ids))
+        ).fetchall()
+        share_instances = engine.execute(share_instances_table.select().where(
+            share_instances_table.c.share_id.in_(self.valid_share_ids))
+        ).fetchall()
+
+        return shares, share_instances
+
+    def _new_share(self, **kwargs):
+        share = {
+            'id': uuidutils.generate_uuid(),
+            'display_name': 'fake_share',
+            'size': '1',
+            'deleted': 'False',
+            'share_proto': 'fake_proto',
+            'user_id': 'fake_user_id',
+            'project_id': 'fake_project_uuid',
+            'snapshot_support': '1',
+            'task_state': None,
+        }
+        share.update(kwargs)
+        return share
+
+    def _new_instance(self, share_id=None, **kwargs):
+        instance = {
+            'id': uuidutils.generate_uuid(),
+            'share_id': share_id or uuidutils.generate_uuid(),
+            'deleted': 'False',
+            'host': 'openstack@BackendZ#PoolA',
+            'status': 'available',
+            'scheduled_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+            'launched_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+            'terminated_at': None,
+            'access_rules_status': 'active',
+        }
+        instance.update(kwargs)
+        return instance
+
+    def setup_upgrade_data(self, engine):
+
+        shares_data = []
+        instances_data = []
+        self.valid_share_ids = []
+
+        for share_display_name in self.valid_share_display_names:
+            share_ref = self._new_share(display_name=share_display_name)
+            shares_data.append(share_ref)
+            instances_data.append(self._new_instance(share_id=share_ref['id']))
+
+        shares_table = utils.load_table('shares', engine)
+
+        for share in shares_data:
+            self.valid_share_ids.append(share['id'])
+            engine.execute(shares_table.insert(share))
+
+        shares_instances_table = utils.load_table('share_instances', engine)
+
+        for share_instance in instances_data:
+            engine.execute(shares_instances_table.insert(share_instance))
+
+    def check_upgrade(self, engine, _):
+        shares, share_instances = self._load_tables_and_get_data(engine)
+        share_ids = [share['id'] for share in shares]
+        share_instance_share_ids = [share_instance['share_id'] for
+                                    share_instance in share_instances]
+
+        # Assert no data is lost
+        for sid in self.valid_share_ids:
+            self.test_case.assertIn(sid, share_ids)
+            self.test_case.assertIn(sid, share_instance_share_ids)
+
+        for share in shares:
+            self.test_case.assertIn(share['display_name'],
+                                    self.valid_share_display_names)
+            self.test_case.assertEqual('False', share.deleted)
+            self.test_case.assertTrue(hasattr(share, 'replication_type'))
+
+        for share_instance in share_instances:
+            self.test_case.assertTrue(hasattr(share_instance, 'replica_state'))
+
+    def check_downgrade(self, engine):
+        shares, share_instances = self._load_tables_and_get_data(engine)
+        share_ids = [share['id'] for share in shares]
+        share_instance_share_ids = [share_instance['share_id'] for
+                                    share_instance in share_instances]
+        # Assert no data is lost
+        for sid in self.valid_share_ids:
+            self.test_case.assertIn(sid, share_ids)
+            self.test_case.assertIn(sid, share_instance_share_ids)
+
+        for share in shares:
+            self.test_case.assertEqual('False', share.deleted)
+            self.test_case.assertIn(share.display_name,
+                                    self.valid_share_display_names)
+            self.test_case.assertFalse(hasattr(share, 'replication_type'))
+
+        for share_instance in share_instances:
+            self.test_case.assertEqual('False', share_instance.deleted)
+            self.test_case.assertIn(share_instance.share_id,
+                                    self.valid_share_ids)
+            self.test_case.assertFalse(
+                hasattr(share_instance, 'replica_state'))
+
+
+@map_to_migration('5155c7077f99')
+class NetworkAllocationsNewLabelColumnChecks(BaseMigrationChecks):
+    table_name = 'network_allocations'
+    ids = ['fake_network_allocation_id_%d' % i for i in (1, 2, 3)]
+
+    def setup_upgrade_data(self, engine):
+        user_id = 'user_id'
+        project_id = 'project_id'
+        share_server_id = 'foo_share_server_id'
+
+        # Create share network
+        share_network_data = {
+            'id': 'foo_share_network_id',
+            'user_id': user_id,
+            'project_id': project_id,
+        }
+        sn_table = utils.load_table('share_networks', engine)
+        engine.execute(sn_table.insert(share_network_data))
+
+        # Create share server
+        share_server_data = {
+            'id': share_server_id,
+            'share_network_id': share_network_data['id'],
+            'host': 'fake_host',
+            'status': 'active',
+        }
+        ss_table = utils.load_table('share_servers', engine)
+        engine.execute(ss_table.insert(share_server_data))
+
+        # Create network allocations
+        network_allocations = [
+            {'id': self.ids[0],
+             'share_server_id': share_server_id,
+             'ip_address': '1.1.1.1'},
+            {'id': self.ids[1],
+             'share_server_id': share_server_id,
+             'ip_address': '2.2.2.2'},
+        ]
+        na_table = utils.load_table(self.table_name, engine)
+        for network_allocation in network_allocations:
+            engine.execute(na_table.insert(network_allocation))
+
+    def check_upgrade(self, engine, data):
+        na_table = utils.load_table(self.table_name, engine)
+        for na in engine.execute(na_table.select()):
+            self.test_case.assertTrue(hasattr(na, 'label'))
+            self.test_case.assertEqual(na.label, 'user')
+
+        # Create admin network allocation
+        network_allocations = [
+            {'id': self.ids[2],
+             'share_server_id': na.share_server_id,
+             'ip_address': '3.3.3.3',
+             'label': 'admin',
+             'network_type': 'vlan',
+             'segmentation_id': 1005,
+             'ip_version': 4,
+             'cidr': '240.0.0.0/16'},
+        ]
+        engine.execute(na_table.insert(network_allocations))
+
+        # Select admin network allocations
+        for na in engine.execute(
+                na_table.select().where(na_table.c.label == 'admin')):
+            self.test_case.assertTrue(hasattr(na, 'label'))
+            self.test_case.assertEqual('admin', na.label)
+            for col_name in ('network_type', 'segmentation_id', 'ip_version',
+                             'cidr'):
+                self.test_case.assertTrue(hasattr(na, col_name))
+                self.test_case.assertEqual(
+                    network_allocations[0][col_name], getattr(na, col_name))
+
+    def check_downgrade(self, engine):
+        na_table = utils.load_table(self.table_name, engine)
+        db_result = engine.execute(na_table.select())
+        self.test_case.assertTrue(db_result.rowcount >= len(self.ids))
+        for na in db_result:
+            for col_name in ('label', 'network_type', 'segmentation_id',
+                             'ip_version', 'cidr'):
+                self.test_case.assertFalse(hasattr(na, col_name))
+
+
+@map_to_migration('eb6d5544cbbd')
+class ShareSnapshotInstanceNewProviderLocationColumnChecks(
+        BaseMigrationChecks):
+    table_name = 'share_snapshot_instances'
+
+    def setup_upgrade_data(self, engine):
+        # Setup shares
+        share_data = {'id': 'new_share_id'}
+        s_table = utils.load_table('shares', engine)
+        engine.execute(s_table.insert(share_data))
+
+        # Setup share instances
+        share_instance_data = {
+            'id': 'new_share_instance_id',
+            'share_id': share_data['id']
+        }
+        si_table = utils.load_table('share_instances', engine)
+        engine.execute(si_table.insert(share_instance_data))
+
+        # Setup share snapshots
+        share_snapshot_data = {
+            'id': 'new_snapshot_id',
+            'share_id': share_data['id']}
+        snap_table = utils.load_table('share_snapshots', engine)
+        engine.execute(snap_table.insert(share_snapshot_data))
+
+        # Setup snapshot instances
+        snapshot_instance_data = {
+            'id': 'new_snapshot_instance_id',
+            'snapshot_id': share_snapshot_data['id'],
+            'share_instance_id': share_instance_data['id']
+        }
+        snap_i_table = utils.load_table('share_snapshot_instances', engine)
+        engine.execute(snap_i_table.insert(snapshot_instance_data))
+
+    def check_upgrade(self, engine, data):
+        ss_table = utils.load_table(self.table_name, engine)
+        db_result = engine.execute(ss_table.select())
+        self.test_case.assertTrue(db_result.rowcount > 0)
+        for ss in db_result:
+            self.test_case.assertTrue(hasattr(ss, 'provider_location'))
+            self.test_case.assertEqual('new_snapshot_instance_id', ss.id)
+            self.test_case.assertEqual('new_snapshot_id', ss.snapshot_id)
+
+    def check_downgrade(self, engine):
+        ss_table = utils.load_table(self.table_name, engine)
+        db_result = engine.execute(ss_table.select())
+        self.test_case.assertTrue(db_result.rowcount > 0)
+        for ss in db_result:
+            self.test_case.assertFalse(hasattr(ss, 'provider_location'))
+            self.test_case.assertEqual('new_snapshot_instance_id', ss.id)
+            self.test_case.assertEqual('new_snapshot_id', ss.snapshot_id)

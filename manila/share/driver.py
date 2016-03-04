@@ -18,17 +18,14 @@ Drivers for shares.
 
 """
 
-import re
 import time
 
 from oslo_config import cfg
 from oslo_log import log
-import six
 
 from manila import exception
 from manila.i18n import _, _LE
 from manila import network
-from manila.share import utils as share_utils
 from manila import utils
 
 LOG = log.getLogger(__name__)
@@ -73,44 +70,49 @@ share_opts = [
              'total physical capacity. A ratio of 1.0 means '
              'provisioned capacity cannot exceed the total physical '
              'capacity. A ratio lower than 1.0 is invalid.'),
-    cfg.StrOpt(
-        'migration_tmp_location',
-        default='/tmp/',
-        help="Temporary path to create and mount shares during migration."),
     cfg.ListOpt(
         'migration_ignore_files',
         default=['lost+found'],
         help="List of files and folders to be ignored when migrating shares. "
              "Items should be names (not including any path)."),
-    cfg.IntOpt(
-        'migration_wait_access_rules_timeout',
-        default=90,
-        help="Time to wait for access rules to be allowed/denied on backends "
-             "when migrating shares using generic approach (seconds)."),
-    cfg.IntOpt(
-        'migration_create_delete_share_timeout',
-        default=300,
-        help='Timeout for creating and deleting share instances '
-             'when performing share migration (seconds).'),
     cfg.StrOpt(
-        'migration_mounting_backend_ip',
-        help="Backend IP in admin network to use for mounting "
-             "shares during migration."),
+        'share_mount_template',
+        default='mount -vt %(proto)s %(export)s %(path)s',
+        help="The template for mounting shares for this backend. Must specify "
+             "the executable with all necessary parameters for the protocol "
+             "supported. 'proto' template element may not be required if "
+             "included in the command. 'export' and 'path' template elements "
+             "are required. It is advisable to separate different commands "
+             "per backend."),
     cfg.StrOpt(
-        'migration_data_copy_node_ip',
-        help="The IP of the node responsible for copying data during "
-             "migration, such as the data copy service node, reachable by "
-             "the backend."),
-    cfg.StrOpt(
-        'migration_protocol_mount_command',
-        help="The command for mounting shares for this backend. Must specify"
-             "the executable and all necessary parameters for the protocol "
-             "supported. It is advisable to separate protocols per backend."),
+        'share_unmount_template',
+        default='umount -v %(path)s',
+        help="The template for unmounting shares for this backend. Must "
+             "specify the executable with all necessary parameters for the "
+             "protocol supported. 'path' template element is required. It is "
+             "advisable to separate different commands per backend."),
     cfg.BoolOpt(
-        'migration_readonly_support',
+        'migration_readonly_rules_support',
         default=True,
-        help="Specify whether read only access mode is supported in this"
+        deprecated_name='migration_readonly_support',
+        help="Specify whether read only access rule mode is supported in this "
              "backend."),
+    cfg.StrOpt(
+        "admin_network_config_group",
+        help="If share driver requires to setup admin network for share, then "
+             "define network plugin config options in some separate config "
+             "group and set its name here. Used only with another "
+             "option 'driver_handles_share_servers' set to 'True'."),
+    # Replication option/s
+    cfg.StrOpt(
+        "replication_domain",
+        default=None,
+        help="A string specifying the replication domain that the backend "
+             "belongs to. This option needs to be specified the same in the "
+             "configuration sections of all backends that support "
+             "replication between each other. If this option is not "
+             "specified in the group, it means that replication is not "
+             "enabled on the backend."),
 ]
 
 ssh_opts = [
@@ -221,6 +223,9 @@ class ShareDriver(object):
             unhandled share-servers that are not tracked by Manila.
             Share drivers are allowed to work only in one of two possible
             driver modes, that is why only one should be chosen.
+        :param config_opts: tuple, list or set of config option lists
+            that should be registered in driver's configuration right after
+            this attribute is created. Useful for usage with mixin classes.
         """
         super(ShareDriver, self).__init__()
         self.configuration = kwargs.get('configuration', None)
@@ -232,13 +237,27 @@ class ShareDriver(object):
             self.configuration.append_config_values(share_opts)
             network_config_group = (self.configuration.network_config_group or
                                     self.configuration.config_group)
+            admin_network_config_group = (
+                self.configuration.admin_network_config_group)
         else:
             network_config_group = None
+            admin_network_config_group = (
+                CONF.admin_network_config_group)
 
         self._verify_share_server_handling(driver_handles_share_servers)
         if self.driver_handles_share_servers:
+            # Enable common network
             self.network_api = network.API(
                 config_group_name=network_config_group)
+
+            # Enable admin network
+            if admin_network_config_group:
+                self._admin_network_api = network.API(
+                    config_group_name=admin_network_config_group,
+                    label='admin')
+
+        for config_opt_set in kwargs.get('config_opts', []):
+            self.configuration.append_config_values(config_opt_set)
 
         if hasattr(self, 'init_execute_mixin'):
             # Instance with 'ExecuteMixin'
@@ -248,10 +267,21 @@ class ShareDriver(object):
             self.init_ganesha_mixin(*args, **kwargs)  # pylint: disable=E1101
 
     @property
+    def admin_network_api(self):
+        if hasattr(self, '_admin_network_api'):
+            return self._admin_network_api
+
+    @property
     def driver_handles_share_servers(self):
         if self.configuration:
             return self.configuration.safe_get('driver_handles_share_servers')
         return CONF.driver_handles_share_servers
+
+    @property
+    def replication_domain(self):
+        if self.configuration:
+            return self.configuration.safe_get('replication_domain')
+        return CONF.replication_domain
 
     def _verify_share_server_handling(self, driver_handles_share_servers):
         """Verifies driver_handles_share_servers and given configuration."""
@@ -279,271 +309,124 @@ class ShareDriver(object):
                 {'actual': self.driver_handles_share_servers,
                  'allowed': driver_handles_share_servers})
 
-    def migrate_share(self, context, share_ref, host,
-                      dest_driver_migration_info):
-        """Is called to perform driver migration.
+    def migration_start(self, context, share_ref, share_server, host,
+                        dest_driver_migration_info, notify):
+        """Is called to perform 1st phase of driver migration of a given share.
 
         Driver should implement this method if willing to perform migration
         in an optimized way, useful for when driver understands destination
         backend.
         :param context: The 'context.RequestContext' object for the request.
         :param share_ref: Reference to the share being migrated.
+        :param share_server: Share server model or None.
         :param host: Destination host and its capabilities.
         :param dest_driver_migration_info: Migration information provided by
         destination host.
+        :param notify: whether the migration should complete or wait for
+        2nd phase call. Driver may throw exception when validating this
+        parameter, exception if does not support 1-phase or 2-phase approach.
         :returns: Boolean value indicating if driver migration succeeded.
         :returns: Dictionary containing a model update.
         """
         return None, None
 
-    def get_driver_migration_info(self, context, share_instance, share_server):
-        """Is called to provide necessary driver migration logic."""
+    def migration_complete(self, context, share_ref, share_server,
+                           dest_driver_migration_info):
+        """Is called to perform 2nd phase of driver migration of a given share.
+
+        If driver is implementing 2-phase migration, this method should
+        perform tasks related to the 2nd phase of migration, thus completing
+        it.
+        :param context: The 'context.RequestContext' object for the request.
+        :param share_ref: Reference to the share being migrated.
+        :param share_server: Share server model or None.
+        :param dest_driver_migration_info: Migration information provided by
+        destination host.
+        :returns: Dictionary containing a model update.
+        """
         return None
 
-    def get_migration_info(self, context, share_instance, share_server):
-        """Is called to provide necessary generic migration logic."""
+    def migration_cancel(self, context, share_ref, share_server,
+                         dest_driver_migration_info):
+        """Is called to cancel driver migration.
 
-        mount_cmd = self._get_mount_command(context, share_instance,
-                                            share_server)
+        If possible, driver can implement a way to cancel an in-progress
+        migration.
+        :param context: The 'context.RequestContext' object for the request.
+        :param share_ref: Reference to the share being migrated.
+        :param share_server: Share server model or None.
+        :param dest_driver_migration_info: Migration information provided by
+        destination host.
+        """
+        raise NotImplementedError()
 
-        umount_cmd = self._get_unmount_command(context, share_instance,
-                                               share_server)
+    def migration_get_progress(self, context, share_ref, share_server,
+                               dest_driver_migration_info):
+        """Is called to get migration progress.
 
-        access = self._get_access_rule_for_data_copy(
-            context, share_instance, share_server)
-        return {'mount': mount_cmd,
-                'umount': umount_cmd,
-                'access': access}
+        If possible, driver can implement a way to return migration progress
+        information.
+        :param context: The 'context.RequestContext' object for the request.
+        :param share_ref: Reference to the share being migrated.
+        :param share_server: Share server model or None.
+        :param dest_driver_migration_info: Migration information provided by
+        destination host.
+        :return: A dictionary with 'total_progress' field containing the
+        percentage value.
+        """
+        raise NotImplementedError()
+
+    def migration_get_driver_info(self, context, share, share_server):
+        """Is called to provide necessary driver migration logic.
+
+        :param context: The 'context.RequestContext' object for the request.
+        :param share: Reference to the share being migrated.
+        :param share_server: Share server model or None.
+        :return: A dictionary with migration information.
+        """
+        return None
+
+    def migration_get_info(self, context, share, share_server):
+        """Is called to provide necessary generic migration logic.
+
+        :param context: The 'context.RequestContext' object for the request.
+        :param share: Reference to the share being migrated.
+        :param share_server: Share server model or None.
+        :return: A dictionary with migration information.
+        """
+        mount_template = self._get_mount_command(context, share, share_server)
+
+        unmount_template = self._get_unmount_command(context, share,
+                                                     share_server)
+
+        return {'mount': mount_template,
+                'unmount': unmount_template}
 
     def _get_mount_command(self, context, share_instance, share_server):
         """Is called to delegate mounting share logic."""
-        mount_cmd = self._get_mount_command_protocol(share_instance,
-                                                     share_server)
 
-        mount_ip = self._get_mount_ip(share_instance, share_server)
-        mount_cmd.append(mount_ip)
+        mount_template = self.configuration.safe_get('share_mount_template')
 
-        mount_path = self.configuration.safe_get(
-            'migration_tmp_location') + share_instance['id']
-        mount_cmd.append(mount_path)
+        mount_export = self._get_mount_export(share_instance, share_server)
 
-        return mount_cmd
+        format_template = {'proto': share_instance['share_proto'].lower(),
+                           'export': mount_export,
+                           'path': '%(path)s'}
 
-    def _get_mount_command_protocol(self, share_instance, share_server):
-        mount_cmd = self.configuration.safe_get(
-            'migration_protocol_mount_command')
-        if mount_cmd:
-            return mount_cmd.split()
-        else:
-            return ['mount', '-t', share_instance['share_proto'].lower()]
+        return mount_template % format_template
 
-    def _get_mount_ip(self, share_instance, share_server):
-        # Note(ganso): DHSS = true drivers may need to override this method
-        # and use information saved in share_server structure.
-        mount_ip = self.configuration.safe_get('migration_mounting_backend_ip')
-        old_ip = share_instance['export_locations'][0]['path']
-        if mount_ip:
-            # NOTE(ganso): Does not currently work with hostnames and ipv6.
-            p = re.compile("\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}")
-            new_ip = p.sub(mount_ip, old_ip)
-            return new_ip
-        else:
-            return old_ip
+    def _get_mount_export(self, share_instance, share_server):
+        # NOTE(ganso): If drivers want to override the export_location IP,
+        # they can do so using this configuration. This method can also be
+        # overridden if necessary.
+        path = next((x['path'] for x in share_instance['export_locations']
+                    if x['is_admin_only']), None)
+        if not path:
+            path = share_instance['export_locations'][0]['path']
+        return path
 
     def _get_unmount_command(self, context, share_instance, share_server):
-        return ['umount',
-                self.configuration.safe_get('migration_tmp_location')
-                + share_instance['id']]
-
-    def _get_access_rule_for_data_copy(
-            self, context, share_instance, share_server):
-        """Is called to obtain access rule so data copy node can mount."""
-        # Note(ganso): The current method implementation is intended to work
-        # with Data Copy Service approach. If Manila Node is used for copying,
-        # then DHSS = true drivers may need to override this method.
-        service_ip = self.configuration.safe_get('migration_data_copy_node_ip')
-        return {'access_type': 'ip',
-                'access_level': 'rw',
-                'access_to': service_ip}
-
-    def copy_share_data(self, context, helper, share, share_instance,
-                        share_server, new_share_instance, new_share_server,
-                        migration_info_src, migration_info_dest):
-        """Copies share data of a given share to a new share.
-
-        :param context: The 'context.RequestContext' object for the request.
-        :param helper: instance of a share migration helper.
-        :param share: the share to copy.
-        :param share_instance: current instance holding the share.
-        :param share_server: current share_server hosting the share.
-        :param new_share_instance: share instance to copy data to.
-        :param new_share_server: share server that hosts destination share.
-        :param migration_info_src: migration information (source).
-        :param migration_info_dest: migration information (destination).
-        """
-
-        # NOTE(ganso): This method is here because it is debatable if it can
-        # be overridden by a driver or not. Personally I think it should not,
-        # else it would be possible to lose compatibility with generic
-        # migration between backends, but allows the driver to use it on its
-        # own implementation if it wants to.
-
-        migrated = False
-
-        mount_path = self.configuration.safe_get('migration_tmp_location')
-
-        src_access = migration_info_src['access']
-        dest_access = migration_info_dest['access']
-
-        if None in (src_access['access_to'], dest_access['access_to']):
-            msg = _("Access rules not appropriate for mounting share instances"
-                    " for migration of share %(share_id)s,"
-                    " source share access: %(src_ip)s, destination share"
-                    " access: %(dest_ip)s. Aborting.") % {
-                'src_ip': src_access['access_to'],
-                'dest_ip': dest_access['access_to'],
-                'share_id': share['id']}
-            raise exception.ShareMigrationFailed(reason=msg)
-
-        # NOTE(ganso): Removing any previously conflicting access rules, which
-        # would cause the following access_allow to fail for one instance.
-        helper.deny_migration_access(None, src_access, False)
-        helper.deny_migration_access(None, dest_access, False)
-
-        # NOTE(ganso): I would rather allow access to instances separately,
-        # but I require an access_id since it is a new access rule and
-        # destination manager must receive an access_id. I can either move
-        # this code to manager code so I can create the rule in DB manually,
-        # or ignore duplicate access rule errors for some specific scenarios.
-
-        try:
-            src_access_ref = helper.allow_migration_access(src_access)
-        except Exception as e:
-            LOG.error(_LE("Share migration failed attempting to allow "
-                          "access of %(access_to)s to share "
-                          "instance %(instance_id)s.") % {
-                'access_to': src_access['access_to'],
-                'instance_id': share_instance['id']})
-            msg = six.text_type(e)
-            LOG.exception(msg)
-            raise exception.ShareMigrationFailed(reason=msg)
-
-        try:
-            dest_access_ref = helper.allow_migration_access(dest_access)
-        except Exception as e:
-            LOG.error(_LE("Share migration failed attempting to allow "
-                          "access of %(access_to)s to share "
-                          "instance %(instance_id)s.") % {
-                'access_to': dest_access['access_to'],
-                'instance_id': new_share_instance['id']})
-            msg = six.text_type(e)
-            LOG.exception(msg)
-            helper.cleanup_migration_access(src_access_ref, src_access)
-            raise exception.ShareMigrationFailed(reason=msg)
-
-        # NOTE(ganso): From here we have the possibility of not cleaning
-        # anything when facing an error. At this moment, we have the
-        # destination instance in "inactive" state, while we are performing
-        # operations on the source instance. I think it is best to not clean
-        # the instance, leave it in "inactive" state, but try to clean
-        # temporary access rules, mounts, folders, etc, since no additional
-        # harm is done.
-
-        def _mount_for_migration(migration_info):
-
-            try:
-                utils.execute(*migration_info['mount'], run_as_root=True)
-            except Exception:
-                LOG.error(_LE("Failed to mount temporary folder for "
-                              "migration of share instance "
-                              "%(share_instance_id)s "
-                              "to %(new_share_instance_id)s") % {
-                    'share_instance_id': share_instance['id'],
-                    'new_share_instance_id': new_share_instance['id']})
-                helper.cleanup_migration_access(
-                    src_access_ref, src_access)
-                helper.cleanup_migration_access(
-                    dest_access_ref, dest_access)
-                raise
-
-        utils.execute('mkdir', '-p',
-                      ''.join((mount_path, share_instance['id'])))
-
-        utils.execute('mkdir', '-p',
-                      ''.join((mount_path, new_share_instance['id'])))
-
-        # NOTE(ganso): mkdir command sometimes returns faster than it
-        # actually runs, so we better sleep for 1 second.
-
-        time.sleep(1)
-
-        try:
-            _mount_for_migration(migration_info_src)
-        except Exception as e:
-            LOG.error(_LE("Share migration failed attempting to mount "
-                          "share instance %s.") % share_instance['id'])
-            msg = six.text_type(e)
-            LOG.exception(msg)
-            helper.cleanup_temp_folder(share_instance, mount_path)
-            helper.cleanup_temp_folder(new_share_instance, mount_path)
-            raise exception.ShareMigrationFailed(reason=msg)
-
-        try:
-            _mount_for_migration(migration_info_dest)
-        except Exception as e:
-            LOG.error(_LE("Share migration failed attempting to mount "
-                          "share instance %s.") % new_share_instance['id'])
-            msg = six.text_type(e)
-            LOG.exception(msg)
-            helper.cleanup_unmount_temp_folder(share_instance,
-                                               migration_info_src)
-            helper.cleanup_temp_folder(share_instance, mount_path)
-            helper.cleanup_temp_folder(new_share_instance, mount_path)
-            raise exception.ShareMigrationFailed(reason=msg)
-
-        try:
-            ignore_list = self.configuration.safe_get('migration_ignore_files')
-            copy = share_utils.Copy(mount_path + share_instance['id'],
-                                    mount_path + new_share_instance['id'],
-                                    ignore_list)
-            copy.run()
-            if copy.get_progress()['total_progress'] == 100:
-                migrated = True
-
-        except Exception as e:
-            LOG.exception(six.text_type(e))
-            LOG.error(_LE("Failed to copy files for "
-                          "migration of share instance %(share_instance_id)s "
-                          "to %(new_share_instance_id)s") % {
-                'share_instance_id': share_instance['id'],
-                'new_share_instance_id': new_share_instance['id']})
-
-        # NOTE(ganso): For some reason I frequently get AMQP errors after
-        # copying finishes, which seems like is the service taking too long to
-        # copy while not replying heartbeat messages, so AMQP closes the
-        # socket. There is no impact, it just shows a big trace and AMQP
-        # reconnects after, although I would like to prevent this situation
-        # without the use of additional threads. Suggestions welcome.
-
-        utils.execute(*migration_info_src['umount'], run_as_root=True)
-        utils.execute(*migration_info_dest['umount'], run_as_root=True)
-
-        utils.execute('rmdir', ''.join((mount_path, share_instance['id'])),
-                      check_exit_code=False)
-        utils.execute('rmdir', ''.join((mount_path, new_share_instance['id'])),
-                      check_exit_code=False)
-
-        helper.deny_migration_access(src_access_ref, src_access)
-        helper.deny_migration_access(dest_access_ref, dest_access)
-
-        if not migrated:
-            msg = ("Copying from share instance %(instance_id)s "
-                   "to %(new_instance_id)s did not succeed." % {
-                       'instance_id': share_instance['id'],
-                       'new_instance_id': new_share_instance['id']})
-            raise exception.ShareMigrationFailed(reason=msg)
-
-        LOG.debug("Copying completed in migration for share %s." % share['id'])
+        return self.configuration.safe_get('share_unmount_template')
 
     def create_share(self, context, share, share_server=None):
         """Is called to create share."""
@@ -603,6 +486,46 @@ class ShareDriver(object):
         """Deny access to the share."""
         raise NotImplementedError()
 
+    def update_access(self, context, share, access_rules, add_rules=None,
+                      delete_rules=None, share_server=None):
+        """Update access rules for given share.
+
+        Drivers should support 2 different cases in this method:
+        1. Recovery after error - 'access_rules' contains all access_rules,
+        'add_rules' and 'delete_rules' shall be None. Driver should clear any
+        existent access rules and apply all access rules for given share.
+        This recovery is made at driver start up.
+
+        2. Adding/Deleting of several access rules - 'access_rules' contains
+        all access_rules, 'add_rules' and 'delete_rules' contain rules which
+        should be added/deleted. Driver can ignore rules in 'access_rules' and
+        apply only rules from 'add_rules' and 'delete_rules'.
+
+        Drivers must be mindful of this call for share replicas. When
+        'update_access' is called on one of the replicas, the call is likely
+        propagated to all replicas belonging to the share, especially when
+        individual rules are added or removed. If a particular access rule
+        does not make sense to the driver in the context of a given replica,
+        the driver should be careful to report a correct behavior, and take
+        meaningful action. For example, if R/W access is requested on a
+        replica that is part of a "readable" type replication; R/O access
+        may be added by the driver instead of R/W. Note that raising an
+        exception *will* result in the access_rules_status on the replica,
+        and the share itself being "out_of_sync". Drivers can sync on the
+        valid access rules that are provided on the create_replica and
+        promote_replica calls.
+
+        :param context: Current context
+        :param share: Share model with share data.
+        :param access_rules: All access rules for given share
+        :param add_rules: None or List of access rules which should be added
+               access_rules already contains these rules.
+        :param delete_rules: None or List of access rules which should be
+               removed. access_rules doesn't contain these rules.
+        :param share_server: None or Share server model
+        """
+        raise NotImplementedError()
+
     def check_for_setup_error(self):
         """Check for setup error."""
         max_ratio = self.configuration.safe_get('max_over_subscription_ratio')
@@ -635,6 +558,9 @@ class ShareDriver(object):
         """
         raise NotImplementedError()
 
+    def get_admin_network_allocations_number(self):
+        return 0
+
     def allocate_network(self, context, share_server, share_network,
                          count=None, **kwargs):
         """Allocate network resources using given network information."""
@@ -644,6 +570,19 @@ class ShareDriver(object):
             kwargs.update(count=count)
             self.network_api.allocate_network(
                 context, share_server, share_network, **kwargs)
+
+    def allocate_admin_network(self, context, share_server, count=None,
+                               **kwargs):
+        """Allocate admin network resources using given network information."""
+        if count is None:
+            count = self.get_admin_network_allocations_number()
+        if count and not self.admin_network_api:
+            msg = _("Admin network plugin is not set up.")
+            raise exception.NetworkBadConfigurationException(reason=msg)
+        elif count:
+            kwargs.update(count=count)
+            self.admin_network_api.allocate_network(
+                context, share_server, **kwargs)
 
     def deallocate_network(self, context, share_server_id):
         """Deallocate network resources for the given share server."""
@@ -725,6 +664,40 @@ class ShareDriver(object):
 
         If provided share cannot be unmanaged, then raise an
         UnmanageInvalidShare exception, specifying a reason for the failure.
+        """
+
+    def manage_existing_snapshot(self, snapshot, driver_options):
+        """Brings an existing snapshot under Manila management.
+
+        If provided snapshot is not valid, then raise a
+        ManageInvalidShareSnapshot exception, specifying a reason for
+        the failure.
+
+        :param snapshot: ShareSnapshotInstance model with ShareSnapshot data.
+                         Example:
+                         {'id': <instance id>, 'snapshot_id': < snapshot id>,
+                          'provider_location': <location>, ......}
+        :param driver_options: Optional driver-specific options provided
+                               by admin. Example:
+                               {'key': 'value', ......}
+        :return: model_update dictionary with required key 'size',
+                 which should contain size of the share snapshot.
+        """
+        raise NotImplementedError()
+
+    def unmanage_snapshot(self, snapshot):
+        """Removes the specified snapshot from Manila management.
+
+        Does not delete the underlying backend share snapshot.
+
+        For most drivers, this will not need to do anything.  However, some
+        drivers might use this call as an opportunity to clean up any
+        Manila-specific configuration that they have associated with the
+        backend share snapshot.
+
+        If provided share snapshot cannot be unmanaged, then raise an
+        UnmanageInvalidShareSnapshot exception, specifying a reason for
+        the failure.
         """
 
     def extend_share(self, share, new_size, share_server=None):
@@ -816,6 +789,7 @@ class ShareDriver(object):
             qos=False,
             pools=self.pools or None,
             snapshot_support=self.snapshots_are_supported,
+            replication_domain=self.replication_domain,
         )
         if isinstance(data, dict):
             common.update(data)
@@ -1070,3 +1044,348 @@ class ShareDriver(object):
         :return: list of share instances.
         """
         return share_instances
+
+    def create_replica(self, context, replica_list, new_replica,
+                       access_rules, share_server=None):
+        """Replicate the active replica to a new replica on this backend.
+
+        :param context: Current context
+        :param replica_list: List of all replicas for a particular share.
+        This list also contains the replica to be created. The 'active'
+        replica will have its 'replica_state' attr set to 'active'.
+            EXAMPLE:
+             .. code::
+
+            [
+                {
+                'id': 'd487b88d-e428-4230-a465-a800c2cce5f8',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'in_sync',
+                    ...
+                'share_server_id': '4ce78e7b-0ef6-4730-ac2a-fd2defefbd05',
+                'share_server': <models.ShareServer> or None,
+                },
+                {
+                'id': '10e49c3e-aca9-483b-8c2d-1c337b38d6af',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'active',
+                    ...
+                'share_server_id': 'f63629b3-e126-4448-bec2-03f788f76094',
+                'share_server': <models.ShareServer> or None,
+                },
+                {
+                'id': 'e82ff8b6-65f0-11e5-9d70-feff819cdc9f',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'in_sync',
+                    ...
+                'share_server_id': '07574742-67ea-4dfd-9844-9fbd8ada3d87',
+                'share_server': <models.ShareServer> or None,
+                },
+                ...
+            ]
+        :param new_replica: The share replica dictionary.
+            EXAMPLE:
+             .. code::
+
+            {
+            'id': 'e82ff8b6-65f0-11e5-9d70-feff819cdc9f',
+            'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+            'deleted': False,
+            'host': 'openstack2@cmodeSSVMNFS2',
+            'status': 'available',
+            'scheduled_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+            'launched_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+            'terminated_at': None,
+            'replica_state': 'out_of_sync',
+            'availability_zone_id': 'f6e146d0-65f0-11e5-9d70-feff819cdc9f',
+            'export_locations': [
+                models.ShareInstanceExportLocations,
+            ],
+            'access_rules_status': 'out_of_sync',
+            'share_network_id': '4ccd5318-65f1-11e5-9d70-feff819cdc9f',
+            'share_server_id': 'e6155221-ea00-49ef-abf9-9f89b7dd900a',
+            'share_server': <models.ShareServer> or None,
+            }
+        :param access_rules: A list of access rules that other instances of
+        the share already obey. Drivers are expected to apply access rules
+        to the new replica or disregard access rules that don't apply.
+        EXAMPLE:
+             .. code::
+             [ {
+             'id': 'f0875f6f-766b-4865-8b41-cccb4cdf1676',
+             'deleted' = False,
+             'share_id' = 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+             'access_type' = 'ip',
+             'access_to' = '172.16.20.1',
+             'access_level' = 'rw',
+             }]
+        :param share_server: <models.ShareServer> or None,
+        Share server of the replica being created.
+        :return: None or a dictionary containing export_locations,
+        replica_state and access_rules_status. export_locations is a list of
+        paths and replica_state is one of active, in_sync, out_of_sync or
+        error. A backend supporting 'writable' type replication should return
+        'active' as the replica_state. Export locations should be in the
+        same format as returned during the create_share call.
+        EXAMPLE:
+            .. code::
+            {
+                'export_locations': [
+                    {
+                        'path': '172.16.20.22/sample/export/path',
+                         'is_admin_only': False,
+                         'metadata': {'some_key': 'some_value'},
+                    },
+                ],
+                 'replica_state': 'in_sync',
+                 'access_rules_status': 'in_sync',
+            }
+        """
+        raise NotImplementedError()
+
+    def delete_replica(self, context, replica_list, replica,
+                       share_server=None):
+        """Delete a replica. This is called on the destination backend.
+
+        :param context: Current context
+        :param replica_list: List of all replicas for a particular share.
+        This list also contains the replica to be deleted. The 'active'
+        replica will have its 'replica_state' attr set to 'active'.
+            EXAMPLE:
+             .. code::
+
+            [
+                {
+                'id': 'd487b88d-e428-4230-a465-a800c2cce5f8',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'in_sync',
+                    ...
+                'share_server_id': '4ce78e7b-0ef6-4730-ac2a-fd2defefbd05',
+                'share_server': <models.ShareServer> or None,
+                },
+                {
+                'id': '10e49c3e-aca9-483b-8c2d-1c337b38d6af',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'active',
+                    ...
+                'share_server_id': 'f63629b3-e126-4448-bec2-03f788f76094',
+                'share_server': <models.ShareServer> or None,
+                },
+                {
+                'id': 'e82ff8b6-65f0-11e5-9d70-feff819cdc9f',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'in_sync',
+                    ...
+                'share_server_id': '07574742-67ea-4dfd-9844-9fbd8ada3d87',
+                'share_server': <models.ShareServer> or None,
+                },
+                ...
+            ]
+        :param replica: Dictionary of the share replica being deleted.
+            EXAMPLE:
+             .. code::
+
+            {
+            'id': 'e82ff8b6-65f0-11e5-9d70-feff819cdc9f',
+            'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+            'deleted': False,
+            'host': 'openstack2@cmodeSSVMNFS2',
+            'status': 'available',
+            'scheduled_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+            'launched_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+            'terminated_at': None,
+            'replica_state': 'in_sync',
+            'availability_zone_id': 'f6e146d0-65f0-11e5-9d70-feff819cdc9f',
+            'export_locations': [
+                models.ShareInstanceExportLocations
+            ],
+            'access_rules_status': 'out_of_sync',
+            'share_network_id': '4ccd5318-65f1-11e5-9d70-feff819cdc9f',
+            'share_server_id': '53099868-65f1-11e5-9d70-feff819cdc9f',
+            'share_server': <models.ShareServer> or None,
+            }
+        :param share_server: <models.ShareServer> or None,
+        Share server of the replica to be deleted.
+        :return: None.
+        """
+        raise NotImplementedError()
+
+    def promote_replica(self, context, replica_list, replica, access_rules,
+                        share_server=None):
+        """Promote a replica to 'active' replica state.
+
+        :param context: Current context
+        :param replica_list: List of all replicas for a particular share.
+        This list also contains the replica to be promoted. The 'active'
+        replica will have its 'replica_state' attr set to 'active'.
+            EXAMPLE:
+             .. code::
+
+            [
+                {
+                'id': 'd487b88d-e428-4230-a465-a800c2cce5f8',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'in_sync',
+                    ...
+                'share_server_id': '4ce78e7b-0ef6-4730-ac2a-fd2defefbd05',
+                'share_server': <models.ShareServer> or None,
+                },
+                {
+                'id': '10e49c3e-aca9-483b-8c2d-1c337b38d6af',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'active',
+                    ...
+                'share_server_id': 'f63629b3-e126-4448-bec2-03f788f76094',
+                'share_server': <models.ShareServer> or None,
+                },
+                {
+                'id': 'e82ff8b6-65f0-11e5-9d70-feff819cdc9f',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'in_sync',
+                    ...
+                'share_server_id': '07574742-67ea-4dfd-9844-9fbd8ada3d87',
+                'share_server': <models.ShareServer> or None,
+                },
+                ...
+            ]
+
+        :param replica: Dictionary of the replica to be promoted.
+            EXAMPLE:
+             .. code::
+
+            {
+            'id': 'e82ff8b6-65f0-11e5-9d70-feff819cdc9f',
+            'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+            'deleted': False,
+            'host': 'openstack2@cmodeSSVMNFS2',
+            'status': 'available',
+            'scheduled_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+            'launched_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+            'terminated_at': None,
+            'replica_state': 'in_sync',
+            'availability_zone_id': 'f6e146d0-65f0-11e5-9d70-feff819cdc9f',
+            'export_locations': [
+                models.ShareInstanceExportLocations
+            ],
+            'access_rules_status': 'in_sync',
+            'share_network_id': '4ccd5318-65f1-11e5-9d70-feff819cdc9f',
+            'share_server_id': '07574742-67ea-4dfd-9844-9fbd8ada3d87',
+            'share_server': <models.ShareServer> or None,
+            }
+        :param access_rules: A list of access rules that other instances of
+        the share already obey.
+        EXAMPLE:
+             .. code::
+             [ {
+             'id': 'f0875f6f-766b-4865-8b41-cccb4cdf1676',
+             'deleted' = False,
+             'share_id' = 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+             'access_type' = 'ip',
+             'access_to' = '172.16.20.1',
+             'access_level' = 'rw',
+             }]
+        :param share_server: <models.ShareServer> or None,
+        Share server of the replica to be promoted.
+        :return: updated_replica_list or None
+            The driver can return the updated list as in the request
+            parameter. Changes that will be updated to the Database are:
+            'export_locations', 'access_rules_status' and 'replica_state'.
+        :raises Exception
+            This can be any exception derived from BaseException. This is
+            re-raised by the manager after some necessary cleanup. If the
+            driver raises an exception during promotion, it is assumed
+            that all of the replicas of the share are in an inconsistent
+            state. Recovery is only possible through the periodic update
+            call and/or administrator intervention to correct the 'status'
+            of the affected replicas if they become healthy again.
+        """
+        raise NotImplementedError()
+
+    def update_replica_state(self, context, replica_list, replica,
+                             access_rules, share_server=None):
+        """Update the replica_state of a replica.
+
+        Drivers should fix replication relationships that were broken if
+        possible inside this method.
+
+        This method is called periodically by the share manager; and
+        whenever requested by the administrator through the 'resync' API.
+
+        :param context: Current context
+        :param replica_list: List of all replicas for a particular share.
+        This list also contains the replica to be updated. The 'active'
+        replica will have its 'replica_state' attr set to 'active'.
+            EXAMPLE:
+             .. code::
+
+            [
+                {
+                'id': 'd487b88d-e428-4230-a465-a800c2cce5f8',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'in_sync',
+                    ...
+                'share_server_id': '4ce78e7b-0ef6-4730-ac2a-fd2defefbd05',
+                'share_server': <models.ShareServer> or None,
+                },
+                {
+                'id': '10e49c3e-aca9-483b-8c2d-1c337b38d6af',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'active',
+                    ...
+                'share_server_id': 'f63629b3-e126-4448-bec2-03f788f76094',
+                'share_server': <models.ShareServer> or None,
+                },
+                {
+                'id': 'e82ff8b6-65f0-11e5-9d70-feff819cdc9f',
+                'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+                'replica_state': 'in_sync',
+                    ...
+                'share_server_id': '07574742-67ea-4dfd-9844-9fbd8ada3d87',
+                'share_server': <models.ShareServer> or None,
+                },
+                ...
+            ]
+        :param replica: Dictionary of the replica being updated.
+        Replica state will always be 'in_sync', 'out_of_sync', or 'error'.
+        Replicas in 'active' state will not be passed via this parameter.
+            EXAMPLE:
+             .. code::
+
+            {
+            'id': 'd487b88d-e428-4230-a465-a800c2cce5f8',
+            'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+            'deleted': False,
+            'host': 'openstack2@cmodeSSVMNFS1',
+            'status': 'available',
+            'scheduled_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+            'launched_at': datetime.datetime(2015, 8, 10, 0, 5, 58),
+            'terminated_at': None,
+            'replica_state': 'in_sync',
+            'availability_zone_id': 'e2c2db5c-cb2f-4697-9966-c06fb200cb80',
+            'export_locations': [
+                models.ShareInstanceExportLocations,
+            ],
+            'access_rules_status': 'in_sync',
+            'share_network_id': '4ccd5318-65f1-11e5-9d70-feff819cdc9f',
+            'share_server_id': '4ce78e7b-0ef6-4730-ac2a-fd2defefbd05',
+            }
+        :param access_rules: A list of access rules that other replicas of
+        the share already obey. The driver could attempt to sync on any
+        un-applied access_rules.
+        EXAMPLE:
+             .. code::
+             [ {
+             'id': 'f0875f6f-766b-4865-8b41-cccb4cdf1676',
+             'deleted' = False,
+             'share_id' = 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+             'access_type' = 'ip',
+             'access_to' = '172.16.20.1',
+             'access_level' = 'rw',
+             }]
+        :param share_server: <models.ShareServer> or None
+        :return: replica_state
+            replica_state - a str value denoting the replica_state that the
+            replica can have. Valid values are 'in_sync' and 'out_of_sync'
+            or None (to leave the current replica_state unchanged).
+        """
+        raise NotImplementedError()

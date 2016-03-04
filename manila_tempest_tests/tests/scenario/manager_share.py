@@ -18,8 +18,8 @@ import six
 
 from tempest.common.utils.linux import remote_client  # noqa
 from tempest import config  # noqa
+from tempest.lib.common.utils import data_utils
 from tempest.scenario import manager  # noqa
-from tempest_lib.common.utils import data_utils
 
 from manila_tempest_tests import clients_share
 
@@ -133,7 +133,12 @@ class ShareScenarioTest(manager.NetworkScenarioTest):
         """
         client = client or self.shares_client
         access = client.create_access_rule(share_id, access_type, access_to)
-        client.wait_for_access_rule_status(share_id, access['id'], "active")
+
+        # NOTE(u_glide): Ignore provided client, because we always need v2
+        # client to make this call
+        self.shares_v2_client.wait_for_share_status(
+            share_id, "active", status_attr='access_rules_status')
+
         if cleanup:
             self.addCleanup(client.delete_access_rule, share_id, access['id'])
         return access
@@ -191,8 +196,9 @@ class ShareScenarioTest(manager.NetworkScenarioTest):
 
     def _migrate_share(self, share_id, dest_host, client=None):
         client = client or self.shares_admin_v2_client
-        client.migrate_share(share_id, dest_host)
-        share = client.wait_for_migration_completed(share_id, dest_host)
+        client.migrate_share(share_id, dest_host, True)
+        share = client.wait_for_migration_status(share_id, dest_host,
+                                                 'migration_success')
         return share
 
     def _create_share_type(self, name, is_public=True, **kwargs):

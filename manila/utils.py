@@ -29,7 +29,9 @@ import shutil
 import socket
 import sys
 import tempfile
+import time
 
+import eventlet
 from eventlet import pools
 import netaddr
 from oslo_concurrency import lockutils
@@ -42,6 +44,7 @@ import paramiko
 import retrying
 import six
 
+from manila.common import constants
 from manila.db import api as db_api
 from manila import exception
 from manila.i18n import _
@@ -613,3 +616,89 @@ def require_driver_initialized(func):
             raise exception.DriverNotInitialized(driver=driver_name)
         return func(self, *args, **kwargs)
     return wrapper
+
+
+def translate_string_size_to_float(string, multiplier='G'):
+    """Translates human-readable storage size to float value.
+
+    Supported values for 'multiplier' are following:
+        K - kilo | 1
+        M - mega | 1024
+        G - giga | 1024 * 1024
+        T - tera | 1024 * 1024 * 1024
+        P = peta | 1024 * 1024 * 1024 * 1024
+
+    returns:
+        - float if correct input data provided
+        - None if incorrect
+    """
+    if not isinstance(string, six.string_types):
+        return None
+    multipliers = ('K', 'M', 'G', 'T', 'P')
+    mapping = {
+        k: 1024.0 ** v
+        for k, v in zip(multipliers, range(len(multipliers)))
+    }
+    if multiplier not in multipliers:
+        raise exception.ManilaException(
+            "'multiplier' arg should be one of following: "
+            "'%(multipliers)s'. But it is '%(multiplier)s'." % {
+                'multiplier': multiplier,
+                'multipliers': "', '".join(multipliers),
+            }
+        )
+    try:
+        value = float(string) / 1024.0
+        value = value / mapping[multiplier]
+        return value
+    except (ValueError, TypeError):
+        matched = re.match(
+            r"^(\d+\.*\d*)([%s])$" % ','.join(multipliers), string)
+        if matched:
+            value = float(matched.groups()[0])
+            multiplier = mapping[matched.groups()[1]] / mapping[multiplier]
+            return value * multiplier
+
+
+def wait_until_true(predicate, timeout=60, sleep=1, exception=None):
+    """Wait until callable predicate is evaluated as True
+
+    :param predicate: Callable deciding whether waiting should continue.
+    Best practice is to instantiate predicate with functools.partial()
+    :param timeout: Timeout in seconds how long should function wait.
+    :param sleep: Polling interval for results in seconds.
+    :param exception: Exception class for eventlet.Timeout.
+    (see doc for eventlet.Timeout for more information)
+    """
+    with eventlet.timeout.Timeout(timeout, exception):
+        while not predicate():
+            eventlet.sleep(sleep)
+
+
+def wait_for_access_update(context, db, share_instance,
+                           migration_wait_access_rules_timeout):
+    starttime = time.time()
+    deadline = starttime + migration_wait_access_rules_timeout
+    tries = 0
+
+    while True:
+        instance = db.share_instance_get(context, share_instance['id'])
+
+        if instance['access_rules_status'] == constants.STATUS_ACTIVE:
+            break
+
+        tries += 1
+        now = time.time()
+        if instance['access_rules_status'] == constants.STATUS_ERROR:
+            msg = _("Failed to update access rules"
+                    " on share instance %s") % share_instance['id']
+            raise exception.ShareMigrationFailed(reason=msg)
+        elif now > deadline:
+            msg = _("Timeout trying to update access rules"
+                    " on share instance %(share_id)s. Timeout "
+                    "was %(timeout)s seconds.") % {
+                'share_id': share_instance['id'],
+                'timeout': migration_wait_access_rules_timeout}
+            raise exception.ShareMigrationFailed(reason=msg)
+        else:
+            time.sleep(tries ** 2)

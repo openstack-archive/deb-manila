@@ -43,7 +43,6 @@ these objects be simple dictionaries.
 from oslo_config import cfg
 from oslo_db import api as db_api
 
-
 db_opts = [
     cfg.StrOpt('db_backend',
                default='sqlalchemy',
@@ -79,6 +78,8 @@ def authorize_quota_class_context(context, class_name):
 
 
 ###################
+
+
 def service_destroy(context, service_id):
     """Destroy the service or raise if it does not exist."""
     return IMPL.service_destroy(context, service_id)
@@ -337,7 +338,7 @@ def share_instances_get_all_by_share_network(context, share_network_id):
 
 def share_instances_get_all_by_share(context, share_id):
     """Returns list of shares that belong to given share."""
-    return IMPL.share_instances_get_all_by_share_network(context, share_id)
+    return IMPL.share_instances_get_all_by_share(context, share_id)
 
 
 def share_instances_get_all_by_consistency_group_id(context, cg_id):
@@ -393,14 +394,6 @@ def share_get_all_by_consistency_group_id(context, cg_id,
         sort_key=sort_key, sort_dir=sort_dir)
 
 
-def share_get_all_by_share_network(context, share_network_id, filters=None,
-                                   sort_key=None, sort_dir=None):
-    """Returns list of shares that belong to given share network."""
-    return IMPL.share_get_all_by_share_network(
-        context, share_network_id, filters=filters, sort_key=sort_key,
-        sort_dir=sort_dir)
-
-
 def share_get_all_by_share_server(context, share_server_id, filters=None,
                                   sort_key=None, sort_dir=None):
     """Returns all shares with given share server ID."""
@@ -423,6 +416,15 @@ def share_access_create(context, values):
     return IMPL.share_access_create(context, values)
 
 
+def share_instance_access_copy(context, share_id, instance_id):
+    """Maps the existing access rules for the share to the instance in the DB.
+
+    Adds the instance mapping to the share's access rules and
+    returns the share's access rules.
+    """
+    return IMPL.share_instance_access_copy(context, share_id, instance_id)
+
+
 def share_access_get(context, access_id):
     """Get share access rule."""
     return IMPL.share_access_get(context, access_id)
@@ -443,6 +445,12 @@ def share_instance_access_get_all(context, access_id, session=None):
     return IMPL.share_instance_access_get_all(context, access_id, session=None)
 
 
+def share_access_get_all_for_instance(context, instance_id, session=None):
+    """Get all access rules related to a certain share instance."""
+    return IMPL.share_access_get_all_for_instance(
+        context, instance_id, session=None)
+
+
 def share_access_get_all_by_type_and_access(context, share_id, access_type,
                                             access):
     """Returns share access by given type and access."""
@@ -460,9 +468,10 @@ def share_instance_access_delete(context, mapping_id):
     return IMPL.share_instance_access_delete(context, mapping_id)
 
 
-def share_instance_access_update_state(context, mapping_id, state):
-    """Update state of access rule mapping."""
-    return IMPL.share_instance_access_update_state(context, mapping_id, state)
+def share_instance_update_access_status(context, share_instance_id, status):
+    """Update access rules status of share instance."""
+    return IMPL.share_instance_update_access_status(context, share_instance_id,
+                                                    status)
 
 
 ####################
@@ -701,6 +710,9 @@ def share_network_remove_security_service(context, id, security_service_id):
                                                       security_service_id)
 
 
+##################
+
+
 def network_allocation_create(context, values):
     """Create a network allocation DB record."""
     return IMPL.network_allocation_create(context, values)
@@ -717,11 +729,10 @@ def network_allocation_update(context, id, values):
 
 
 def network_allocations_get_for_share_server(context, share_server_id,
-                                             session=None):
-    """Get network allocation for share server."""
-    return IMPL.network_allocations_get_for_share_server(context,
-                                                         share_server_id,
-                                                         session=session)
+                                             session=None, label=None):
+    """Get network allocations for share server."""
+    return IMPL.network_allocations_get_for_share_server(
+        context, share_server_id, label=label, session=session)
 
 
 def network_allocations_get_by_ip_address(context, ip_address):
@@ -750,20 +761,6 @@ def share_server_update(context, id, values):
 def share_server_get(context, id, session=None):
     """Get share server DB record by ID."""
     return IMPL.share_server_get(context, id, session=session)
-
-
-def share_server_get_by_host(context, host, share_net_id, session=None):
-    """Get share server DB records by host."""
-    return IMPL.share_server_get_by_host(context, host, share_net_id,
-                                         session=session)
-
-
-def share_server_get_by_host_and_share_net(context, host, share_net_id,
-                                           session=None):
-    """Get share server DB records by host and share net."""
-    return IMPL.share_server_get_by_host_and_share_net(context, host,
-                                                       share_net_id,
-                                                       session=session)
 
 
 def share_server_get_all_by_host_and_share_net_valid(context, host,
@@ -852,11 +849,6 @@ def share_type_access_add(context, type_id, project_id):
 def share_type_access_remove(context, type_id, project_id):
     """Remove share type access for project."""
     return IMPL.share_type_access_remove(context, type_id, project_id)
-
-
-def share_type_qos_specs_get(context, type_id):
-    """Get all qos specs for given share type."""
-    return IMPL.share_type_qos_specs_get(context, type_id)
 
 
 def share_type_destroy(context, id):
@@ -1048,3 +1040,59 @@ def cgsnapshot_member_update(context, member_id, values):
     Raises NotFound if cgsnapshot member does not exist.
     """
     return IMPL.cgsnapshot_member_update(context, member_id, values)
+
+
+####################
+
+def share_replicas_get_all(context, with_share_server=False,
+                           with_share_data=False):
+    """Returns all share replicas regardless of share."""
+    return IMPL.share_replicas_get_all(
+        context, with_share_server=with_share_server,
+        with_share_data=with_share_data)
+
+
+def share_replicas_get_all_by_share(context, share_id, with_share_server=False,
+                                    with_share_data=False):
+    """Returns all share replicas for a given share."""
+    return IMPL.share_replicas_get_all_by_share(
+        context, share_id, with_share_server=with_share_server,
+        with_share_data=with_share_data)
+
+
+def share_replicas_get_available_active_replica(context, share_id,
+                                                with_share_server=False,
+                                                with_share_data=False):
+    """Returns an active replica for a given share."""
+    return IMPL.share_replicas_get_available_active_replica(
+        context, share_id, with_share_server=with_share_server,
+        with_share_data=with_share_data)
+
+
+def share_replicas_get_active_replicas_by_share(context, share_id,
+                                                with_share_server=False,
+                                                with_share_data=False):
+    """Returns all active replicas for a given share."""
+    return IMPL.share_replicas_get_active_replicas_by_share(
+        context, share_id, with_share_server=with_share_server,
+        with_share_data=with_share_data)
+
+
+def share_replica_get(context, replica_id, with_share_server=False,
+                      with_share_data=False):
+    """Get share replica by id."""
+    return IMPL.share_replica_get(
+        context, replica_id, with_share_server=with_share_server,
+        with_share_data=with_share_data)
+
+
+def share_replica_update(context, share_replica_id, values,
+                         with_share_data=False):
+    """Updates a share replica with given values."""
+    return IMPL.share_replica_update(context, share_replica_id, values,
+                                     with_share_data=with_share_data)
+
+
+def share_replica_delete(context, share_replica_id):
+    """Deletes a share replica."""
+    return IMPL.share_replica_delete(context, share_replica_id)

@@ -17,6 +17,7 @@
 import re
 
 from eventlet import greenthread
+import mock
 from oslo_log import log
 import six
 
@@ -98,7 +99,7 @@ def fake_execute(*cmd_parts, **kwargs):
     stdout = reply[0]
     stderr = reply[1]
     LOG.debug("Reply to faked command is stdout='%(stdout)s' "
-              "stderr='%(stderr)s'" % {"stdout": stdout, "stderr": stderr})
+              "stderr='%(stderr)s'.", {"stdout": stdout, "stderr": stderr})
 
     # Replicate the sleep call in the real function
     greenthread.sleep(0)
@@ -109,3 +110,10 @@ def stub_out_utils_execute(testcase):
     fake_execute_set_repliers([])
     fake_execute_clear_log()
     testcase.mock_object(utils, 'execute', fake_execute)
+
+
+def get_fake_lock_context():
+    context_manager_mock = mock.Mock()
+    setattr(context_manager_mock, '__enter__', mock.Mock())
+    setattr(context_manager_mock, '__exit__', mock.Mock())
+    return context_manager_mock

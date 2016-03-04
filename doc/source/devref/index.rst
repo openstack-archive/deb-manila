@@ -18,7 +18,7 @@
 Developer Guide
 ===============
 
-In this section you will find information on Manila's lower level programming APIs.
+In this section you will find information on manila's lower level programming APIs.
 
 
 Programming HowTos and Tutorials
@@ -31,7 +31,7 @@ Programming HowTos and Tutorials
     addmethod.openstackapi
 
 
-Background Concepts for Manila
+Background Concepts for manila
 ------------------------------
 .. toctree::
    :maxdepth: 3
@@ -85,6 +85,7 @@ Capabilities and Extra-Specs
    :maxdepth: 3
 
    capabilities_and_extra_specs
+   export_location_metadata
 
 Share backends feature support mapping
 --------------------------------------
@@ -98,17 +99,20 @@ Share backends
 .. toctree::
    :maxdepth: 3
 
+   zfs_on_linux_driver
    netapp_cluster_mode_driver
    emc_isilon_driver
    emc_vnx_driver
    generic_driver
    glusterfs_driver
    glusterfs_native_driver
+   cephfs_native_driver
    gpfs_driver
    huawei_nas_driver
    hdfs_native_driver
    hds_hnas_driver
    hpe_3par_driver
+   tegile_driver
 
 Indices and tables
 ------------------

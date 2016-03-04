@@ -264,14 +264,16 @@ class ShareAPITest(test.TestCase):
                                 display_description=shr['description'],
                                 size=shr['size'],
                                 share_proto=shr['share_proto'].upper(),
-                                availability_zone=shr['availability_zone'],
                                 snapshot_id=shr['snapshot_id'],
-                                share_network_id=shr['share_network_id']))
+                                instance=dict(
+                                    availability_zone=shr['availability_zone'],
+                                    share_network_id=shr['share_network_id'])))
         self.mock_object(share_api.API, 'create', create_mock)
         self.mock_object(share_api.API, 'get_snapshot',
                          stubs.stub_snapshot_get)
         self.mock_object(share_api.API, 'get', mock.Mock(
-            return_value={'share_network_id': parent_share_net}))
+            return_value=mock.Mock(
+                instance={'share_network_id': parent_share_net})))
         self.mock_object(share_api.API, 'get_share_network', mock.Mock(
             return_value={'id': parent_share_net}))
 
@@ -300,14 +302,16 @@ class ShareAPITest(test.TestCase):
                                 display_description=shr['description'],
                                 size=shr['size'],
                                 share_proto=shr['share_proto'].upper(),
-                                availability_zone=shr['availability_zone'],
                                 snapshot_id=shr['snapshot_id'],
-                                share_network_id=shr['share_network_id']))
+                                instance=dict(
+                                    availability_zone=shr['availability_zone'],
+                                    share_network_id=shr['share_network_id'])))
         self.mock_object(share_api.API, 'create', create_mock)
         self.mock_object(share_api.API, 'get_snapshot',
                          stubs.stub_snapshot_get)
         self.mock_object(share_api.API, 'get', mock.Mock(
-            return_value={'share_network_id': parent_share_net}))
+            return_value=mock.Mock(
+                instance={'share_network_id': parent_share_net})))
         self.mock_object(share_api.API, 'get_share_network', mock.Mock(
             return_value={'id': parent_share_net}))
 
@@ -608,8 +612,8 @@ class ShareAPITest(test.TestCase):
                 'status': constants.STATUS_AVAILABLE,
                 'snapshot_id': 'fake_snapshot_id',
                 'share_type_id': 'fake_share_type_id',
-                'host': 'fake_host',
-                'share_network_id': 'fake_share_network_id',
+                'instance': {'host': 'fake_host',
+                             'share_network_id': 'fake_share_network_id'},
             },
             {'id': 'id3', 'display_name': 'n3'},
         ]
@@ -651,9 +655,9 @@ class ShareAPITest(test.TestCase):
         self.assertEqual(
             shares[1]['snapshot_id'], result['shares'][0]['snapshot_id'])
         self.assertEqual(
-            shares[1]['host'], result['shares'][0]['host'])
+            shares[1]['instance']['host'], result['shares'][0]['host'])
         self.assertEqual(
-            shares[1]['share_network_id'],
+            shares[1]['instance']['share_network_id'],
             result['shares'][0]['share_network_id'])
 
     def test_share_list_detail_with_search_opts_by_non_admin(self):
@@ -749,6 +753,20 @@ class ShareAPITest(test.TestCase):
         common.remove_invalid_options(ctx, search_opts, allowed_opts)
         self.assertEqual(expected_opts, search_opts)
 
+    def test_validate_cephx_id_invalid_with_period(self):
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller._validate_cephx_id,
+                          "client.manila")
+
+    def test_validate_cephx_id_invalid_with_non_ascii(self):
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller._validate_cephx_id,
+                          u"bj\u00F6rn")
+
+    @ddt.data("alice", "alice_bob", "alice bob")
+    def test_validate_cephx_id_valid(self, test_id):
+        self.controller._validate_cephx_id(test_id)
+
 
 def _fake_access_get(self, ctxt, access_id):
 
@@ -812,6 +830,7 @@ class ShareActionsTest(test.TestCase):
         {'access_type': 'cert', 'access_to': ''},
         {'access_type': 'cert', 'access_to': ' '},
         {'access_type': 'cert', 'access_to': 'x' * 65},
+        {'access_type': 'cephx', 'access_to': 'alice'}
     )
     def test_allow_access_error(self, access):
         id = 'fake_share_id'

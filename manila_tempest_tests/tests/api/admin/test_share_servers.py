@@ -17,8 +17,8 @@ import re
 
 import six  # noqa
 from tempest import config  # noqa
+from tempest.lib import exceptions as lib_exc  # noqa
 from tempest import test  # noqa
-from tempest_lib import exceptions as lib_exc  # noqa
 
 from manila_tempest_tests.tests.api import base
 
@@ -219,7 +219,7 @@ class ShareServersAdminTest(base.BaseSharesAdminTest):
             neutron_subnet_id=self.share_network['neutron_subnet_id'])
 
         # Create server with share
-        share = self.create_share(share_network_id=new_sn['id'])
+        self.create_share(share_network_id=new_sn['id'])
 
         # List share servers, filtered by share_network_id
         search_opts = {"share_network": new_sn["id"]}
@@ -238,7 +238,6 @@ class ShareServersAdminTest(base.BaseSharesAdminTest):
             shares = self.shares_client.list_shares_with_detail(params)
             for s in shares:
                 self.assertEqual(new_sn["id"], s["share_network_id"])
-            self.assertTrue(any(share["id"] == s["id"] for s in shares))
 
             # Delete shares, so we will have share server without shares
             for s in shares:
@@ -251,7 +250,7 @@ class ShareServersAdminTest(base.BaseSharesAdminTest):
             # List shares by share server id, we expect empty list
             params = {"share_server_id": serv["id"]}
             empty = self.shares_client.list_shares_with_detail(params)
-            self.assertEqual(len(empty), 0)
+            self.assertEqual(0, len(empty))
 
             if delete_share_network:
                 # Delete share network, it should trigger share server deletion

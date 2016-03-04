@@ -33,6 +33,10 @@
     "share:unmanage": "rule:admin_api",
     "share:force_delete": "rule:admin_api",
     "share:reset_status": "rule:admin_api",
+    "share:migration_start": "rule:admin_api",
+    "share:migration_complete": "rule:admin_api",
+    "share:migration_cancel": "rule:admin_api",
+    "share:migration_get_progress": "rule:admin_api",
     "share_export_location:index": "rule:default",
     "share_export_location:show": "rule:default",
 
@@ -60,6 +64,8 @@
 
     "share_snapshot:force_delete": "rule:admin_api",
     "share_snapshot:reset_status": "rule:admin_api",
+    "share_snapshot:manage_snapshot": "rule:admin_api",
+    "share_snapshot:unmanage_snapshot": "rule:admin_api",
 
     "share_network:create": "",
     "share_network:index": "",
@@ -98,5 +104,15 @@
     "consistency_group:get_all_cgsnapshots": "rule:default",
 
     "cgsnapshot:force_delete": "rule:admin_api",
-    "cgsnapshot:reset_status": "rule:admin_api"
+    "cgsnapshot:reset_status": "rule:admin_api",
+
+    "share_replica:get_all": "rule:default",
+    "share_replica:show": "rule:default",
+    "share_replica:create" : "rule:default",
+    "share_replica:delete": "rule:default",
+    "share_replica:promote": "rule:default",
+    "share_replica:resync": "rule:admin_api",
+    "share_replica:reset_status": "rule:admin_api",
+    "share_replica:force_delete": "rule:admin_api",
+    "share_replica:reset_replica_state": "rule:admin_api"
 }

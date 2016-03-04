@@ -74,3 +74,35 @@ user documentation.
 ---
   Add export locations API. Remove export locations from "shares" and
   "share instances" APIs.
+
+2.10
+----
+  Field 'access_rules_status' was added to shares and share instances.
+
+2.11
+----
+  Share Replication support added. All Share replication APIs are tagged
+  'Experimental'. Share APIs return two new attributes: 'has_replicas' and
+  'replication_type'. Share instance APIs return a new attribute,
+  'replica_state'.
+
+2.12
+----
+  Share snapshot manage and unmanage API.
+
+2.13
+----
+  Add 'cephx' authentication type for the CephFS Native driver.
+
+2.14
+____
+  Added attribute 'preferred' to export locations.  Drivers may use this
+  field to identify which export locations are most efficient and should be
+  used preferentially by clients.  Also, change 'uuid' field to 'id', move
+  timestamps to detail view, and return all non-admin fields to users.
+
+2.15
+----
+  Added Share migration 'migration_cancel', 'migration_get_progress',
+  'migration_complete' APIs, renamed 'migrate_share' to 'migration_start' and
+  added notify parameter to 'migration_start'.

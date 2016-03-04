@@ -46,58 +46,76 @@ share_servers_handling_mode_opts = [
         "service_image_name",
         default="manila-service-image",
         help="Name of image in Glance, that will be used for service instance "
-             "creation."),
+             "creation. Only used if driver_handles_share_servers=True."),
     cfg.StrOpt(
         "service_instance_name_template",
         default="manila_service_instance_%s",
-        help="Name of service instance."),
+        help="Name of service instance. "
+             "Only used if driver_handles_share_servers=True."),
     cfg.StrOpt(
         "manila_service_keypair_name",
         default="manila-service",
         help="Keypair name that will be created and used for service "
-             "instances."),
+             "instances. Only used if driver_handles_share_servers=True."),
     cfg.StrOpt(
         "path_to_public_key",
         default="~/.ssh/id_rsa.pub",
-        help="Path to hosts public key."),
+        help="Path to hosts public key. "
+             "Only used if driver_handles_share_servers=True."),
     cfg.StrOpt(
         "service_instance_security_group",
         default="manila-service",
         help="Security group name, that will be used for "
-             "service instance creation."),
+             "service instance creation. "
+             "Only used if driver_handles_share_servers=True."),
     cfg.IntOpt(
         "service_instance_flavor_id",
         default=100,
         help="ID of flavor, that will be used for service instance "
-             "creation."),
+             "creation. Only used if driver_handles_share_servers=True."),
     cfg.StrOpt(
         "service_network_name",
         default="manila_service_network",
-        help="Name of manila service network. Used only with Neutron."),
+        help="Name of manila service network. Used only with Neutron. "
+             "Only used if driver_handles_share_servers=True."),
     cfg.StrOpt(
         "service_network_cidr",
         default="10.254.0.0/16",
-        help="CIDR of manila service network. Used only with Neutron."),
+        help="CIDR of manila service network. Used only with Neutron and "
+             "if driver_handles_share_servers=True."),
     cfg.IntOpt(
         "service_network_division_mask",
         default=28,
         help="This mask is used for dividing service network into "
              "subnets, IP capacity of subnet with this mask directly "
              "defines possible amount of created service VMs "
-             "per tenant's subnet. Used only with Neutron."),
+             "per tenant's subnet. Used only with Neutron "
+             "and if driver_handles_share_servers=True."),
     cfg.StrOpt(
         "interface_driver",
         default="manila.network.linux.interface.OVSInterfaceDriver",
-        help="Vif driver. Used only with Neutron."),
+        help="Vif driver. Used only with Neutron and "
+             "if driver_handles_share_servers=True."),
     cfg.BoolOpt(
         "connect_share_server_to_tenant_network",
         default=False,
         help="Attach share server directly to share network. "
-             "Used only with Neutron."),
+             "Used only with Neutron and "
+             "if driver_handles_share_servers=True."),
     cfg.StrOpt(
         "service_instance_network_helper_type",
         default=NEUTRON_NAME,
-        help="Allowed values are %s." % [NOVA_NAME, NEUTRON_NAME])
+        help="Allowed values are %s. " % [NOVA_NAME, NEUTRON_NAME] +
+             "Only used if driver_handles_share_servers=True."),
+    cfg.StrOpt(
+        "admin_network_id",
+        help="ID of neutron network used to communicate with admin network,"
+             " to create additional admin export locations on."),
+    cfg.StrOpt(
+        "admin_subnet_id",
+        help="ID of neutron subnet used to communicate with admin network,"
+             " to create additional admin export locations on. "
+             "Related to 'admin_network_id'."),
 ]
 
 no_share_servers_handling_mode_opts = [
@@ -129,7 +147,6 @@ common_opts = [
         help="Password for service instance user."),
     cfg.StrOpt(
         "path_to_private_key",
-        default=None,
         help="Path to host's private key."),
     cfg.IntOpt(
         "max_time_to_build_instance",
@@ -349,6 +366,11 @@ class ServiceInstanceManager(object):
 
     def ensure_service_instance(self, context, server):
         """Ensures that server exists and active."""
+        if 'instance_id' not in server:
+            LOG.warning(_LW("Unable to check server existence since "
+                            "'instance_id' key is not set in share server "
+                            "backend details."))
+            return False
         try:
             inst = self.compute_api.server_get(self.admin_context,
                                                server['instance_id'])
@@ -418,14 +440,18 @@ class ServiceInstanceManager(object):
             'password': self.get_config_option('service_instance_password'),
             'username': self.get_config_option('service_instance_user'),
             'public_address': server['public_address'],
-            'service_ip': server['service_ip'],
         }
+        if server.get('admin_ip'):
+            instance_details['admin_ip'] = server['admin_ip']
         if server.get('router_id'):
             instance_details['router_id'] = server['router_id']
         if server.get('service_port_id'):
             instance_details['service_port_id'] = server['service_port_id']
         if server.get('public_port_id'):
             instance_details['public_port_id'] = server['public_port_id']
+        if server.get('admin_port_id'):
+            instance_details['admin_port_id'] = server['admin_port_id']
+
         for key in ('password', 'pk_path', 'subnet_id'):
             if not instance_details[key]:
                 instance_details.pop(key)
@@ -507,6 +533,9 @@ class ServiceInstanceManager(object):
         if network_data.get('public_port'):
             fail_safe_data['public_port_id'] = (
                 network_data['public_port']['id'])
+        if network_data.get('admin_port'):
+            fail_safe_data['admin_port_id'] = (
+                network_data['admin_port']['id'])
         try:
             create_kwargs = self._get_service_instance_create_kwargs()
             service_instance = self.compute_api.server_create(
@@ -540,11 +569,13 @@ class ServiceInstanceManager(object):
                     context, service_instance["id"], sg_id)
 
             if self.network_helper.NAME == NEUTRON_NAME:
-                service_instance['ip'] = self._get_server_ip(
-                    service_instance,
-                    self.get_config_option("service_network_name"))
-                public_ip = network_data.get(
-                    'public_port', network_data['service_port'])['fixed_ips']
+                ip = (network_data.get('service_port',
+                                       network_data.get(
+                                           'admin_port'))['fixed_ips'])
+                service_instance['ip'] = ip[0]['ip_address']
+                public_ip = (network_data.get(
+                    'public_port', network_data.get(
+                        'service_port'))['fixed_ips'])
                 service_instance['public_address'] = public_ip[0]['ip_address']
             else:
                 net_name = self.network_helper.get_network_name(network_info)
@@ -562,7 +593,15 @@ class ServiceInstanceManager(object):
             if pair[0] in network_data and 'id' in network_data[pair[0]]:
                 service_instance[pair[1]] = network_data[pair[0]]['id']
 
-        service_instance['service_ip'] = network_data.get('service_ip')
+        admin_port = network_data.get('admin_port')
+        if admin_port:
+            try:
+                service_instance['admin_ip'] = (
+                    admin_port['fixed_ips'][0]['ip_address'])
+            except Exception:
+                msg = _("Admin port is being used but Admin IP was not found.")
+                LOG.exception(msg)
+                raise exception.AdminIPNotFound(reason=msg)
 
         return service_instance
 
@@ -687,10 +726,20 @@ class NeutronNetworkHelper(BaseNetworkhelper):
         else:
             self._network_config_group = None
 
+        self.use_admin_port = False
+        self.use_service_network = True
         self._neutron_api = None
         self._service_network_id = None
         self.connect_share_server_to_tenant_network = (
             self.get_config_option('connect_share_server_to_tenant_network'))
+
+        self.admin_network_id = self.get_config_option('admin_network_id')
+        self.admin_subnet_id = self.get_config_option('admin_subnet_id')
+
+        if self.admin_network_id and self.admin_subnet_id:
+            self.use_admin_port = True
+        if self.use_admin_port and self.connect_share_server_to_tenant_network:
+            self.use_service_network = False
 
     @property
     def NAME(self):
@@ -746,7 +795,8 @@ class NeutronNetworkHelper(BaseNetworkhelper):
 
         service_port_id = server_details.get("service_port_id")
         public_port_id = server_details.get("public_port_id")
-        for port_id in (service_port_id, public_port_id):
+        admin_port_id = server_details.get("admin_port_id")
+        for port_id in (service_port_id, public_port_id, admin_port_id):
             if port_id:
                 try:
                     self.neutron_api.delete_port(port_id)
@@ -797,11 +847,16 @@ class NeutronNetworkHelper(BaseNetworkhelper):
         subnet_name = ('service_subnet_for_handling_of_share_server_for_'
                        'tenant_subnet_%s' % neutron_subnet_id)
 
-        network_data['service_subnet'] = self._get_service_subnet(subnet_name)
-        if not network_data['service_subnet']:
-            network_data['service_subnet'] = self.neutron_api.subnet_create(
-                self.admin_project_id, self.service_network_id, subnet_name,
-                self._get_cidr_for_subnet())
+        if self.use_service_network:
+            network_data['service_subnet'] = self._get_service_subnet(
+                subnet_name)
+            if not network_data['service_subnet']:
+                network_data['service_subnet'] = (
+                    self.neutron_api.subnet_create(
+                        self.admin_project_id, self.service_network_id,
+                        subnet_name, self._get_cidr_for_subnet()))
+
+        network_data['ports'] = []
 
         if not self.connect_share_server_to_tenant_network:
             network_data['router'] = self._get_private_router(
@@ -817,24 +872,28 @@ class NeutronNetworkHelper(BaseNetworkhelper):
                           'router %(router_id)s.',
                           {'subnet_id': network_data['service_subnet']['id'],
                            'router_id': network_data['router']['id']})
-
-        network_data['service_port'] = self.neutron_api.create_port(
-            self.admin_project_id, self.service_network_id,
-            subnet_id=network_data['service_subnet']['id'],
-            device_owner='manila')
-
-        network_data['ports'] = [network_data['service_port']]
-        if self.connect_share_server_to_tenant_network:
+        else:
             network_data['public_port'] = self.neutron_api.create_port(
                 self.admin_project_id, neutron_net_id,
                 subnet_id=neutron_subnet_id, device_owner='manila')
             network_data['ports'].append(network_data['public_port'])
 
+        if self.use_service_network:
+            network_data['service_port'] = self.neutron_api.create_port(
+                self.admin_project_id, self.service_network_id,
+                subnet_id=network_data['service_subnet']['id'],
+                device_owner='manila')
+            network_data['ports'].append(network_data['service_port'])
+
+        if self.use_admin_port:
+            network_data['admin_port'] = self.neutron_api.create_port(
+                self.admin_project_id, self.admin_network_id,
+                subnet_id=self.admin_subnet_id, device_owner='manila')
+            network_data['ports'].append(network_data['admin_port'])
+
         try:
-            port = self.setup_connectivity_with_service_instances()
-            service_ip = self._get_service_ip(
-                port, network_data['service_subnet']['id'])
-        except Exception as e:
+            self.setup_connectivity_with_service_instances()
+        except Exception:
             for port in network_data['ports']:
                 self.neutron_api.delete_port(port['id'])
             raise
@@ -842,18 +901,10 @@ class NeutronNetworkHelper(BaseNetworkhelper):
         network_data['nics'] = [
             {'port-id': port['id']} for port in network_data['ports']]
         public_ip = network_data.get(
-            'public_port', network_data['service_port'])
+            'public_port', network_data.get('service_port'))
         network_data['ip_address'] = public_ip['fixed_ips'][0]['ip_address']
-        network_data['service_ip'] = service_ip
 
         return network_data
-
-    def _get_service_ip(self, port, subnet_id):
-        for fixed_ips in port['fixed_ips']:
-            if subnet_id == fixed_ips['subnet_id']:
-                return fixed_ips['ip_address']
-        msg = _("Service IP not found for Share Server.")
-        raise exception.ServiceIPNotFound(reason=msg)
 
     def _get_cidr_for_subnet(self):
         """Returns not used cidr for service subnet creating."""
@@ -872,12 +923,30 @@ class NeutronNetworkHelper(BaseNetworkhelper):
     def setup_connectivity_with_service_instances(self):
         """Sets up connectivity with service instances.
 
-        Creates creating port in service network, creating and setting up
-        required network devices.
+        Creates host port in service network and/or admin network, creating
+        and setting up required network devices.
         """
-        port = self._get_service_port()
-        port = self._add_fixed_ips_to_service_port(port)
-        interface_name = self.vif_driver.get_device_name(port)
+        if self.use_service_network:
+            port = self._get_service_port(
+                self.service_network_id, None, 'manila-share')
+            port = self._add_fixed_ips_to_service_port(port)
+            interface_name = self.vif_driver.get_device_name(port)
+            device = ip_lib.IPDevice(interface_name)
+            self._plug_interface_in_host(interface_name, device, port)
+
+        if self.use_admin_port:
+            port = self._get_service_port(
+                self.admin_network_id, self.admin_subnet_id,
+                'manila-admin-share')
+            interface_name = self.vif_driver.get_device_name(port)
+            device = ip_lib.IPDevice(interface_name)
+            for fixed_ip in port['fixed_ips']:
+                subnet = self.neutron_api.get_subnet(fixed_ip['subnet_id'])
+                device.route.clear_outdated_routes(subnet['cidr'])
+            self._plug_interface_in_host(interface_name, device, port)
+
+    def _plug_interface_in_host(self, interface_name, device, port):
+
         self.vif_driver.plug(interface_name, port['id'], port['mac_address'])
         ip_cidrs = []
         for fixed_ip in port['fixed_ips']:
@@ -889,13 +958,10 @@ class NeutronNetworkHelper(BaseNetworkhelper):
         self.vif_driver.init_l3(interface_name, ip_cidrs)
 
         # ensure that interface is first in the list
-        device = ip_lib.IPDevice(interface_name)
         device.route.pullup_route(interface_name)
 
         # here we are checking for garbage devices from removed service port
         self._remove_outdated_interfaces(device)
-
-        return port
 
     @utils.synchronized(
         "service_instance_remove_outdated_interfaces", external=True)
@@ -910,19 +976,30 @@ class NeutronNetworkHelper(BaseNetworkhelper):
 
     def _get_set_of_device_cidrs(self, device):
         cidrs = set()
-        for addr in device.addr.list():
+        addr_list = []
+        try:
+            # NOTE(ganso): I could call ip_lib.device_exists here, but since
+            # this is a concurrency problem, it would not fix the problem.
+            addr_list = device.addr.list()
+        except Exception as e:
+            if 'does not exist' in six.text_type(e):
+                LOG.warning(_LW(
+                    "Device %s does not exist anymore.") % device.name)
+            else:
+                raise
+        for addr in addr_list:
             if addr['ip_version'] == 4:
                 cidrs.add(six.text_type(netaddr.IPNetwork(addr['cidr']).cidr))
         return cidrs
 
     @utils.synchronized("service_instance_get_service_port", external=True)
-    def _get_service_port(self):
+    def _get_service_port(self, network_id, subnet_id, device_id):
         """Find or creates service neutron port.
 
         This port will be used for connectivity with service instances.
         """
         host = socket.gethostname()
-        search_opts = {'device_id': 'manila-share',
+        search_opts = {'device_id': device_id,
                        'binding:host_id': host}
         ports = [port for port in self.neutron_api.
                  list_ports(**search_opts)]
@@ -931,9 +1008,8 @@ class NeutronNetworkHelper(BaseNetworkhelper):
                 _('Error. Ambiguous service ports.'))
         elif not ports:
             port = self.neutron_api.create_port(
-                self.admin_project_id, self.service_network_id,
-                device_id='manila-share', device_owner='manila:share',
-                host_id=host)
+                self.admin_project_id, network_id, subnet_id=subnet_id,
+                device_id=device_id, device_owner='manila:share', host_id=host)
         else:
             port = ports[0]
         return port
@@ -1032,7 +1108,6 @@ class NovaNetworkHelper(BaseNetworkhelper):
     def setup_network(self, network_info):
         net = self._get_nova_network(network_info['nova_net_id'])
         network_info['nics'] = [{'net-id': net['id']}]
-        network_info['service_ip'] = net['gateway']
         return network_info
 
     def get_network_name(self, network_info):

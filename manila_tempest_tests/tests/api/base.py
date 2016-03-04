@@ -23,9 +23,9 @@ import six
 from tempest.common import credentials_factory as common_creds
 from tempest.common import dynamic_creds
 from tempest import config
+from tempest.lib.common.utils import data_utils
+from tempest.lib import exceptions
 from tempest import test
-from tempest_lib.common.utils import data_utils
-from tempest_lib import exceptions
 
 from manila_tempest_tests import clients_share as clients
 from manila_tempest_tests import share_exceptions
@@ -79,13 +79,14 @@ def network_synchronized(f):
 
 
 skip_if_microversion_not_supported = utils.skip_if_microversion_not_supported
+skip_if_microversion_lt = utils.skip_if_microversion_lt
 
 
 class BaseSharesTest(test.BaseTestCase):
     """Base test case class for all Manila API tests."""
 
     force_tenant_isolation = False
-    protocols = ["nfs", "cifs", "glusterfs", "hdfs"]
+    protocols = ["nfs", "cifs", "glusterfs", "hdfs", "cephfs"]
 
     # Will be cleaned up in resource_cleanup
     class_resources = []
@@ -103,6 +104,13 @@ class BaseSharesTest(test.BaseTestCase):
         if not utils.is_microversion_supported(microversion):
             raise self.skipException(
                 "Microversion '%s' is not supported." % microversion)
+
+    def skip_if_microversion_lt(self, microversion):
+        if utils.is_microversion_lt(CONF.share.max_api_microversion,
+                                    microversion):
+            raise self.skipException(
+                "Microversion must be greater than or equal to '%s'." %
+                microversion)
 
     @classmethod
     def get_client_with_isolated_creds(cls,
@@ -335,11 +343,22 @@ class BaseSharesTest(test.BaseTestCase):
         return share
 
     @classmethod
-    def migrate_share(cls, share_id, dest_host, client=None, **kwargs):
+    def migrate_share(cls, share_id, dest_host, client=None, notify=True,
+                      wait_for_status='migration_success', **kwargs):
         client = client or cls.shares_v2_client
-        client.migrate_share(share_id, dest_host, **kwargs)
-        share = client.wait_for_migration_completed(
-            share_id, dest_host, version=kwargs.get('version'))
+        client.migrate_share(share_id, dest_host, notify, **kwargs)
+        share = client.wait_for_migration_status(
+            share_id, dest_host, wait_for_status,
+            version=kwargs.get('version'))
+        return share
+
+    @classmethod
+    def migration_complete(cls, share_id, dest_host, client=None, **kwargs):
+        client = client or cls.shares_v2_client
+        client.migration_complete(share_id, **kwargs)
+        share = client.wait_for_migration_status(
+            share_id, dest_host, 'migration_success',
+            version=kwargs.get('version'))
         return share
 
     @classmethod

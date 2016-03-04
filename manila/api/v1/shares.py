@@ -17,6 +17,7 @@
 
 import ast
 import re
+import string
 
 from oslo_log import log
 from oslo_utils import strutils
@@ -93,10 +94,12 @@ class ShareMixin(object):
             raise exc.HTTPNotFound()
         except exception.InvalidShare as e:
             raise exc.HTTPForbidden(explanation=six.text_type(e))
+        except exception.Conflict as e:
+            raise exc.HTTPConflict(explanation=six.text_type(e))
 
         return webob.Response(status_int=202)
 
-    def _migrate_share(self, req, id, body):
+    def _migration_start(self, req, id, body, check_notify=False):
         """Migrate a share to the specified host."""
         context = req.environ['manila.context']
         try:
@@ -104,20 +107,73 @@ class ShareMixin(object):
         except exception.NotFound:
             msg = _("Share %s not found.") % id
             raise exc.HTTPNotFound(explanation=msg)
-        params = body.get('migrate_share', body.get('os-migrate_share'))
+        params = body.get('migration_start',
+                          body.get('migrate_share',
+                                   body.get('os-migrate_share')))
         try:
             host = params['host']
         except KeyError:
-            raise exc.HTTPBadRequest(explanation=_("Must specify 'host'"))
+            raise exc.HTTPBadRequest(explanation=_("Must specify 'host'."))
         force_host_copy = params.get('force_host_copy', False)
         try:
             force_host_copy = strutils.bool_from_string(force_host_copy,
                                                         strict=True)
         except ValueError:
-            raise exc.HTTPBadRequest(
-                explanation=_("Bad value for 'force_host_copy'"))
-        self.share_api.migrate_share(context, share, host, force_host_copy)
+            msg = _("Invalid value %s for 'force_host_copy'. "
+                    "Expecting a boolean.") % force_host_copy
+            raise exc.HTTPBadRequest(explanation=msg)
+        if check_notify:
+            notify = params.get('notify', True)
+            try:
+                notify = strutils.bool_from_string(notify, strict=True)
+            except ValueError:
+                msg = _("Invalid value %s for 'notify'. "
+                        "Expecting a boolean.") % notify
+                raise exc.HTTPBadRequest(explanation=msg)
+        else:
+            # NOTE(ganso): default notify value is True
+            notify = True
+
+        try:
+            self.share_api.migration_start(context, share, host,
+                                           force_host_copy, notify)
+        except exception.Conflict as e:
+            raise exc.HTTPConflict(explanation=six.text_type(e))
+
         return webob.Response(status_int=202)
+
+    def _migration_complete(self, req, id, body):
+        """Invokes 2nd phase of share migration."""
+        context = req.environ['manila.context']
+        try:
+            share = self.share_api.get(context, id)
+        except exception.NotFound:
+            msg = _("Share %s not found.") % id
+            raise exc.HTTPNotFound(explanation=msg)
+        self.share_api.migration_complete(context, share)
+        return webob.Response(status_int=202)
+
+    def _migration_cancel(self, req, id, body):
+        """Attempts to cancel share migration."""
+        context = req.environ['manila.context']
+        try:
+            share = self.share_api.get(context, id)
+        except exception.NotFound:
+            msg = _("Share %s not found.") % id
+            raise exc.HTTPNotFound(explanation=msg)
+        self.share_api.migration_cancel(context, share)
+        return webob.Response(status_int=202)
+
+    def _migration_get_progress(self, req, id, body):
+        """Retrieve share migration progress for a given share."""
+        context = req.environ['manila.context']
+        try:
+            share = self.share_api.get(context, id)
+        except exception.NotFound:
+            msg = _("Share %s not found.") % id
+            raise exc.HTTPNotFound(explanation=msg)
+        result = self.share_api.migration_get_progress(context, share)
+        return self._view_builder.migration_get_progress(result)
 
     def index(self, req):
         """Returns a summary list of shares."""
@@ -274,7 +330,7 @@ class ShareMixin(object):
             # If share_network_id is empty than update it with
             # share_network_id of parent share.
             parent_share = self.share_api.get(context, snapshot['share_id'])
-            parent_share_net_id = parent_share['share_network_id']
+            parent_share_net_id = parent_share.instance['share_network_id']
             if share_network_id:
                 if share_network_id != parent_share_net_id:
                     msg = "Share network ID should be the same as snapshot's" \
@@ -324,7 +380,7 @@ class ShareMixin(object):
                                           display_description,
                                           **kwargs)
 
-        return self._view_builder.detail(req, dict(six.iteritems(new_share)))
+        return self._view_builder.detail(req, new_share)
 
     @staticmethod
     def _validate_common_name(access):
@@ -376,7 +432,27 @@ class ShareMixin(object):
             except ValueError:
                 raise webob.exc.HTTPBadRequest(explanation=exc_str)
 
-    def _allow_access(self, req, id, body):
+    @staticmethod
+    def _validate_cephx_id(cephx_id):
+        if not cephx_id:
+            raise webob.exc.HTTPBadRequest(explanation=_(
+                'Ceph IDs may not be empty'))
+
+        # This restriction may be lifted in Ceph in the future:
+        # http://tracker.ceph.com/issues/14626
+        if not set(cephx_id) <= set(string.printable):
+            raise webob.exc.HTTPBadRequest(explanation=_(
+                'Ceph IDs must consist of ASCII printable characters'))
+
+        # Periods are technically permitted, but we restrict them here
+        # to avoid confusion where users are unsure whether they should
+        # include the "client." prefix: otherwise they could accidentally
+        # create "client.client.foobar".
+        if '.' in cephx_id:
+            raise webob.exc.HTTPBadRequest(explanation=_(
+                'Ceph IDs may not contain periods'))
+
+    def _allow_access(self, req, id, body, enable_ceph=False):
         """Add share access rule."""
         context = req.environ['manila.context']
         access_data = body.get('allow_access', body.get('os-allow_access'))
@@ -390,9 +466,16 @@ class ShareMixin(object):
             self._validate_username(access_to)
         elif access_type == 'cert':
             self._validate_common_name(access_to.strip())
+        elif access_type == "cephx" and enable_ceph:
+            self._validate_cephx_id(access_to)
         else:
-            exc_str = _("Only 'ip','user',or'cert' access types "
-                        "are supported.")
+            if enable_ceph:
+                exc_str = _("Only 'ip', 'user', 'cert' or 'cephx' access "
+                            "types are supported.")
+            else:
+                exc_str = _("Only 'ip', 'user' or 'cert' access types "
+                            "are supported.")
+
             raise webob.exc.HTTPBadRequest(explanation=exc_str)
         try:
             access = self.share_api.allow_access(

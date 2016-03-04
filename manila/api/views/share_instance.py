@@ -20,6 +20,8 @@ class ViewBuilder(common.ViewBuilder):
 
     _detail_version_modifiers = [
         "remove_export_locations",
+        "add_access_rules_status_field",
+        "add_replication_fields",
     ]
 
     def detail_list(self, request, instances):
@@ -64,3 +66,13 @@ class ViewBuilder(common.ViewBuilder):
     def remove_export_locations(self, share_instance_dict, share_instance):
         share_instance_dict.pop('export_location')
         share_instance_dict.pop('export_locations')
+
+    @common.ViewBuilder.versioned_method("2.10")
+    def add_access_rules_status_field(self, instance_dict, share_instance):
+        instance_dict['access_rules_status'] = (
+            share_instance.get('access_rules_status')
+        )
+
+    @common.ViewBuilder.versioned_method("2.11")
+    def add_replication_fields(self, instance_dict, share_instance):
+        instance_dict['replica_state'] = share_instance.get('replica_state')

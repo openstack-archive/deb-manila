@@ -15,6 +15,7 @@
 
 from oslo_concurrency import processutils
 from oslo_log import log
+from oslo_utils import strutils
 from oslo_utils import units
 import paramiko
 import six
@@ -232,7 +233,7 @@ class HNASSSHBackend(object):
         except processutils.ProcessExecutionError as e:
             if 'Source path: Cannot access' in e.stderr:
                 LOG.debug("Share %(shr)s does not exist.",
-                          {'shr': six.text_type(vvol_name)})
+                          {'shr': vvol_name})
             else:
                 msg = six.text_type(e)
                 LOG.exception(msg)
@@ -280,7 +281,7 @@ class HNASSSHBackend(object):
             raise exception.HNASItemNotFoundException(msg=msg)
 
     def get_share_quota(self, share_id):
-        command = ['quota', 'list', self.fs_name, six.text_type(share_id)]
+        command = ['quota', 'list', self.fs_name, share_id]
         output, err = self._execute(command)
 
         quota = Quota(output)
@@ -297,9 +298,23 @@ class HNASSSHBackend(object):
                      "below 1G.") % share_id)
             raise exception.HNASBackendException(msg=msg)
 
+    def get_share_usage(self, share_id):
+        command = ['quota', 'list', self.fs_name, share_id]
+        output, err = self._execute(command)
+
+        quota = Quota(output)
+
+        if quota.usage is None:
+            msg = (_("Virtual volume %s does not have any quota.") % share_id)
+            raise exception.HNASItemNotFoundException(msg=msg)
+        else:
+            bytes_usage = strutils.string_to_bytes(six.text_type(quota.usage) +
+                                                   quota.usage_unit)
+            return bytes_usage / units.Gi
+
     def _get_share_export(self, share_id):
         share_id = '/shares/' + share_id
-        command = ['nfs-export', 'list ', six.text_type(share_id)]
+        command = ['nfs-export', 'list ', share_id]
         output, err = self._execute(command)
         export_list = []
 

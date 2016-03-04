@@ -95,11 +95,8 @@ class NetAppCmodeSingleSvmShareDriver(driver.ShareDriver):
     def unmanage(self, share):
         self.library.unmanage(share)
 
-    def allow_access(self, context, share, access, **kwargs):
-        self.library.allow_access(context, share, access, **kwargs)
-
-    def deny_access(self, context, share, access, **kwargs):
-        self.library.deny_access(context, share, access, **kwargs)
+    def update_access(self, context, share, access_rules, **kwargs):
+        self.library.update_access(context, share, access_rules, **kwargs)
 
     def _update_share_stats(self, data=None):
         data = self.library.get_share_stats()
@@ -112,8 +109,33 @@ class NetAppCmodeSingleSvmShareDriver(driver.ShareDriver):
     def get_network_allocations_number(self):
         return self.library.get_network_allocations_number()
 
+    def get_admin_network_allocations_number(self):
+        return self.library.get_admin_network_allocations_number()
+
     def _setup_server(self, network_info, metadata=None):
         return self.library.setup_server(network_info, metadata)
 
     def _teardown_server(self, server_details, **kwargs):
         self.library.teardown_server(server_details, **kwargs)
+
+    def create_replica(self, context, replica_list, replica, access_rules,
+                       **kwargs):
+        return self.library.create_replica(context, replica_list, replica,
+                                           access_rules, **kwargs)
+
+    def delete_replica(self, context, replica_list, replica, **kwargs):
+        self.library.delete_replica(context, replica_list, replica, **kwargs)
+
+    def promote_replica(self, context, replica_list, replica, access_rules,
+                        share_server=None):
+        return self.library.promote_replica(context, replica_list, replica,
+                                            access_rules,
+                                            share_server=share_server)
+
+    def update_replica_state(self, context, replica_list, replica,
+                             access_rules, share_server=None):
+        return self.library.update_replica_state(context,
+                                                 replica_list,
+                                                 replica,
+                                                 access_rules,
+                                                 share_server=share_server)

@@ -14,8 +14,8 @@
 #    under the License.
 
 from tempest import config  # noqa
+from tempest.lib import exceptions as lib_exc  # noqa
 from tempest import test  # noqa
-from tempest_lib import exceptions as lib_exc  # noqa
 import testtools  # noqa
 
 from manila_tempest_tests import clients_share as clients
@@ -30,6 +30,9 @@ class SharesAdminQuotasNegativeTest(base.BaseSharesAdminTest):
 
     @classmethod
     def resource_setup(cls):
+        if not CONF.share.run_quota_tests:
+            msg = "Quota tests are disabled."
+            raise cls.skipException(msg)
         cls.os = clients.AdminManager()
         super(SharesAdminQuotasNegativeTest, cls).resource_setup()
         cls.user_id = cls.shares_client.user_id

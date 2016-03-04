@@ -20,6 +20,12 @@
 # 'MANILA_BACKEND1_CONFIG_GROUP_NAME' and 'MANILA_BACKEND2_CONFIG_GROUP_NAME'
 # to the env var 'MANILA_ENABLED_BACKENDS' or will be enabled
 # if 'MANILA_ENABLED_BACKENDS' is empty.
+#
+# 4) 'CINDER_OVERSUBSCRIPTION_RATIO' - manila devstack-plugin env var that is
+# useful for all share drivers that use Cinder. If it is set, then it will be
+# applied for two Cinder options: 'max_over_subscription_ratio' and
+# 'lvm_max_over_subscription_ratio'. Should be float. Example:
+# CINDER_OVERSUBSCRIPTION_RATIO=20.0
 
 
 # Defaults
@@ -127,13 +133,45 @@ MANILA_SHARE_BACKEND1_NAME=${MANILA_SHARE_BACKEND1_NAME:-GENERIC1}  # deprecated
 MANILA_BACKEND2_CONFIG_GROUP_NAME=${MANILA_BACKEND2_CONFIG_GROUP_NAME:-generic2}  # deprecated
 MANILA_SHARE_BACKEND2_NAME=${MANILA_SHARE_BACKEND2_NAME:-GENERIC2}  # deprecated
 
+# Options for configuration of LVM share driver
+SHARE_BACKING_FILE_SIZE=${SHARE_BACKING_FILE_SIZE:-8400M}
+SHARE_GROUP=${SHARE_GROUP:-lvm-shares}
+MANILA_MNT_DIR=${MANILA_MNT_DIR:=$MANILA_STATE_PATH/mnt}
+SMB_CONF=${SMB_CONF:-/etc/samba/smb.conf}
+SMB_PRIVATE_DIR=${SMB_PRIVATE_DIR:-/var/lib/samba/private}
+CONFIGURE_BACKING_FILE=${CONFIGURE_BACKING_FILE:-"True"}
+
+# Options for configuration of ZFSonLinux driver
+# 'MANILA_ZFSONLINUX_ZPOOL_SIZE' defines size of each zpool. That value
+# will be used for creation of sparse files.
+MANILA_ZFSONLINUX_ZPOOL_SIZE=${MANILA_ZFSONLINUX_ZPOOL_SIZE:-"30G"}
+MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR=${MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR:-"/opt/stack/data/manila/zfsonlinux"}
+MANILA_ZFSONLINUX_SHARE_EXPORT_IP=${MANILA_ZFSONLINUX_SHARE_EXPORT_IP:-"127.0.0.1"}
+MANILA_ZFSONLINUX_SERVICE_IP=${MANILA_ZFSONLINUX_SERVICE_IP:-"127.0.0.1"}
+MANILA_ZFSONLINUX_DATASET_CREATION_OPTIONS=${MANILA_ZFSONLINUX_DATASET_CREATION_OPTIONS:-"compression=gzip"}
+MANILA_ZFSONLINUX_SSH_USERNAME=${MANILA_ZFSONLINUX_SSH_USERNAME:-"stack"}
+# If MANILA_ZFSONLINUX_REPLICATION_DOMAIN is set to empty value then
+# Manila will consider replication feature as disabled for ZFSonLinux share driver.
+MANILA_ZFSONLINUX_REPLICATION_DOMAIN=${MANILA_ZFSONLINUX_REPLICATION_DOMAIN:-"ZFSonLinux"}
+
+# LXD Driver
+MANILA_LXD_DRIVER=${MANILA_LXD_DRIVER:-"manila.share.drivers.lxd.LXDDriver"}
+MANILA_LXD_IMAGE_ALIAS=${MANILA_LXD_IMAGE_ALIAS:-"manila-lxd-image"}
+# (aovchinnikov): This location is temporary and will be changed to a
+# permanent one as soon as possible.
+MANILA_LXD_META_URL=${MANILA_LXD_META_URL:-"https://github.com/a-ovchinnikov/manila-image-elements-lxd-images/releases/download/0.1.0/manila-lxd-meta.tar"}
+# (aovchinnikov): This location is temporary and will be changed to a
+# permanent one as soon as possible.
+MANILA_LXD_ROOTFS_URL=${MANILA_LXD_ROOTFS_URL:-"https://github.com/a-ovchinnikov/manila-image-elements-lxd-images/releases/download/0.1.0/manila-service-image.tar.xz"}
 
 # Enable manila services
 # ----------------------
 # We have to add Manila to enabled services for screen_it to work
-# It consists of 3 parts: m-api (API), m-shr (Share) and m-sch (Scheduler).
+# It consists of 4 parts: m-api (API), m-shr (Share), m-sch (Scheduler)
+# and m-dat (Data).
 
 enable_service manila
 enable_service m-api
 enable_service m-shr
 enable_service m-sch
+enable_service m-dat

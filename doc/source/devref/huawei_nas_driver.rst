@@ -17,7 +17,7 @@
 Huawei Driver
 =============
 
-Huawei NAS Driver is a plugin based the OpenStack Manila service. The Huawei NAS
+Huawei NAS Driver is a plugin based the OpenStack manila service. The Huawei NAS
 Driver can be used to provide functions such as the share and snapshot for virtual
 machines(instances) in OpenStack. Huawei NAS Driver enables the OceanStor V3 series
 V300R002 storage system to provide only network filesystems for OpenStack.
@@ -27,6 +27,7 @@ Requirements
 
 - The OceanStor V3 series V300R002 storage system.
 - The following licenses should be activated on V3 for File:
+
   * CIFS
   * NFS
   * HyperSnap License (for snapshot)
@@ -50,6 +51,10 @@ The following operations is supported on V3 storage:
 - Extend share
 - Shrink share
 - Support multi RestURLs(<RestURL>)
+- Support multi-tenancy
+- Ensure share
+- Create share from snapshot
+- Support QoS
 
 
 Pre-Configurations on Huawei
@@ -77,10 +82,17 @@ storage systems, the driver configuration file is as follows:
             <UserPassword>xxxxxxxxx</UserPassword>
         </Storage>
         <Filesystem>
-            <Thin_StoragePool>xxxxxxxxx</Thin_StoragePool>
-            <Thick_StoragePool>xxxxxxxx</Thick_StoragePool>
+            <StoragePool>xxxxxxxxx</StoragePool>
+            <AllocType>xxxxxxxx</AllocType>
             <WaitInterval>3</WaitInterval>
             <Timeout>60</Timeout>
+            <NFSClient>
+                <IP>x.x.x.x</IP>
+            </NFSClient>
+            <CIFSClient>
+                <UserName>xxxxxxxxx</UserName>
+                <UserPassword>xxxxxxxxx</UserPassword>
+            </CIFSClient>
         </Filesystem>
     </Config>
 
@@ -95,16 +107,19 @@ storage systems, the driver configuration file is as follows:
   failed to connect, driver will retry another automatically.
 - `UserName` is a user name of an administrator.
 - `UserPassword` is a password of an administrator.
-- `Thin_StoragePool` is a name of a Thin storage pool to be used.
-- `Thick_StoragePool` is a name of a Thick storage pool to be used.
+- `StoragePool` is a name of a storage pool to be used.
+- `AllocType` is the file system space allocation type, optional value is "Thick" or "Thin".
 - `WaitInterval` is the interval time of querying the file system status.
 - `Timeout` is the timeout period for waiting command execution of a device to
   complete.
+- `NFSClient\IP` is the backend IP in admin network to use for mounting NFS share.
+- `CIFSClient\UserName` is the backend user name in admin network to use for mounting CIFS share.
+- `CIFSClient\UserPassword` is the backend password in admin network to use for mounting CIFS share.
 
 Backend Configuration
 ---------------------
 
-Modify the `manila.conf` Manila configuration file and add share_driver and
+Modify the `manila.conf` manila configuration file and add share_driver and
 manila_huawei_conf_file items.
 Example for configuring a storage system:
 
@@ -129,14 +144,14 @@ Share Types
 
 When creating a share, a share type can be specified to determine where and
 how the share will be created. If a share type is not specified, the
-`default_share_type` set in the Manila configuration file is used.
+`default_share_type` set in the manila configuration file is used.
 
 Manila requires that the share type includes the `driver_handles_share_servers`
 extra-spec. This ensures that the share will be created on a backend that
 supports the requested driver_handles_share_servers (share networks) capability.
 For the Huawei driver, this must be set to False.
 
-Another common Manila extra-spec used to determine where a share is created
+Another common manila extra-spec used to determine where a share is created
 is `share_backend_name`. When this extra-spec is defined in the share type,
 the share will be created on a backend with a matching share_backend_name.
 
@@ -155,6 +170,15 @@ commit makes the Huawei driver report the following boolean capabilities:
 
   * huawei_smartpartition:partitionname
 
+- capabilities:qos
+
+  * qos:maxIOPS
+  * qos:minIOPS
+  * qos:minbandwidth
+  * qos:maxbandwidth
+  * qos:latency
+  * qos:iotype
+
 The scheduler will choose a host that supports the needed
 capability when the CapabilityFilter is used and a share
 type uses one or more of the following extra-specs:
@@ -170,32 +194,32 @@ type uses one or more of the following extra-specs:
 
   * huawei_smartpartition:partitionname=test_partition_name
 
-`thin_provisioning` will be reported as True for backends that use thin
-provisioned pool. Backends that use thin provisioning also support Manila's
-over-subscription feature. 'thin_provisioning' will be reported as False for
-backends that use thick provisioned pool.
+- capabilities:qos='<is> True' or '<is> False'
 
-`dedupe` will be reported as True for backends that use deduplication
-technology.
+  * qos:maxIOPS=100
+  * qos:minIOPS=10
+  * qos:maxbandwidth=100
+  * qos:minbandwidth=10
+  * qos:latency=10
+  * qos:iotype=0
 
-`compression` will be reported as True for backends that use compression
-technology.
+`thin_provisioning` will be reported as [True, False] for Huawei backends.
 
-`huawei_smartcache` will be reported as True for backends that use smartcache
-technology. Adds SSDs into a high-speed cache pool and divides the pool into
+`dedupe` will be reported as [True, False] for Huawei backends.
+
+`compression` will be reported as [True, False] for Huawei backends.
+
+`huawei_smartcache` will be reported as [True, False] for Huawei backends.
+Adds SSDs into a high-speed cache pool and divides the pool into
 multiple cache partitions to cache hotspot data in random and small read I/Os.
 
-`huawei_smartpartition` will be reported as True for backends that use
-smartpartition technology. Add share to the smartpartition named
-'test_partition_name'. Allocates cache resources based on service characteristics,
+`huawei_smartpartition` will be reported as [True, False] for Huawei backends.
+Add share to the smartpartition named 'test_partition_name'.
+Allocates cache resources based on service characteristics,
 ensuring the quality of critical services.
 
-.. note::
-    `snapshot_support` will be reported as True for backends that support all
-    snapshot functionalities, including create_snapshot, delete_snapshot, and
-    create_share_from_snapshot. Huawei Driver does not support
-    create_share_from_snapshot API now, so make sure that used `share type` has
-    extra spec `snapshot_support` set to `False`.
+`qos` will be reported as True for backends that use QoS (Quality of Service)
+specification.
 
 Restrictions
 ------------

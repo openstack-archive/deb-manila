@@ -65,7 +65,7 @@ class FilterScheduler(base.Scheduler):
         In the event that the request gets re-scheduled, this entry
         will signal that the given backend has already been tried.
         """
-        retry = filter_properties.get('retry', None)
+        retry = filter_properties.get('retry')
         if not retry:
             return
         hosts = retry['hosts']
@@ -105,16 +105,46 @@ class FilterScheduler(base.Scheduler):
             snapshot_id=snapshot_id
         )
 
+    def schedule_create_replica(self, context, request_spec,
+                                filter_properties):
+        share_replica_id = request_spec['share_instance_properties'].get('id')
+
+        weighed_host = self._schedule_share(
+            context, request_spec, filter_properties)
+
+        if not weighed_host:
+            msg = _('Failed to find a weighted host for scheduling share '
+                    'replica %s.')
+            raise exception.NoValidHost(reason=msg % share_replica_id)
+
+        host = weighed_host.obj.host
+
+        updated_share_replica = base.share_replica_update_db(
+            context, share_replica_id, host)
+        self._post_select_populate_filter_properties(filter_properties,
+                                                     weighed_host.obj)
+
+        # context is not serializable
+        filter_properties.pop('context', None)
+
+        self.share_rpcapi.create_share_replica(
+            context, updated_share_replica, host, request_spec=request_spec,
+            filter_properties=filter_properties)
+
     def _format_filter_properties(self, context, filter_properties,
                                   request_spec):
 
         elevated = context.elevated()
 
         share_properties = request_spec['share_properties']
+        share_instance_properties = (request_spec.get(
+            'share_instance_properties', {}))
+
         # Since Manila is using mixed filters from Oslo and it's own, which
         # takes 'resource_XX' and 'volume_XX' as input respectively, copying
         # 'volume_XX' to 'resource_XX' will make both filters happy.
         resource_properties = share_properties.copy()
+        resource_properties.update(share_instance_properties.copy())
         share_type = request_spec.get("share_type", {})
         if not share_type:
             msg = _("You must create a share type in advance,"
@@ -151,6 +181,18 @@ class FilterScheduler(base.Scheduler):
             if cg_host:
                 cg_support = cg_host.consistency_group_support
 
+        # NOTE(gouthamr): If 'active_replica_host' is present in the request
+        # spec, pass that host's 'replication_domain' to the
+        # ShareReplication filter.
+        active_replica_host = request_spec.get('active_replica_host')
+        replication_domain = None
+        if active_replica_host:
+            temp_hosts = self.host_manager.get_all_host_states_share(elevated)
+            ar_host = next((host for host in temp_hosts
+                            if host.host == active_replica_host), None)
+            if ar_host:
+                replication_domain = ar_host.replication_domain
+
         if filter_properties is None:
             filter_properties = {}
         self._populate_retry_share(filter_properties, resource_properties)
@@ -162,6 +204,7 @@ class FilterScheduler(base.Scheduler):
                                   'resource_type': resource_type,
                                   'cg_support': cg_support,
                                   'consistency_group': cg,
+                                  'replication_domain': replication_domain,
                                   })
 
         self.populate_filter_properties_share(request_spec, filter_properties)
@@ -248,7 +291,7 @@ class FilterScheduler(base.Scheduler):
         if not exc:
             return  # no exception info from a previous attempt, skip
 
-        hosts = retry.get('hosts', None)
+        hosts = retry.get('hosts')
         if not hosts:
             return  # no previously attempted hosts, skip
 
@@ -358,7 +401,7 @@ class FilterScheduler(base.Scheduler):
         """
         elevated = context.elevated()
 
-        shr_types = request_spec.get("share_types", None)
+        shr_types = request_spec.get("share_types")
 
         weighed_hosts = []
 

@@ -26,6 +26,8 @@ class ViewBuilder(common.ViewBuilder):
         "add_task_state_field",
         "modify_share_type_field",
         "remove_export_locations",
+        "add_access_rules_status_field",
+        "add_replication_fields",
     ]
 
     def summary_list(self, request, shares):
@@ -37,7 +39,7 @@ class ViewBuilder(common.ViewBuilder):
         return self._list_view(self.detail, request, shares)
 
     def summary(self, request, share):
-        """Generic, non-detailed view of an share."""
+        """Generic, non-detailed view of a share."""
         return {
             'share': {
                 'id': share.get('id'),
@@ -62,18 +64,19 @@ class ViewBuilder(common.ViewBuilder):
         else:
             share_type = share['share_type_id']
 
+        share_instance = share.get('instance') or {}
         share_dict = {
             'id': share.get('id'),
             'size': share.get('size'),
-            'availability_zone': share.get('availability_zone'),
+            'availability_zone': share_instance.get('availability_zone'),
             'created_at': share.get('created_at'),
             'status': share.get('status'),
             'name': share.get('display_name'),
             'description': share.get('display_description'),
             'project_id': share.get('project_id'),
-            'host': share.get('host'),
+            'host': share_instance.get('host'),
             'snapshot_id': share.get('snapshot_id'),
-            'share_network_id': share.get('share_network_id'),
+            'share_network_id': share_instance.get('share_network_id'),
             'share_proto': share.get('share_proto'),
             'export_location': share.get('export_location'),
             'metadata': metadata,
@@ -87,8 +90,17 @@ class ViewBuilder(common.ViewBuilder):
         self.update_versioned_resource_dict(request, share_dict, share)
 
         if context.is_admin:
-            share_dict['share_server_id'] = share.get('share_server_id')
+            share_dict['share_server_id'] = share_instance.get(
+                'share_server_id')
         return {'share': share_dict}
+
+    def migration_get_progress(self, progress):
+        result = {
+            'total_progress': progress['total_progress'],
+            'current_file_path': progress['current_file_path'],
+            'current_file_progress': progress['current_file_progress']
+        }
+        return result
 
     @common.ViewBuilder.versioned_method("2.2")
     def add_snapshot_support_field(self, share_dict, share):
@@ -122,6 +134,15 @@ class ViewBuilder(common.ViewBuilder):
     def remove_export_locations(self, share_dict, share):
         share_dict.pop('export_location')
         share_dict.pop('export_locations')
+
+    @common.ViewBuilder.versioned_method("2.10")
+    def add_access_rules_status_field(self, share_dict, share):
+        share_dict['access_rules_status'] = share.get('access_rules_status')
+
+    @common.ViewBuilder.versioned_method('2.11')
+    def add_replication_fields(self, share_dict, share):
+        share_dict['replication_type'] = share.get('replication_type')
+        share_dict['has_replicas'] = share['has_replicas']
 
     def _list_view(self, func, request, shares):
         """Provide a view for a list of shares."""

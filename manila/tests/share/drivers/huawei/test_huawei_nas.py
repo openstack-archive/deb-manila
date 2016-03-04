@@ -27,14 +27,17 @@ import mock
 from oslo_serialization import jsonutils
 
 from manila import context
+from manila.data import utils as data_utils
 from manila import db
 from manila import exception
 from manila.share import configuration as conf
+from manila.share.drivers.huawei import constants
 from manila.share.drivers.huawei import huawei_nas
 from manila.share.drivers.huawei.v3 import connection
 from manila.share.drivers.huawei.v3 import helper
 from manila.share.drivers.huawei.v3 import smartx
 from manila import test
+from manila import utils
 
 
 def fake_sleep(time):
@@ -255,7 +258,7 @@ def allow_access(type, method, data):
         if request_data['PERMISSION'] == '0':
             allow_ro_flag = True
             ret = success_data
-        elif request_data['PERMISSION'] == '5':
+        elif request_data['PERMISSION'] == '1':
             allow_rw_flag = True
             ret = success_data
     # Group name should start with '@'.
@@ -283,8 +286,8 @@ def dec_driver_handles_share_servers(func):
 def QoS_response(method):
     if method == "GET":
         data = """{"error":{"code":0},
-                    "data":[{"NAME": "OpenStack_Fake_QoS", "MAXIOPS": "100",
-                    "FSLIST": 4, "LUNLIST": ""}]}"""
+                    "data":{"NAME": "OpenStack_Fake_QoS", "MAXIOPS": "100",
+                    "FSLIST": "4", "LUNLIST": "", "RUNNINGSTATUS": "2"}}"""
     elif method == "PUT":
         data = """{"error":{"code":0}}"""
     else:
@@ -320,6 +323,7 @@ class FakeHuaweiNasHelper(helper.RestHelper):
         self.test_multi_url_flag = 0
         self.cache_exist = True
         self.partition_exist = True
+        self.alloc_type = None
 
     def _change_file_mode(self, filepath):
         pass
@@ -366,6 +370,8 @@ class FakeHuaweiNasHelper(helper.RestHelper):
                     "USERCONSUMEDCAPACITY":"2097152"}]}"""
 
             if url == "/filesystem":
+                request_data = jsonutils.loads(data)
+                self.alloc_type = request_data.get('ALLOCTYPE')
                 data = """{"error":{"code":0},"data":{
                             "ID":"4"}}"""
 
@@ -486,18 +492,31 @@ class FakeHuaweiNasHelper(helper.RestHelper):
                       "filter=PARENTID::1&range=[100-200]":
                 data = """{"error":{"code":0},
                     "data":[{"ID":"5",
-                    "NAME":"100.112.0.1"}]}"""
+                    "NAME":"100.112.0.2"}]}"""
 
             if url == "/CIFS_SHARE_AUTH_CLIENT?"\
                       "filter=PARENTID::2&range=[100-200]":
                 data = """{"error":{"code":0},
                     "data":[{"ID":"6",
-                    "NAME":"user_name"}]}"""
+                    "NAME":"user_exist"}]}"""
 
-            if url == "/NFS_SHARE_AUTH_CLIENT/5"\
-                      or url == "/CIFS_SHARE_AUTH_CLIENT/6":
-                data = """{"error":{"code":0}}"""
-                self.deny_flag = True
+            if url in ("/NFS_SHARE_AUTH_CLIENT/0",
+                       "/NFS_SHARE_AUTH_CLIENT/5",
+                       "/CIFS_SHARE_AUTH_CLIENT/0",
+                       "/CIFS_SHARE_AUTH_CLIENT/6"):
+                if method == "DELETE":
+                    data = """{"error":{"code":0}}"""
+                    self.deny_flag = True
+                elif method == "GET":
+                    if 'CIFS' in url:
+                        data = """{"error":{"code":0},
+                            "data":{"'PERMISSION'":"0"}}"""
+                    else:
+                        data = """{"error":{"code":0},
+                            "data":{"ACCESSVAL":"0"}}"""
+                else:
+                    data = """{"error":{"code":0}}"""
+                    self.allow_rw_flagg = True
 
             if url == "/NFSHARE/count" or url == "/CIFSHARE/count":
                 data = """{"error":{"code":0},"data":{
@@ -515,7 +534,7 @@ class FakeHuaweiNasHelper(helper.RestHelper):
                                 "RUNNINGSTATUS":"2"}}"""
                 else:
                     data = """{"error":{"code":0},"data":{
-                                "RUNNINGSTATUS":"1"}}"""
+                               "RUNNINGSTATUS":"1"}}"""
 
             if url == "/NFSSERVICE":
                 if self.service_nfs_status_flag:
@@ -710,10 +729,13 @@ class HuaweiShareDriverTestCase(test.TestCase):
         self.configuration = mock.Mock(spec=conf.Configuration)
         self.configuration.safe_get = mock.Mock(side_effect=_safe_get)
         self.configuration.network_config_group = 'fake_network_config_group'
+        self.configuration.admin_network_config_group = (
+            'fake_admin_network_config_group')
         self.configuration.share_backend_name = 'fake_share_backend_name'
         self.configuration.huawei_share_backend = 'V3'
         self.configuration.max_over_subscription_ratio = 1
         self.configuration.driver_handles_share_servers = False
+        self.configuration.replication_domain = None
 
         self.tmp_dir = tempfile.mkdtemp()
         self.fake_conf_file = self.tmp_dir + '/manila_huawei_conf.xml'
@@ -732,6 +754,7 @@ class HuaweiShareDriverTestCase(test.TestCase):
 
         self.share_nfs = {
             'id': 'fake_uuid',
+            'share_id': 'fake_uuid',
             'project_id': 'fake_tenant_id',
             'display_name': 'fake',
             'name': 'share-fake-uuid',
@@ -857,6 +880,7 @@ class HuaweiShareDriverTestCase(test.TestCase):
 
         self.share_cifs = {
             'id': 'fake_uuid',
+            'share_id': 'fake_uuid',
             'project_id': 'fake_tenant_id',
             'display_name': 'fake',
             'name': 'share-fake-uuid',
@@ -889,10 +913,12 @@ class HuaweiShareDriverTestCase(test.TestCase):
 
         self.nfs_snapshot = {
             'id': 'fake_snapshot_uuid',
+            'snapshot_id': 'fake_snapshot_uuid',
             'display_name': 'snapshot',
             'name': 'fake_snapshot_name',
             'size': 1,
             'share_name': 'share_fake_uuid',
+            'share_id': 'fake_uuid',
             'share': {
                 'share_name': 'share_fake_uuid',
                 'share_id': 'fake_uuid',
@@ -903,10 +929,12 @@ class HuaweiShareDriverTestCase(test.TestCase):
 
         self.cifs_snapshot = {
             'id': 'fake_snapshot_uuid',
+            'snapshot_id': 'fake_snapshot_uuid',
             'display_name': 'snapshot',
             'name': 'fake_snapshot_name',
             'size': 1,
             'share_name': 'share_fake_uuid',
+            'share_id': 'fake_uuid',
             'share': {
                 'share_name': 'share_fake_uuid',
                 'share_id': 'fake_uuid',
@@ -929,9 +957,21 @@ class HuaweiShareDriverTestCase(test.TestCase):
             'access_level': 'rw',
         }
 
+        self.access_ip_exist = {
+            'access_type': 'ip',
+            'access_to': '100.112.0.2',
+            'access_level': 'rw',
+        }
+
         self.access_user = {
             'access_type': 'user',
             'access_to': 'user_name',
+            'access_level': 'rw',
+        }
+
+        self.access_user_exist = {
+            'access_type': 'user',
+            'access_to': 'user_exist',
             'access_level': 'rw',
         }
 
@@ -1178,7 +1218,11 @@ class HuaweiShareDriverTestCase(test.TestCase):
         self.assertRaises(exception.InvalidInput,
                           self.driver.get_backend_driver)
 
-    def test_create_share_nfs_alloctype_fail(self):
+    def test_create_share_alloctype_fail(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
         self.recreate_fake_conf_file(alloctype_value='alloctype_fail')
         self.driver.plugin.configuration.manila_huawei_conf_file = (
             self.fake_conf_file)
@@ -1250,7 +1294,7 @@ class HuaweiShareDriverTestCase(test.TestCase):
         self.assertRaises(exception.InvalidShare,
                           self.driver.check_for_setup_error)
 
-    def test_create_share_nfs_alloctype_thin_success(self):
+    def test_create_share_alloctype_thin_success(self):
         share_type = self.fake_type_not_extra['test_with_extra']
         self.mock_object(db,
                          'share_type_get',
@@ -1263,6 +1307,72 @@ class HuaweiShareDriverTestCase(test.TestCase):
         location = self.driver.create_share(self._context, self.share_nfs,
                                             self.share_server)
         self.assertEqual("100.115.10.68:/share_fake_uuid", location)
+        self.assertEqual(constants.ALLOC_TYPE_THIN_FLAG,
+                         self.driver.plugin.helper.alloc_type)
+
+    def test_create_share_alloctype_thick_success(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.driver.plugin.helper.login()
+        self.recreate_fake_conf_file(alloctype_value='Thick')
+        self.driver.plugin.configuration.manila_huawei_conf_file = (
+            self.fake_conf_file)
+        self.driver.plugin.helper.login()
+        location = self.driver.create_share(self._context, self.share_nfs,
+                                            self.share_server)
+        self.assertEqual("100.115.10.68:/share_fake_uuid", location)
+        self.assertEqual(constants.ALLOC_TYPE_THICK_FLAG,
+                         self.driver.plugin.helper.alloc_type)
+
+    def test_create_share_no_alloctype_no_extra(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.driver.plugin.helper.login()
+        self.recreate_fake_conf_file(alloctype_value=None)
+        self.driver.plugin.configuration.manila_huawei_conf_file = (
+            self.fake_conf_file)
+        self.driver.plugin.helper.login()
+        location = self.driver.create_share(self._context, self.share_nfs,
+                                            self.share_server)
+        self.assertEqual("100.115.10.68:/share_fake_uuid", location)
+        self.assertEqual(constants.ALLOC_TYPE_THICK_FLAG,
+                         self.driver.plugin.helper.alloc_type)
+
+    def test_create_share_with_extra_thin(self):
+        share_type = {
+            'extra_specs': {
+                'capabilities:thin_provisioning': '<is> True'
+            },
+        }
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.driver.plugin.helper.login()
+        location = self.driver.create_share(self._context, self.share_nfs,
+                                            self.share_server)
+        self.assertEqual("100.115.10.68:/share_fake_uuid", location)
+        self.assertEqual(constants.ALLOC_TYPE_THIN_FLAG,
+                         self.driver.plugin.helper.alloc_type)
+
+    def test_create_share_with_extra_thick(self):
+        share_type = {
+            'extra_specs': {
+                'capabilities:thin_provisioning': '<is> False'
+            },
+        }
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.driver.plugin.helper.login()
+        location = self.driver.create_share(self._context, self.share_nfs,
+                                            self.share_server)
+        self.assertEqual("100.115.10.68:/share_fake_uuid", location)
+        self.assertEqual(constants.ALLOC_TYPE_THICK_FLAG,
+                         self.driver.plugin.helper.alloc_type)
 
     def test_shrink_share_success(self):
         self.driver.plugin.helper.shrink_share_flag = False
@@ -1404,12 +1514,28 @@ class HuaweiShareDriverTestCase(test.TestCase):
                           self.share_server)
 
     @ddt.data({"fake_extra_specs_qos": {"qos:maxIOPS": "100",
-                                        "qos:minIOPS": "50"},
-               "fake_qos_info": {"MAXIOPS": "100", "MINIOPS": "50",
+                                        "qos:maxBandWidth": "50",
+                                        "qos:IOType": "0"},
+               "fake_qos_info": {"MAXIOPS": "100",
+                                 "MAXBANDWIDTH": "50",
+                                 "IOTYPE": "0",
+                                 "LATENCY": "0",
                                  "NAME": "OpenStack_fake_qos"}},
               {"fake_extra_specs_qos": {"qos:maxIOPS": "100",
-                                        "qos:minIOPS": "50"},
-               "fake_qos_info": {"NAME": "fake_qos", "MAXIOPS": "100"}})
+                                        "qos:IOType": "1"},
+               "fake_qos_info": {"NAME": "fake_qos",
+                                 "MAXIOPS": "100",
+                                 "IOTYPE": "1",
+                                 "LATENCY": "0"}},
+              {"fake_extra_specs_qos": {"qos:minIOPS": "100",
+                                        "qos:minBandWidth": "50",
+                                        'qos:latency': "50",
+                                        "qos:IOType": "0"},
+               "fake_qos_info": {"MINIOPS": "100",
+                                 "MINBANDWIDTH": "50",
+                                 "IOTYPE": "0",
+                                 "LATENCY": "50",
+                                 "NAME": "OpenStack_fake_qos"}})
     @ddt.unpack
     def test_create_share_with_qos(self, fake_extra_specs_qos, fake_qos_info):
         fake_share_type_id = 'fooid-2'
@@ -1473,7 +1599,13 @@ class HuaweiShareDriverTestCase(test.TestCase):
               {'capabilities:qos': '<is> True',
                'qos:maxBandWidth': 0},
               {'capabilities:qos': '<is> True',
-               'qos:latency': 0})
+               'qos:latency': 0},
+              {'capabilities:qos': '<is> True',
+               'qos:maxIOPS': 100},
+              {'capabilities:qos': '<is> True',
+               'qos:maxIOPS': 100,
+               'qos:minBandWidth': 100,
+               'qos:IOType': '0'})
     def test_create_share_with_invalid_qos(self, fake_extra_specs):
         fake_share_type_id = 'fooid-2'
         fake_type_error_extra = {
@@ -1621,6 +1753,14 @@ class HuaweiShareDriverTestCase(test.TestCase):
                                      share, self.share_server)
             self.assertTrue(self.driver.plugin.helper.delete_flag)
 
+    def test_delete_share_withoutqos_success(self):
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.delete_flag = False
+        self.driver.plugin.qos_support = True
+        self.driver.delete_share(self._context,
+                                 self.share_nfs, self.share_server)
+        self.assertTrue(self.driver.plugin.helper.delete_flag)
+
     def test_check_snapshot_id_exist_fail(self):
         snapshot_id = "4"
         self.driver.plugin.helper.login()
@@ -1665,11 +1805,319 @@ class HuaweiShareDriverTestCase(test.TestCase):
         number = self.driver.get_network_allocations_number()
         self.assertEqual(0, number)
 
-    def test_create_share_from_snapshot(self):
-        self.assertRaises(NotImplementedError,
+    def test_create_nfsshare_from_nfssnapshot_success(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.mock_object(self.driver.plugin,
+                         'mount_share_to_host',
+                         mock.Mock(return_value={}))
+        self.mock_object(self.driver.plugin,
+                         'copy_snapshot_data',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.driver.plugin,
+                         'umount_share_from_host',
+                         mock.Mock(return_value={}))
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = True
+
+        location = self.driver.create_share_from_snapshot(self._context,
+                                                          self.share_nfs,
+                                                          self.nfs_snapshot,
+                                                          self.share_server)
+
+        self.assertTrue(db.share_type_get.called)
+        self.assertEqual(2, self.driver.plugin.
+                         mount_share_to_host.call_count)
+        self.assertTrue(self.driver.plugin.
+                        copy_snapshot_data.called)
+        self.assertEqual(2, self.driver.plugin.
+                         umount_share_from_host.call_count)
+        self.assertEqual("100.115.10.68:/share_fake_uuid", location)
+
+    def test_create_cifsshare_from_cifssnapshot_success(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.mock_object(self.driver.plugin,
+                         'mount_share_to_host',
+                         mock.Mock(return_value={}))
+        self.mock_object(self.driver.plugin,
+                         'copy_snapshot_data',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.driver.plugin,
+                         'umount_share_from_host',
+                         mock.Mock(return_value={}))
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = True
+
+        location = self.driver.create_share_from_snapshot(self._context,
+                                                          self.share_cifs,
+                                                          self.cifs_snapshot,
+                                                          self.share_server)
+
+        self.assertTrue(db.share_type_get.called)
+        self.assertEqual(2, self.driver.plugin.
+                         mount_share_to_host.call_count)
+        self.assertTrue(self.driver.plugin.
+                        copy_snapshot_data.called)
+        self.assertEqual(2, self.driver.plugin.
+                         umount_share_from_host.call_count)
+        self.assertEqual("\\\\100.115.10.68\\share_fake_uuid", location)
+
+    def test_create_nfsshare_from_cifssnapshot_success(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.mock_object(self.driver.plugin,
+                         '_get_access_id',
+                         mock.Mock(return_value={}))
+        self.mock_object(self.driver.plugin,
+                         'mount_share_to_host',
+                         mock.Mock(return_value={}))
+        self.mock_object(self.driver.plugin,
+                         'copy_snapshot_data',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.driver.plugin,
+                         'umount_share_from_host',
+                         mock.Mock(return_value={}))
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.access_id = None
+        self.driver.plugin.helper.snapshot_flag = True
+
+        location = self.driver.create_share_from_snapshot(self._context,
+                                                          self.share_nfs,
+                                                          self.cifs_snapshot,
+                                                          self.share_server)
+
+        self.assertTrue(db.share_type_get.called)
+        self.assertTrue(self.driver.plugin.
+                        _get_access_id.called)
+        self.assertEqual(2, self.driver.plugin.
+                         mount_share_to_host.call_count)
+        self.assertTrue(self.driver.plugin.
+                        copy_snapshot_data.called)
+        self.assertEqual(2, self.driver.plugin.
+                         umount_share_from_host.call_count)
+        self.assertEqual("100.115.10.68:/share_fake_uuid", location)
+
+    def test_create_cifsshare_from_nfssnapshot_success(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.mock_object(self.driver.plugin,
+                         '_get_access_id',
+                         mock.Mock(return_value={}))
+        self.mock_object(utils,
+                         'execute',
+                         mock.Mock(return_value=("", "")))
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = True
+
+        location = self.driver.create_share_from_snapshot(self._context,
+                                                          self.share_cifs,
+                                                          self.nfs_snapshot,
+                                                          self.share_server)
+
+        self.assertTrue(db.share_type_get.called)
+        self.assertTrue(self.driver.plugin.
+                        _get_access_id.called)
+        self.assertEqual(7, utils.execute.call_count)
+        self.assertEqual("\\\\100.115.10.68\\share_fake_uuid", location)
+
+    def test_create_share_from_snapshot_nonefs(self):
+        self.driver.plugin.helper.login()
+        self.mock_object(self.driver.plugin.helper,
+                         '_get_fsid_by_name',
+                         mock.Mock(return_value={}))
+        self.assertRaises(exception.StorageResourceNotFound,
                           self.driver.create_share_from_snapshot,
-                          self._context, self.share_nfs, self.nfs_snapshot,
-                          self.share_server)
+                          self._context, self.share_nfs,
+                          self.nfs_snapshot, self.share_server)
+        self.assertTrue(self.driver.plugin.helper.
+                        _get_fsid_by_name.called)
+
+    def test_create_share_from_notexistingsnapshot_fail(self):
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = False
+        self.assertRaises(exception.ShareSnapshotNotFound,
+                          self.driver.create_share_from_snapshot,
+                          self._context, self.share_nfs,
+                          self.nfs_snapshot, self.share_server)
+
+    def test_create_share_from_share_fail(self):
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = True
+        self.mock_object(self.driver.plugin,
+                         'check_fs_status',
+                         mock.Mock(return_value={}))
+        self.assertRaises(exception.StorageResourceException,
+                          self.driver.create_share_from_snapshot,
+                          self._context, self.share_nfs,
+                          self.nfs_snapshot, self.share_server)
+        self.assertTrue(self.driver.plugin.check_fs_status.called)
+
+    def test_create_share_from_snapshot_share_error(self):
+        self.mock_object(self.driver.plugin,
+                         '_get_share_proto',
+                         mock.Mock(return_value={}))
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = True
+        self.assertRaises(exception.ShareResourceNotFound,
+                          self.driver.create_share_from_snapshot,
+                          self._context, self.share_nfs,
+                          self.nfs_snapshot, self.share_server)
+        self.assertTrue(self.driver.plugin.
+                        _get_share_proto.called)
+
+    def test_create_share_from_snapshot_allow_oldaccess_fail(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.mock_object(self.driver.plugin,
+                         '_get_share_proto',
+                         mock.Mock(return_value='NFS'))
+        self.mock_object(self.driver.plugin,
+                         '_get_access_id',
+                         mock.Mock(return_value={}))
+        self.mock_object(self.driver.plugin.helper,
+                         '_get_share_by_name',
+                         mock.Mock(return_value={}))
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = True
+
+        self.assertRaises(exception.InvalidShareAccess,
+                          self.driver.create_share_from_snapshot,
+                          self._context, self.share_nfs,
+                          self.nfs_snapshot, self.share_server)
+        self.assertTrue(db.share_type_get.called)
+        self.assertTrue(self.driver.plugin._get_share_proto.called)
+        self.assertTrue(self.driver.plugin._get_access_id.called)
+        self.assertTrue(self.driver.plugin.helper._get_share_by_name.called)
+
+    def test_create_share_from_snapshot_mountshare_fail(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.mock_object(self.driver.plugin,
+                         'mount_share_to_host',
+                         mock.Mock(side_effect=exception.
+                                   ShareMountException('err')))
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = True
+
+        self.assertRaises(exception.ShareMountException,
+                          self.driver.create_share_from_snapshot,
+                          self._context, self.share_nfs,
+                          self.nfs_snapshot, self.share_server)
+        self.assertTrue(db.share_type_get.called)
+        self.assertEqual(1, self.driver.plugin.
+                         mount_share_to_host.call_count)
+
+    def test_create_share_from_snapshot_allow_newaccess_fail(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.mock_object(self.driver.plugin,
+                         '_get_share_proto',
+                         mock.Mock(return_value='NFS'))
+        self.mock_object(self.driver.plugin,
+                         '_get_access_id',
+                         mock.Mock(return_value='5'))
+        self.mock_object(self.driver.plugin,
+                         'mount_share_to_host',
+                         mock.Mock(return_value={}))
+        self.mock_object(self.driver.plugin.helper,
+                         '_get_share_by_name',
+                         mock.Mock(return_value={}))
+        self.mock_object(self.driver.plugin,
+                         'umount_share_from_host',
+                         mock.Mock(return_value={}))
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = True
+
+        self.assertRaises(exception.InvalidShareAccess,
+                          self.driver.create_share_from_snapshot,
+                          self._context, self.share_nfs,
+                          self.nfs_snapshot, self.share_server)
+        self.assertTrue(db.share_type_get.called)
+        self.assertTrue(self.driver.plugin._get_share_proto.called)
+        self.assertTrue(self.driver.plugin._get_access_id.called)
+        self.assertEqual(1, self.driver.plugin.
+                         mount_share_to_host.call_count)
+        self.assertTrue(self.driver.plugin.helper.
+                        _get_share_by_name.called)
+        self.assertEqual(1, self.driver.plugin.
+                         umount_share_from_host.call_count)
+
+    def test_create_nfsshare_from_nfssnapshot_copydata_fail(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.mock_object(self.driver.plugin,
+                         'mount_share_to_host',
+                         mock.Mock(return_value={}))
+        self.mock_object(data_utils,
+                         'Copy',
+                         mock.Mock(side_effect=Exception('err')))
+        self.mock_object(utils,
+                         'execute',
+                         mock.Mock(return_value={}))
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = True
+
+        self.assertRaises(exception.ShareCopyDataException,
+                          self.driver.create_share_from_snapshot,
+                          self._context, self.share_nfs,
+                          self.nfs_snapshot, self.share_server)
+        self.assertTrue(db.share_type_get.called)
+        self.assertEqual(2, self.driver.plugin.
+                         mount_share_to_host.call_count)
+        self.assertTrue(data_utils.Copy.called)
+        self.assertEqual(2, utils.execute.call_count)
+
+    def test_create_nfsshare_from_nfssnapshot_umountshare_fail(self):
+        share_type = self.fake_type_not_extra['test_with_extra']
+        self.mock_object(db,
+                         'share_type_get',
+                         mock.Mock(return_value=share_type))
+        self.mock_object(self.driver.plugin,
+                         'mount_share_to_host',
+                         mock.Mock(return_value={}))
+        self.mock_object(self.driver.plugin,
+                         'copy_snapshot_data',
+                         mock.Mock(return_value=True))
+        self.mock_object(self.driver.plugin,
+                         'umount_share_from_host',
+                         mock.Mock(side_effect=exception.
+                                   ShareUmountException('err')))
+        self.mock_object(os, 'rmdir',
+                         mock.Mock(side_effect=Exception('err')))
+        self.driver.plugin.helper.login()
+        self.driver.plugin.helper.snapshot_flag = True
+
+        location = self.driver.create_share_from_snapshot(self._context,
+                                                          self.share_nfs,
+                                                          self.cifs_snapshot,
+                                                          self.share_server)
+
+        self.assertTrue(db.share_type_get.called)
+        self.assertEqual(2, self.driver.plugin.
+                         mount_share_to_host.call_count)
+        self.assertTrue(self.driver.plugin.copy_snapshot_data.called)
+        self.assertEqual(2, self.driver.plugin.
+                         umount_share_from_host.call_count)
+        self.assertTrue(os.rmdir.called)
+        self.assertEqual("100.115.10.68:/share_fake_uuid", location)
 
     def test_get_share_stats_refresh_pool_not_exist(self):
         self.driver.plugin.helper.login()
@@ -1693,7 +2141,8 @@ class HuaweiShareDriverTestCase(test.TestCase):
         expected['total_capacity_gb'] = 0.0
         expected['free_capacity_gb'] = 0.0
         expected['qos'] = True
-        expected["snapshot_support"] = False
+        expected["snapshot_support"] = True
+        expected['replication_domain'] = None
         expected["pools"] = []
         pool = dict(
             pool_name='OpenStack_Pool',
@@ -1820,6 +2269,59 @@ class HuaweiShareDriverTestCase(test.TestCase):
                           self._context, self.share_cifs,
                           access_fail, self.share_server)
 
+    def test_update_access_add_delete(self):
+        self.driver.plugin.helper.login()
+        self.allow_flag = False
+        self.allow_rw_flag = False
+        self.deny_flag = False
+        add_rules = [self.access_ip]
+        delete_rules = [self.access_ip_exist]
+        self.driver.update_access(self._context,
+                                  self.share_nfs,
+                                  None,
+                                  add_rules,
+                                  delete_rules,
+                                  self.share_server)
+        self.assertTrue(self.driver.plugin.helper.allow_flag)
+        self.assertTrue(self.driver.plugin.helper.allow_rw_flag)
+        self.assertTrue(self.driver.plugin.helper.deny_flag)
+
+    def test_update_access_nfs(self):
+        self.driver.plugin.helper.login()
+        self.allow_flag = False
+        self.allow_rw_flag = False
+        rules = [self.access_ip, self.access_ip_exist]
+        self.driver.update_access(self._context,
+                                  self.share_nfs,
+                                  rules,
+                                  None,
+                                  None,
+                                  self.share_server)
+        self.assertTrue(self.driver.plugin.helper.allow_flag)
+        self.assertTrue(self.driver.plugin.helper.allow_rw_flag)
+
+    def test_update_access_cifs(self):
+        self.driver.plugin.helper.login()
+        self.allow_flag = False
+        self.allow_rw_flag = False
+        rules = [self.access_user, self.access_user_exist]
+        self.driver.update_access(self._context,
+                                  self.share_cifs,
+                                  rules,
+                                  None,
+                                  None,
+                                  self.share_server)
+        self.assertTrue(self.driver.plugin.helper.allow_flag)
+        self.assertTrue(self.driver.plugin.helper.allow_rw_flag)
+
+    def test_update_access_rules_share_not_exist(self):
+        self.driver.plugin.helper.login()
+        rules = [self.access_ip]
+        self.driver.plugin.helper.share_exist = False
+        self.assertRaises(exception.InvalidShareAccess,
+                          self.driver.update_access, self._context,
+                          self.share_nfs, rules, None, None, self.share_server)
+
     def test_get_share_client_type_fail(self):
         share_proto = 'fake_proto'
         self.assertRaises(exception.InvalidInput,
@@ -1906,14 +2408,14 @@ class HuaweiShareDriverTestCase(test.TestCase):
         self.driver.plugin.helper.login()
         self.deny_flag = False
         self.driver.deny_access(self._context, self.share_nfs,
-                                self.access_ip, self.share_server)
+                                self.access_ip_exist, self.share_server)
         self.assertTrue(self.driver.plugin.helper.deny_flag)
 
     def test_deny_access_user_success(self):
         self.driver.plugin.helper.login()
         self.deny_flag = False
         self.driver.deny_access(self._context, self.share_cifs,
-                                self.access_user, self.share_server)
+                                self.access_user_exist, self.share_server)
         self.assertTrue(self.driver.plugin.helper.deny_flag)
 
     def test_deny_access_ip_fail(self):
@@ -2489,6 +2991,44 @@ class HuaweiShareDriverTestCase(test.TestCase):
                          backend_details['ip'])
 
     @dec_driver_handles_share_servers
+    def test_setup_server_choose_least_logic_port(self):
+        self.recreate_fake_conf_file(
+            logical_port='CTE0.A.H0;CTE0.A.H2;CTE0.B.H0;BOND0')
+        self.driver.plugin.configuration.manila_huawei_conf_file = (
+            self.fake_conf_file)
+        fake_network_info = {
+            'server_id': '0',
+            'segmentation_id': None,
+            'cidr': '111.111.111.0/24',
+            'network_allocations': self.fake_network_allocations,
+            'network_type': None,
+        }
+        self.mock_object(self.driver.plugin, '_get_online_port',
+                         mock.Mock(return_value=(['CTE0.A.H0', 'CTE0.A.H2',
+                                                  'CTE0.B.H0'], ['BOND0'])))
+        self.mock_object(self.driver.plugin.helper, 'get_all_logical_port',
+                         mock.Mock(return_value=[
+                             {'HOMEPORTTYPE': constants.PORT_TYPE_ETH,
+                              'HOMEPORTNAME': 'CTE0.A.H0'},
+                             {'HOMEPORTTYPE': constants.PORT_TYPE_VLAN,
+                              'HOMEPORTNAME': 'CTE0.B.H0.10'},
+                             {'HOMEPORTTYPE': constants.PORT_TYPE_BOND,
+                              'HOMEPORTNAME': 'BOND0'}]))
+        self.mock_object(self.driver.plugin.helper,
+                         'get_port_id',
+                         mock.Mock(return_value=4))
+
+        backend_details = self.driver.setup_server(fake_network_info)
+
+        self.assertEqual(self.fake_network_allocations[0]['ip_address'],
+                         backend_details['ip'])
+        self.driver.plugin._get_online_port.assert_called_once_with(
+            ['CTE0.A.H0', 'CTE0.A.H2',  'CTE0.B.H0', 'BOND0'])
+        self.assertTrue(self.driver.plugin.helper.get_all_logical_port.called)
+        self.driver.plugin.helper.get_port_id.assert_called_once_with(
+            'CTE0.A.H2', constants.PORT_TYPE_ETH)
+
+    @dec_driver_handles_share_servers
     def test_setup_server_create_vlan_fail(self):
         def call_create_vlan_fail(*args, **kwargs):
             url = args[0]
@@ -3014,14 +3554,35 @@ class HuaweiShareDriverTestCase(test.TestCase):
             waitinterval_text = doc.createTextNode('')
         waitinterval.appendChild(waitinterval_text)
 
-        alloctype = doc.createElement('AllocType')
-        alloctype_text = doc.createTextNode(alloctype_value)
-        alloctype.appendChild(alloctype_text)
+        NFSClient = doc.createElement('NFSClient')
 
+        virtualip = doc.createElement('IP')
+        virtualip_text = doc.createTextNode('100.112.0.1')
+        virtualip.appendChild(virtualip_text)
+        NFSClient.appendChild(virtualip)
+        CIFSClient = doc.createElement('CIFSClient')
+
+        username = doc.createElement('UserName')
+        username_text = doc.createTextNode('user_name')
+        username.appendChild(username_text)
+        CIFSClient.appendChild(username)
+
+        userpassword = doc.createElement('UserPassword')
+        userpassword_text = doc.createTextNode('user_password')
+        userpassword.appendChild(userpassword_text)
+        CIFSClient.appendChild(userpassword)
+
+        lun.appendChild(NFSClient)
+        lun.appendChild(CIFSClient)
         lun.appendChild(timeout)
-        lun.appendChild(alloctype)
         lun.appendChild(waitinterval)
         lun.appendChild(storagepool)
+
+        if alloctype_value:
+            alloctype = doc.createElement('AllocType')
+            alloctype_text = doc.createTextNode(alloctype_value)
+            alloctype.appendChild(alloctype_text)
+            lun.appendChild(alloctype)
 
         prefetch = doc.createElement('Prefetch')
         prefetch.setAttribute('Type', '0')

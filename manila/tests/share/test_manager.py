@@ -15,9 +15,11 @@
 
 """Test of Share Manager for Manila."""
 import datetime
+import random
 
 import ddt
 import mock
+from oslo_concurrency import lockutils
 from oslo_serialization import jsonutils
 from oslo_utils import importutils
 from oslo_utils import timeutils
@@ -25,19 +27,53 @@ import six
 
 from manila.common import constants
 from manila import context
+from manila.data import rpcapi as data_rpc
 from manila import db
 from manila.db.sqlalchemy import models
 from manila import exception
 from manila import quota
+from manila.share import access as share_access
 from manila.share import drivers_private_data
 from manila.share import manager
-from manila.share import migration
+from manila.share import migration as migration_api
 from manila.share import rpcapi
 from manila.share import share_types
 from manila import test
+from manila.tests.api import fakes as test_fakes
 from manila.tests import db_utils
+from manila.tests import fake_share as fakes
+from manila.tests import fake_utils
 from manila.tests import utils as test_utils
 from manila import utils
+
+
+def fake_replica(**kwargs):
+    return fakes.fake_replica(for_manager=True, **kwargs)
+
+
+class LockedOperationsTestCase(test.TestCase):
+
+    class FakeManager(object):
+
+        @manager.locked_share_replica_operation
+        def fake_replica_operation(self, context, replica, share_id=None):
+            pass
+
+    def setUp(self):
+        super(self.__class__, self).setUp()
+        self.manager = self.FakeManager()
+        self.fake_context = test_fakes.FakeRequestContext
+        self.lock_call = self.mock_object(
+            utils, 'synchronized', mock.Mock(return_value=lambda f: f))
+
+    @ddt.data({'id': 'FAKE_REPLICA_ID'}, 'FAKE_REPLICA_ID')
+    @ddt.unpack
+    def test_locked_share_replica_operation(self, **replica):
+
+        self.manager.fake_replica_operation(self.fake_context, replica,
+                                            share_id='FAKE_SHARE_ID')
+
+        self.assertTrue(self.lock_call.called)
 
 
 @ddt.ddt
@@ -54,6 +90,10 @@ class ShareManagerTestCase(test.TestCase):
         self.mock_object(self.share_manager.driver, 'check_for_setup_error')
         self.context = context.get_admin_context()
         self.share_manager.driver.initialized = True
+        mock.patch.object(
+            lockutils, 'lock', fake_utils.get_fake_lock_context())
+        self.synchronized_lock_decorator_call = self.mock_object(
+            utils, 'synchronized', mock.Mock(return_value=lambda f: f))
 
     def test_share_manager_instance(self):
         fake_service_name = "fake_service"
@@ -140,7 +180,12 @@ class ShareManagerTestCase(test.TestCase):
             assert_called_once_with()
 
     @ddt.data(
-        "migrate_share",
+        "migration_get_driver_info",
+        "migration_get_info",
+        "migration_cancel",
+        "migration_get_progress",
+        "migration_complete",
+        "migration_start",
         "create_share_instance",
         "manage_share",
         "unmanage_share",
@@ -160,6 +205,11 @@ class ShareManagerTestCase(test.TestCase):
         "delete_consistency_group",
         "create_cgsnapshot",
         "delete_cgsnapshot",
+        "create_share_replica",
+        "delete_share_replica",
+        "promote_share_replica",
+        "periodic_share_replica_update",
+        "update_share_replica",
     )
     def test_call_driver_when_its_init_failed(self, method_name):
         self.mock_object(self.share_manager.driver, 'do_setup',
@@ -201,17 +251,21 @@ class ShareManagerTestCase(test.TestCase):
             db_utils.create_share(
                 id='fake_id_4',
                 status=constants.STATUS_AVAILABLE,
-                task_state=constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS,
+                task_state=constants.TASK_STATE_MIGRATION_IN_PROGRESS,
                 display_name='fake_name_4').instance,
+            db_utils.create_share(id='fake_id_5',
+                                  status=constants.STATUS_AVAILABLE,
+                                  display_name='fake_name_5').instance,
         ]
+
+        instances[4]['access_rules_status'] = constants.STATUS_OUT_OF_SYNC
+
         if not setup_access_rules:
             return instances
 
         rules = [
-            db_utils.create_access(state=constants.STATUS_ACTIVE,
-                                   share_id='fake_id_1'),
-            db_utils.create_access(state=constants.STATUS_ERROR,
-                                   share_id='fake_id_3'),
+            db_utils.create_access(share_id='fake_id_1'),
+            db_utils.create_access(share_id='fake_id_3'),
         ]
 
         return instances, rules
@@ -231,7 +285,7 @@ class ShareManagerTestCase(test.TestCase):
                          mock.Mock(return_value=instances))
         self.mock_object(self.share_manager.db, 'share_instance_get',
                          mock.Mock(side_effect=[instances[0], instances[2],
-                                                instances[3]]))
+                                                instances[4]]))
         self.mock_object(self.share_manager.db,
                          'share_export_locations_update')
         self.mock_object(self.share_manager.driver, 'ensure_share',
@@ -244,8 +298,11 @@ class ShareManagerTestCase(test.TestCase):
         self.mock_object(self.share_manager.db,
                          'share_access_get_all_for_share',
                          mock.Mock(return_value=rules))
-        self.mock_object(self.share_manager.driver, 'allow_access',
-                         mock.Mock(side_effect=raise_share_access_exists))
+        self.mock_object(
+            self.share_manager.access_helper,
+            'update_access_rules',
+            mock.Mock(side_effect=raise_share_access_exists)
+        )
 
         # call of 'init_host' method
         self.share_manager.init_host()
@@ -277,20 +334,11 @@ class ShareManagerTestCase(test.TestCase):
             mock.call(utils.IsAMatcher(context.RequestContext), instances[2],
                       share_server=share_server),
         ])
-        self.share_manager.db.share_access_get_all_for_share.assert_has_calls([
-            mock.call(utils.IsAMatcher(context.RequestContext),
-                      instances[0]['share_id']),
-            mock.call(utils.IsAMatcher(context.RequestContext),
-                      instances[2]['share_id']),
-        ])
         self.share_manager.publish_service_capabilities.\
             assert_called_once_with(
                 utils.IsAMatcher(context.RequestContext))
-        self.share_manager.driver.allow_access.assert_has_calls([
-            mock.call(mock.ANY, instances[0], rules[0],
-                      share_server=share_server),
-            mock.call(mock.ANY, instances[2], rules[0],
-                      share_server=share_server),
+        self.share_manager.access_helper.update_access_rules.assert_has_calls([
+            mock.call(mock.ANY, instances[4]['id'], share_server=share_server),
         ])
 
     def test_init_host_with_exception_on_ensure_share(self):
@@ -343,7 +391,7 @@ class ShareManagerTestCase(test.TestCase):
                 utils.IsAMatcher(context.RequestContext))
         manager.LOG.info.assert_any_call(
             mock.ANY,
-            {'task': constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS,
+            {'task': constants.TASK_STATE_MIGRATION_IN_PROGRESS,
              'id': instances[3]['id']},
         )
         manager.LOG.info.assert_any_call(
@@ -351,51 +399,50 @@ class ShareManagerTestCase(test.TestCase):
             {'id': instances[1]['id'], 'status': instances[1]['status']},
         )
 
-    def test_init_host_with_exception_on_rule_access_allow(self):
+    def test_init_host_with_exception_on_update_access_rules(self):
         def raise_exception(*args, **kwargs):
             raise exception.ManilaException(message="Fake raise")
 
         instances, rules = self._setup_init_mocks()
         share_server = 'fake_share_server_type_does_not_matter'
-        self.mock_object(self.share_manager.db,
-                         'share_instances_get_all_by_host',
+        smanager = self.share_manager
+        self.mock_object(smanager.db, 'share_instances_get_all_by_host',
                          mock.Mock(return_value=instances))
         self.mock_object(self.share_manager.db, 'share_instance_get',
                          mock.Mock(side_effect=[instances[0], instances[2],
-                                                instances[3]]))
+                                                instances[4]]))
         self.mock_object(self.share_manager.driver, 'ensure_share',
                          mock.Mock(return_value=None))
-        self.mock_object(self.share_manager, '_ensure_share_instance_has_pool')
-        self.mock_object(self.share_manager, '_get_share_server',
+        self.mock_object(smanager, '_ensure_share_instance_has_pool')
+        self.mock_object(smanager, '_get_share_server',
                          mock.Mock(return_value=share_server))
-        self.mock_object(self.share_manager, 'publish_service_capabilities')
+        self.mock_object(smanager, 'publish_service_capabilities')
         self.mock_object(manager.LOG, 'error')
         self.mock_object(manager.LOG, 'info')
-        self.mock_object(self.share_manager.db,
-                         'share_access_get_all_for_share',
+        self.mock_object(smanager.db, 'share_access_get_all_for_share',
                          mock.Mock(return_value=rules))
-        self.mock_object(self.share_manager.driver, 'allow_access',
+        self.mock_object(smanager.access_helper, 'update_access_rules',
                          mock.Mock(side_effect=raise_exception))
 
         # call of 'init_host' method
-        self.share_manager.init_host()
+        smanager.init_host()
 
         # verification of call
-        self.share_manager.db.share_instances_get_all_by_host.\
+        smanager.db.share_instances_get_all_by_host.\
             assert_called_once_with(utils.IsAMatcher(context.RequestContext),
-                                    self.share_manager.host)
-        self.share_manager.driver.do_setup.assert_called_once_with(
+                                    smanager.host)
+        smanager.driver.do_setup.assert_called_once_with(
             utils.IsAMatcher(context.RequestContext))
-        self.share_manager.driver.check_for_setup_error.assert_called_with()
-        self.share_manager._ensure_share_instance_has_pool.assert_has_calls([
+        smanager.driver.check_for_setup_error.assert_called_with()
+        smanager._ensure_share_instance_has_pool.assert_has_calls([
             mock.call(utils.IsAMatcher(context.RequestContext), instances[0]),
             mock.call(utils.IsAMatcher(context.RequestContext), instances[2]),
         ])
-        self.share_manager._get_share_server.assert_has_calls([
+        smanager._get_share_server.assert_has_calls([
             mock.call(utils.IsAMatcher(context.RequestContext), instances[0]),
             mock.call(utils.IsAMatcher(context.RequestContext), instances[2]),
         ])
-        self.share_manager.driver.ensure_share.assert_has_calls([
+        smanager.driver.ensure_share.assert_has_calls([
             mock.call(utils.IsAMatcher(context.RequestContext), instances[0],
                       share_server=share_server),
             mock.call(utils.IsAMatcher(context.RequestContext), instances[2],
@@ -406,21 +453,18 @@ class ShareManagerTestCase(test.TestCase):
                 utils.IsAMatcher(context.RequestContext))
         manager.LOG.info.assert_any_call(
             mock.ANY,
-            {'task': constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS,
+            {'task': constants.TASK_STATE_MIGRATION_IN_PROGRESS,
              'id': instances[3]['id']},
         )
         manager.LOG.info.assert_any_call(
             mock.ANY,
             {'id': instances[1]['id'], 'status': instances[1]['status']},
         )
-        self.share_manager.driver.allow_access.assert_has_calls([
-            mock.call(utils.IsAMatcher(context.RequestContext), instances[0],
-                      rules[0], share_server=share_server),
-            mock.call(utils.IsAMatcher(context.RequestContext), instances[2],
-                      rules[0], share_server=share_server),
+        smanager.access_helper.update_access_rules.assert_has_calls([
+            mock.call(utils.IsAMatcher(context.RequestContext),
+                      instances[4]['id'], share_server=share_server),
         ])
         manager.LOG.error.assert_has_calls([
-            mock.call(mock.ANY, mock.ANY),
             mock.call(mock.ANY, mock.ANY),
         ])
 
@@ -444,7 +488,7 @@ class ShareManagerTestCase(test.TestCase):
 
         shr = db.share_get(self.context, share_id)
         self.assertEqual(constants.STATUS_AVAILABLE, shr['status'])
-        self.assertEqual(server['id'], shr['share_server_id'])
+        self.assertEqual(server['id'], shr['instance']['share_server_id'])
 
     def test_create_share_instance_from_snapshot_with_server_not_found(self):
         """Test creation from snapshot fails if server not found."""
@@ -482,12 +526,727 @@ class ShareManagerTestCase(test.TestCase):
         self.assertTrue(len(shr['export_location']) > 0)
         self.assertEqual(2, len(shr['export_locations']))
 
+    def test_create_share_instance_for_share_with_replication_support(self):
+        """Test update call is made to update replica_state."""
+        share = db_utils.create_share(replication_type='writable')
+        share_id = share['id']
+
+        self.share_manager.create_share_instance(self.context,
+                                                 share.instance['id'])
+
+        self.assertEqual(share_id, db.share_get(context.get_admin_context(),
+                         share_id).id)
+
+        shr = db.share_get(self.context, share_id)
+        shr_instance = db.share_instance_get(self.context,
+                                             share.instance['id'])
+
+        self.assertEqual(constants.STATUS_AVAILABLE, shr['status'],)
+        self.assertEqual(constants.REPLICA_STATE_ACTIVE,
+                         shr_instance['replica_state'])
+
+    @ddt.data([], None)
+    def test_create_share_replica_no_active_replicas(self, active_replicas):
+        replica = fake_replica()
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=active_replicas))
+        self.mock_object(
+            db, 'share_replica_get', mock.Mock(return_value=replica))
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_driver_replica_call = self.mock_object(
+            self.share_manager.driver, 'create_replica')
+
+        self.assertRaises(exception.ReplicationException,
+                          self.share_manager.create_share_replica,
+                          self.context, replica)
+        mock_replica_update_call.assert_called_once_with(
+            mock.ANY, replica['id'], {'status': constants.STATUS_ERROR,
+                                      'replica_state': constants.STATUS_ERROR})
+        self.assertFalse(mock_driver_replica_call.called)
+
+    def test_create_share_replica_with_share_network_id_and_not_dhss(self):
+        replica = fake_replica()
+        manager.CONF.set_default('driver_handles_share_servers', False)
+        self.mock_object(db, 'share_access_get_all_for_share',
+                         mock.Mock(return_value=[]))
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=fake_replica(id='fake2')))
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_driver_replica_call = self.mock_object(
+            self.share_manager.driver, 'create_replica')
+
+        self.assertRaises(exception.InvalidDriverMode,
+                          self.share_manager.create_share_replica,
+                          self.context, replica)
+        mock_replica_update_call.assert_called_once_with(
+            mock.ANY, replica['id'], {'status': constants.STATUS_ERROR,
+                                      'replica_state': constants.STATUS_ERROR})
+        self.assertFalse(mock_driver_replica_call.called)
+
+    def test_create_share_replica_with_share_server_exception(self):
+        replica = fake_replica()
+        manager.CONF.set_default('driver_handles_share_servers', True)
+        self.mock_object(db, 'share_instance_access_copy',
+                         mock.Mock(return_value=[]))
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=fake_replica(id='fake2')))
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_driver_replica_call = self.mock_object(
+            self.share_manager.driver, 'create_replica')
+
+        self.assertRaises(exception.NotFound,
+                          self.share_manager.create_share_replica,
+                          self.context, replica)
+        mock_replica_update_call.assert_called_once_with(
+            mock.ANY, replica['id'], {'status': constants.STATUS_ERROR,
+                                      'replica_state': constants.STATUS_ERROR})
+        self.assertFalse(mock_driver_replica_call.called)
+
+    def test_create_share_replica_driver_error_on_creation(self):
+        fake_access_rules = [{'id': '1'}, {'id': '2'}, {'id': '3'}]
+        replica = fake_replica(share_network_id='')
+        replica_2 = fake_replica(id='fake2')
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_instance_access_copy',
+                         mock.Mock(return_value=fake_access_rules))
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=replica_2))
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica, replica_2]))
+        self.mock_object(self.share_manager,
+                         '_provide_share_server_for_share',
+                         mock.Mock(return_value=('FAKE_SERVER', replica)))
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_export_locs_update_call = self.mock_object(
+            db, 'share_export_locations_update')
+        mock_log_error = self.mock_object(manager.LOG, 'error')
+        mock_log_info = self.mock_object(manager.LOG, 'info')
+        self.mock_object(db, 'share_instance_access_get',
+                         mock.Mock(return_value=fake_access_rules[0]))
+        mock_share_replica_access_update = self.mock_object(
+            db, 'share_instance_update_access_status')
+        self.mock_object(self.share_manager, '_get_share_server')
+
+        driver_call = self.mock_object(
+            self.share_manager.driver, 'create_replica',
+            mock.Mock(side_effect=exception.ManilaException))
+
+        self.assertRaises(exception.ManilaException,
+                          self.share_manager.create_share_replica,
+                          self.context, replica)
+        mock_replica_update_call.assert_called_once_with(
+            mock.ANY, replica['id'], {'status': constants.STATUS_ERROR,
+                                      'replica_state': constants.STATUS_ERROR})
+        self.assertEqual(1, mock_share_replica_access_update.call_count)
+        self.assertFalse(mock_export_locs_update_call.called)
+        self.assertTrue(mock_log_error.called)
+        self.assertFalse(mock_log_info.called)
+        self.assertTrue(driver_call.called)
+
+    def test_create_share_replica_invalid_locations_state(self):
+        driver_retval = {
+            'export_locations': 'FAKE_EXPORT_LOC',
+        }
+        replica = fake_replica(share_network='')
+        replica_2 = fake_replica(id='fake2')
+        fake_access_rules = [{'id': '1'}, {'id': '2'}]
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=replica_2))
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica, replica_2]))
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_instance_access_copy',
+                         mock.Mock(return_value=fake_access_rules))
+        self.mock_object(self.share_manager,
+                         '_provide_share_server_for_share',
+                         mock.Mock(return_value=('FAKE_SERVER', replica)))
+        self.mock_object(self.share_manager, '_get_share_server',
+                         mock.Mock(return_value=None))
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_export_locs_update_call = self.mock_object(
+            db, 'share_export_locations_update')
+        mock_log_info = self.mock_object(manager.LOG, 'info')
+        mock_log_warning = self.mock_object(manager.LOG, 'warning')
+        mock_log_error = self.mock_object(manager.LOG, 'error')
+        driver_call = self.mock_object(
+            self.share_manager.driver, 'create_replica',
+            mock.Mock(return_value=driver_retval))
+        self.mock_object(db, 'share_instance_access_get',
+                         mock.Mock(return_value=fake_access_rules[0]))
+        mock_share_replica_access_update = self.mock_object(
+            db, 'share_instance_update_access_status')
+
+        self.share_manager.create_share_replica(self.context, replica)
+
+        self.assertFalse(mock_replica_update_call.called)
+        self.assertEqual(1, mock_share_replica_access_update.call_count)
+        self.assertFalse(mock_export_locs_update_call.called)
+        self.assertTrue(mock_log_info.called)
+        self.assertTrue(mock_log_warning.called)
+        self.assertFalse(mock_log_error.called)
+        self.assertTrue(driver_call.called)
+        call_args = driver_call.call_args_list[0][0]
+        replica_list_arg = call_args[1]
+        r_ids = [r['id'] for r in replica_list_arg]
+        for r in (replica, replica_2):
+            self.assertIn(r['id'], r_ids)
+        self.assertEqual(2, len(r_ids))
+
+    def test_create_share_replica_no_availability_zone(self):
+        replica = fake_replica(
+            availability_zone=None, share_network='',
+            replica_state=constants.REPLICA_STATE_OUT_OF_SYNC)
+        replica_2 = fake_replica(id='fake2')
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica, replica_2]))
+        manager.CONF.set_default('storage_availability_zone', 'fake_az')
+        fake_access_rules = [{'id': '1'}, {'id': '2'}, {'id': '3'}]
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_instance_access_copy',
+                         mock.Mock(return_value=fake_access_rules))
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=replica_2))
+        self.mock_object(self.share_manager,
+                         '_provide_share_server_for_share',
+                         mock.Mock(return_value=('FAKE_SERVER', replica)))
+        mock_replica_update_call = self.mock_object(
+            db, 'share_replica_update', mock.Mock(return_value=replica))
+        mock_calls = [
+            mock.call(mock.ANY, replica['id'],
+                      {'availability_zone': 'fake_az'}, with_share_data=True),
+            mock.call(mock.ANY, replica['id'],
+                      {'status': constants.STATUS_AVAILABLE,
+                       'replica_state': constants.REPLICA_STATE_OUT_OF_SYNC}),
+        ]
+        mock_export_locs_update_call = self.mock_object(
+            db, 'share_export_locations_update')
+        mock_log_info = self.mock_object(manager.LOG, 'info')
+        mock_log_warning = self.mock_object(manager.LOG, 'warning')
+        mock_log_error = self.mock_object(manager.LOG, 'warning')
+        self.mock_object(db, 'share_instance_access_get',
+                         mock.Mock(return_value=fake_access_rules[0]))
+        mock_share_replica_access_update = self.mock_object(
+            self.share_manager, '_update_share_replica_access_rules_state')
+        driver_call = self.mock_object(
+            self.share_manager.driver, 'create_replica',
+            mock.Mock(return_value=replica))
+        self.mock_object(self.share_manager, '_get_share_server', mock.Mock())
+
+        self.share_manager.create_share_replica(self.context, replica)
+
+        mock_replica_update_call.assert_has_calls(mock_calls, any_order=False)
+        mock_share_replica_access_update.assert_called_once_with(
+            mock.ANY, replica['id'], replica['access_rules_status'])
+        self.assertTrue(mock_export_locs_update_call.called)
+        self.assertTrue(mock_log_info.called)
+        self.assertFalse(mock_log_warning.called)
+        self.assertFalse(mock_log_error.called)
+        self.assertTrue(driver_call.called)
+
+    def test_create_share_replica(self):
+        replica = fake_replica(
+            share_network='', replica_state=constants.REPLICA_STATE_IN_SYNC)
+        replica_2 = fake_replica(id='fake2')
+        fake_access_rules = [{'id': '1'}, {'id': '2'}, {'id': '3'}]
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_instance_access_copy',
+                         mock.Mock(return_value=fake_access_rules))
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=fake_replica(id='fake2')))
+        self.mock_object(self.share_manager,
+                         '_provide_share_server_for_share',
+                         mock.Mock(return_value=('FAKE_SERVER', replica)))
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica, replica_2]))
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_export_locs_update_call = self.mock_object(
+            db, 'share_export_locations_update')
+        mock_log_info = self.mock_object(manager.LOG, 'info')
+        mock_log_warning = self.mock_object(manager.LOG, 'warning')
+        mock_log_error = self.mock_object(manager.LOG, 'warning')
+        self.mock_object(db, 'share_instance_access_get',
+                         mock.Mock(return_value=fake_access_rules[0]))
+        mock_share_replica_access_update = self.mock_object(
+            db, 'share_instance_update_access_status')
+        driver_call = self.mock_object(
+            self.share_manager.driver, 'create_replica',
+            mock.Mock(return_value=replica))
+        self.mock_object(self.share_manager, '_get_share_server')
+
+        self.share_manager.create_share_replica(self.context, replica)
+
+        mock_replica_update_call.assert_called_once_with(
+            mock.ANY, replica['id'],
+            {'status': constants.STATUS_AVAILABLE,
+             'replica_state': constants.REPLICA_STATE_IN_SYNC})
+        self.assertEqual(1, mock_share_replica_access_update.call_count)
+        self.assertTrue(mock_export_locs_update_call.called)
+        self.assertTrue(mock_log_info.called)
+        self.assertFalse(mock_log_warning.called)
+        self.assertFalse(mock_log_error.called)
+        self.assertTrue(driver_call.called)
+        call_args = driver_call.call_args_list[0][0]
+        replica_list_arg = call_args[1]
+        r_ids = [r['id'] for r in replica_list_arg]
+        for r in (replica, replica_2):
+            self.assertIn(r['id'], r_ids)
+        self.assertEqual(2, len(r_ids))
+
+    def test_delete_share_replica_access_rules_exception(self):
+        replica = fake_replica()
+        replica_2 = fake_replica(id='fake_2')
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica, replica_2]))
+        active_replica = fake_replica(id='Current_active_replica')
+        mock_error_log = self.mock_object(manager.LOG, 'error')
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=active_replica))
+        self.mock_object(self.share_manager, '_get_share_server')
+        self.mock_object(self.share_manager.access_helper,
+                         'update_access_rules')
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_replica_delete_call = self.mock_object(db, 'share_replica_delete')
+        mock_drv_delete_replica_call = self.mock_object(
+            self.share_manager.driver, 'delete_replica')
+        self.mock_object(
+            self.share_manager.access_helper, 'update_access_rules',
+            mock.Mock(side_effect=exception.ManilaException))
+
+        self.assertRaises(exception.ManilaException,
+                          self.share_manager.delete_share_replica,
+                          self.context, replica, share_id=replica['share_id'])
+        mock_replica_update_call.assert_called_once_with(
+            mock.ANY, replica['id'], {'status': constants.STATUS_ERROR})
+        self.assertFalse(mock_drv_delete_replica_call.called)
+        self.assertFalse(mock_replica_delete_call.called)
+        self.assertFalse(mock_error_log.called)
+
+    def test_delete_share_replica_drv_misbehavior_ignored_with_the_force(self):
+        replica = fake_replica()
+        active_replica = fake_replica(id='Current_active_replica')
+        mock_error_log = self.mock_object(manager.LOG, 'error')
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica, active_replica]))
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=active_replica))
+        self.mock_object(self.share_manager, '_get_share_server',
+                         mock.Mock(return_value=None))
+        self.mock_object(self.share_manager.access_helper,
+                         'update_access_rules')
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_replica_delete_call = self.mock_object(db, 'share_replica_delete')
+        mock_drv_delete_replica_call = self.mock_object(
+            self.share_manager.driver, 'delete_replica',
+            mock.Mock(side_effect=exception.ManilaException))
+        self.mock_object(
+            self.share_manager.access_helper, 'update_access_rules')
+
+        self.share_manager.delete_share_replica(
+            self.context, replica, share_id=replica['share_id'], force=True)
+
+        self.assertFalse(mock_replica_update_call.called)
+        self.assertTrue(mock_replica_delete_call.called)
+        self.assertEqual(1, mock_error_log.call_count)
+        self.assertTrue(mock_drv_delete_replica_call.called)
+
+    def test_delete_share_replica_driver_exception(self):
+        replica = fake_replica()
+        active_replica = fake_replica(id='Current_active_replica')
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica, active_replica]))
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=active_replica))
+        self.mock_object(self.share_manager, '_get_share_server',
+                         mock.Mock(return_value=None))
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_replica_delete_call = self.mock_object(db, 'share_replica_delete')
+        self.mock_object(
+            self.share_manager.access_helper, 'update_access_rules')
+        mock_drv_delete_replica_call = self.mock_object(
+            self.share_manager.driver, 'delete_replica',
+            mock.Mock(side_effect=exception.ManilaException))
+
+        self.assertRaises(exception.ManilaException,
+                          self.share_manager.delete_share_replica,
+                          self.context, replica)
+        self.assertTrue(mock_replica_update_call.called)
+        self.assertFalse(mock_replica_delete_call.called)
+        self.assertTrue(mock_drv_delete_replica_call.called)
+
+    def test_delete_share_replica_both_exceptions_ignored_with_the_force(self):
+        replica = fake_replica()
+        active_replica = fake_replica(id='Current_active_replica')
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica, active_replica]))
+        mock_error_log = self.mock_object(manager.LOG, 'error')
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=active_replica))
+        self.mock_object(self.share_manager, '_get_share_server',
+                         mock.Mock(return_value=None))
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_replica_delete_call = self.mock_object(db, 'share_replica_delete')
+        self.mock_object(
+            self.share_manager.access_helper, 'update_access_rules',
+            mock.Mock(side_effect=exception.ManilaException))
+        mock_drv_delete_replica_call = self.mock_object(
+            self.share_manager.driver, 'delete_replica',
+            mock.Mock(side_effect=exception.ManilaException))
+
+        self.share_manager.delete_share_replica(
+            self.context, replica, share_id=replica['share_id'], force=True)
+
+        mock_replica_update_call.assert_called_once_with(
+            mock.ANY, replica['id'], {'status': constants.STATUS_ERROR})
+        self.assertTrue(mock_replica_delete_call.called)
+        self.assertEqual(2, mock_error_log.call_count)
+        self.assertTrue(mock_drv_delete_replica_call.called)
+
+    def test_delete_share_replica(self):
+        replica = fake_replica()
+        active_replica = fake_replica(id='current_active_replica')
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica, active_replica]))
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=active_replica))
+        self.mock_object(self.share_manager, '_get_share_server',
+                         mock.Mock(return_value=None))
+        mock_info_log = self.mock_object(manager.LOG, 'info')
+        mock_replica_update_call = self.mock_object(db, 'share_replica_update')
+        mock_replica_delete_call = self.mock_object(db, 'share_replica_delete')
+        self.mock_object(
+            self.share_manager.access_helper, 'update_access_rules')
+        mock_drv_delete_replica_call = self.mock_object(
+            self.share_manager.driver, 'delete_replica')
+
+        self.share_manager.delete_share_replica(self.context, replica)
+
+        self.assertFalse(mock_replica_update_call.called)
+        self.assertTrue(mock_replica_delete_call.called)
+        self.assertTrue(mock_info_log.called)
+        self.assertTrue(mock_drv_delete_replica_call.called)
+
+    def test_promote_share_replica_no_active_replica(self):
+        replica = fake_replica()
+        replica_list = [replica]
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(self.share_manager, '_get_share_server')
+        self.mock_object(db, 'share_replicas_get_available_active_replica',
+                         mock.Mock(return_value=replica_list))
+        mock_info_log = self.mock_object(manager.LOG, 'info')
+        mock_driver_call = self.mock_object(self.share_manager.driver,
+                                            'promote_replica')
+        mock_replica_update = self.mock_object(db, 'share_replica_update')
+        expected_update_call = mock.call(
+            mock.ANY, replica['id'], {'status': constants.STATUS_AVAILABLE})
+
+        self.assertRaises(exception.ReplicationException,
+                          self.share_manager.promote_share_replica,
+                          self.context, replica)
+        self.assertFalse(mock_info_log.called)
+        self.assertFalse(mock_driver_call.called)
+        mock_replica_update.assert_has_calls([expected_update_call])
+
+    def test_promote_share_replica_driver_exception(self):
+        replica = fake_replica()
+        active_replica = fake_replica(
+            id='current_active_replica',
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        replica_list = [replica, active_replica]
+        self.mock_object(db, 'share_access_get_all_for_share',
+                         mock.Mock(return_value=[]))
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(self.share_manager, '_get_share_server')
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=replica_list))
+        self.mock_object(self.share_manager.driver, 'promote_replica',
+                         mock.Mock(side_effect=exception.ManilaException))
+        mock_info_log = self.mock_object(manager.LOG, 'info')
+        mock_replica_update = self.mock_object(db, 'share_replica_update')
+        expected_update_calls = [mock.call(
+            mock.ANY, r['id'], {'status': constants.STATUS_ERROR})
+            for r in(replica, active_replica)]
+
+        self.assertRaises(exception.ManilaException,
+                          self.share_manager.promote_share_replica,
+                          self.context, replica)
+        mock_replica_update.assert_has_calls(expected_update_calls)
+        self.assertFalse(mock_info_log.called)
+
+    @ddt.data([], None)
+    def test_promote_share_replica_driver_updates_nothing(self, retval):
+        replica = fake_replica()
+        active_replica = fake_replica(
+            id='current_active_replica',
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        replica_list = [replica, active_replica]
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_access_get_all_for_share',
+                         mock.Mock(return_value=[]))
+        self.mock_object(self.share_manager, '_get_share_server')
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=replica_list))
+        self.mock_object(
+            self.share_manager.driver, 'promote_replica',
+            mock.Mock(return_value=retval))
+        mock_info_log = self.mock_object(manager.LOG, 'info')
+        mock_export_locs_update = self.mock_object(
+            db, 'share_export_locations_update')
+        mock_replica_update = self.mock_object(db, 'share_replica_update')
+        call_1 = mock.call(mock.ANY, replica['id'],
+                           {'status': constants.STATUS_AVAILABLE,
+                            'replica_state': constants.REPLICA_STATE_ACTIVE})
+        call_2 = mock.call(
+            mock.ANY, 'current_active_replica',
+            {'replica_state': constants.REPLICA_STATE_OUT_OF_SYNC})
+        expected_update_calls = [call_1, call_2]
+
+        self.share_manager.promote_share_replica(self.context, replica)
+
+        self.assertFalse(mock_export_locs_update.called)
+        mock_replica_update.assert_has_calls(expected_update_calls,
+                                             any_order=True)
+        self.assertTrue(mock_info_log.called)
+
+    def test_promote_share_replica_driver_updates_replica_list(self):
+        replica = fake_replica()
+        active_replica = fake_replica(
+            id='current_active_replica',
+            replica_state=constants.REPLICA_STATE_ACTIVE)
+        replica_list = [replica, active_replica, fake_replica(id=3)]
+        updated_replica_list = [
+            {
+                'id': replica['id'],
+                'export_locations': ['TEST1', 'TEST2'],
+                'replica_state': constants.REPLICA_STATE_ACTIVE,
+            },
+            {
+                'id': 'current_active_replica',
+                'export_locations': 'junk_return_value',
+                'replica_state': constants.REPLICA_STATE_IN_SYNC,
+            },
+            {
+                'id': 'other_replica',
+                'export_locations': ['TEST1', 'TEST2'],
+            },
+        ]
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_access_get_all_for_share',
+                         mock.Mock(return_value=[]))
+        self.mock_object(self.share_manager, '_get_share_server')
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=replica_list))
+        self.mock_object(
+            self.share_manager.driver, 'promote_replica',
+            mock.Mock(return_value=updated_replica_list))
+        mock_info_log = self.mock_object(manager.LOG, 'info')
+        mock_export_locs_update = self.mock_object(
+            db, 'share_export_locations_update')
+        mock_replica_update = self.mock_object(db, 'share_replica_update')
+        reset_replication_change_call = mock.call(
+            mock.ANY, replica['id'], {'replica_state': constants.STATUS_ACTIVE,
+                                      'status': constants.STATUS_AVAILABLE})
+
+        self.share_manager.promote_share_replica(self.context, replica)
+
+        self.assertEqual(2, mock_export_locs_update.call_count)
+        self.assertEqual(2, mock_replica_update.call_count)
+        self.assertTrue(
+            reset_replication_change_call in mock_replica_update.mock_calls)
+        self.assertTrue(mock_info_log.called)
+
+    @ddt.data('openstack1@watson#_pool0', 'openstack1@newton#_pool0')
+    def test_periodic_share_replica_update(self, host):
+        mock_debug_log = self.mock_object(manager.LOG, 'debug')
+        replicas = [
+            fake_replica(host='openstack1@watson#pool4'),
+            fake_replica(host='openstack1@watson#pool5'),
+            fake_replica(host='openstack1@newton#pool5'),
+            fake_replica(host='openstack1@newton#pool5'),
+
+        ]
+        self.mock_object(self.share_manager.db, 'share_replicas_get_all',
+                         mock.Mock(return_value=replicas))
+        mock_update_method = self.mock_object(
+            self.share_manager, '_share_replica_update')
+
+        self.share_manager.host = host
+
+        self.share_manager.periodic_share_replica_update(self.context)
+
+        self.assertEqual(2, mock_update_method.call_count)
+        self.assertEqual(1, mock_debug_log.call_count)
+
+    @ddt.data(constants.REPLICA_STATE_IN_SYNC,
+              constants.REPLICA_STATE_OUT_OF_SYNC)
+    def test__share_replica_update_driver_exception(self, replica_state):
+        mock_debug_log = self.mock_object(manager.LOG, 'debug')
+        replica = fake_replica(replica_state=replica_state)
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica]))
+        self.mock_object(self.share_manager.db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_server_get',
+                         mock.Mock(return_value='fake_share_server'))
+        self.mock_object(self.share_manager.driver, 'update_replica_state',
+                         mock.Mock(side_effect=exception.ManilaException))
+        mock_db_update_call = self.mock_object(
+            self.share_manager.db, 'share_replica_update')
+
+        self.assertRaises(exception.ManilaException,
+                          self.share_manager._share_replica_update,
+                          self.context, replica, share_id=replica['share_id'])
+        self.assertFalse(mock_db_update_call.called)
+        self.assertEqual(1, mock_debug_log.call_count)
+
+    def test__share_replica_update_driver_exception_ignored(self):
+        mock_debug_log = self.mock_object(manager.LOG, 'debug')
+        replica = fake_replica(replica_state=constants.STATUS_ERROR)
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica]))
+        self.mock_object(self.share_manager.db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        self.mock_object(db, 'share_server_get',
+                         mock.Mock(return_value='fake_share_server'))
+        self.share_manager.host = replica['host']
+        self.mock_object(self.share_manager.driver, 'update_replica_state',
+                         mock.Mock(side_effect=exception.ManilaException))
+        mock_db_update_call = self.mock_object(
+            self.share_manager.db, 'share_replica_update')
+
+        self.share_manager._share_replica_update(
+            self.context, replica, share_id=replica['share_id'])
+
+        self.assertFalse(mock_db_update_call.called)
+        self.assertEqual(1, mock_debug_log.call_count)
+
+    @ddt.data({'status': constants.STATUS_AVAILABLE,
+               'replica_state': constants.REPLICA_STATE_ACTIVE, },
+              {'status': constants.STATUS_DELETING,
+               'replica_state': constants.REPLICA_STATE_IN_SYNC, },
+              {'status': constants.STATUS_CREATING,
+               'replica_state': constants.REPLICA_STATE_OUT_OF_SYNC, },
+              {'status': constants.STATUS_MANAGING,
+               'replica_state': constants.REPLICA_STATE_OUT_OF_SYNC, },
+              {'status': constants.STATUS_UNMANAGING,
+               'replica_state': constants.REPLICA_STATE_ACTIVE, },
+              {'status': constants.STATUS_EXTENDING,
+               'replica_state': constants.REPLICA_STATE_IN_SYNC, },
+              {'status': constants.STATUS_SHRINKING,
+               'replica_state': constants.REPLICA_STATE_IN_SYNC, })
+    def test__share_replica_update_unqualified_replica(self, state):
+        mock_debug_log = self.mock_object(manager.LOG, 'debug')
+        mock_warning_log = self.mock_object(manager.LOG, 'warning')
+        mock_driver_call = self.mock_object(
+            self.share_manager.driver, 'update_replica_state')
+        mock_db_update_call = self.mock_object(
+            self.share_manager.db, 'share_replica_update')
+        replica = fake_replica(**state)
+        self.mock_object(db, 'share_server_get',
+                         mock.Mock(return_value='fake_share_server'))
+        self.mock_object(db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+
+        self.share_manager._share_replica_update(self.context, replica,
+                                                 share_id=replica['share_id'])
+
+        self.assertFalse(mock_debug_log.called)
+        self.assertFalse(mock_warning_log.called)
+        self.assertFalse(mock_driver_call.called)
+        self.assertFalse(mock_db_update_call.called)
+
+    @ddt.data(None, constants.REPLICA_STATE_IN_SYNC,
+              constants.REPLICA_STATE_OUT_OF_SYNC,
+              constants.REPLICA_STATE_ACTIVE,
+              constants.STATUS_ERROR)
+    def test__share_replica_update(self, retval):
+        mock_debug_log = self.mock_object(manager.LOG, 'debug')
+        mock_warning_log = self.mock_object(manager.LOG, 'warning')
+        replica_states = [constants.REPLICA_STATE_IN_SYNC,
+                          constants.REPLICA_STATE_OUT_OF_SYNC]
+        replica = fake_replica(replica_state=random.choice(replica_states),
+                               share_server='fake_share_server')
+        del replica['availability_zone']
+        self.mock_object(db, 'share_replicas_get_all_by_share',
+                         mock.Mock(return_value=[replica]))
+        self.mock_object(db, 'share_server_get',
+                         mock.Mock(return_value='fake_share_server'))
+        mock_db_update_calls = []
+        self.mock_object(self.share_manager.db, 'share_replica_get',
+                         mock.Mock(return_value=replica))
+        mock_driver_call = self.mock_object(
+            self.share_manager.driver, 'update_replica_state',
+            mock.Mock(return_value=retval))
+        mock_db_update_call = self.mock_object(
+            self.share_manager.db, 'share_replica_update')
+
+        self.share_manager._share_replica_update(
+            self.context, replica, share_id=replica['share_id'])
+
+        if retval == constants.REPLICA_STATE_ACTIVE:
+                self.assertEqual(1, mock_warning_log.call_count)
+        elif retval:
+            self.assertEqual(0, mock_warning_log.call_count)
+        mock_driver_call.assert_called_once_with(
+            self.context, [replica], replica, [],
+            share_server='fake_share_server')
+        mock_db_update_call.assert_has_calls(mock_db_update_calls)
+        self.assertEqual(1, mock_debug_log.call_count)
+
+    def test_update_share_replica_replica_not_found(self):
+        replica = fake_replica()
+        self.mock_object(
+            self.share_manager.db, 'share_replica_get', mock.Mock(
+                side_effect=exception.ShareReplicaNotFound(replica_id='fake')))
+        self.mock_object(self.share_manager, '_get_share_server')
+        driver_call = self.mock_object(
+            self.share_manager, '_share_replica_update')
+
+        self.assertRaises(
+            exception.ShareReplicaNotFound,
+            self.share_manager.update_share_replica,
+            self.context, replica, share_id=replica['share_id'])
+
+        self.assertFalse(driver_call.called)
+
+    def test_update_share_replica_replica(self):
+        replica_update_call = self.mock_object(
+            self.share_manager, '_share_replica_update')
+        self.mock_object(self.share_manager.db, 'share_replica_get')
+
+        retval = self.share_manager.update_share_replica(
+            self.context, 'fake_replica_id', share_id='fake_share_id')
+
+        self.assertIsNone(retval)
+        self.assertTrue(replica_update_call.called)
+
     def test_create_delete_share_snapshot(self):
         """Test share's snapshot can be created and deleted."""
 
         def _fake_create_snapshot(self, snapshot, **kwargs):
             snapshot['progress'] = '99%'
-            return snapshot
+            return snapshot.to_dict()
 
         self.mock_object(self.share_manager.driver, "create_snapshot",
                          _fake_create_snapshot)
@@ -496,7 +1255,6 @@ class ShareManagerTestCase(test.TestCase):
         share_id = share['id']
         snapshot = db_utils.create_snapshot(share_id=share_id)
         snapshot_id = snapshot['id']
-
         self.share_manager.create_snapshot(self.context, share_id,
                                            snapshot_id)
         self.assertEqual(share_id,
@@ -852,7 +1610,13 @@ class ShareManagerTestCase(test.TestCase):
         fake_parent_id = "fake_server_id"
         fake_exception = exception.ShareServerNotFound("fake")
         share = db_utils.create_share()
-        fake_snapshot = {'share': {'share_server_id': fake_parent_id}}
+        fake_snapshot = {
+            'share': {
+                'instance': {
+                    'share_server_id': fake_parent_id
+                }
+            }
+        }
         self.mock_object(db, 'share_server_get',
                          mock.Mock(side_effect=fake_exception))
 
@@ -867,7 +1631,13 @@ class ShareManagerTestCase(test.TestCase):
     def test_provide_share_server_for_share_parent_ss_invalid(self):
         fake_parent_id = "fake_server_id"
         share = db_utils.create_share()
-        fake_snapshot = {'share': {'share_server_id': fake_parent_id}}
+        fake_snapshot = {
+            'share': {
+                'instance': {
+                    'share_server_id': fake_parent_id
+                }
+            }
+        }
         fake_parent_share_server = {'status': 'fake'}
         self.mock_object(db, 'share_server_get',
                          mock.Mock(return_value=fake_parent_share_server))
@@ -1181,8 +1951,11 @@ class ShareManagerTestCase(test.TestCase):
         manager.CONF.unmanage_remove_access_rules = True
         self._setup_unmanage_mocks(mock_driver=False,
                                    mock_unmanage=mock.Mock())
-        self.mock_object(self.share_manager, '_remove_share_access_rules',
-                         mock.Mock(side_effect=Exception()))
+        self.mock_object(
+            self.share_manager.access_helper,
+            'update_access_rules',
+            mock.Mock(side_effect=Exception())
+        )
         self.mock_object(quota.QUOTAS, 'reserve', mock.Mock(return_value=[]))
         share = db_utils.create_share()
 
@@ -1196,36 +1969,21 @@ class ShareManagerTestCase(test.TestCase):
         manager.CONF.unmanage_remove_access_rules = True
         self._setup_unmanage_mocks(mock_driver=False,
                                    mock_unmanage=mock.Mock())
-        self.mock_object(self.share_manager, '_remove_share_access_rules')
+        smanager = self.share_manager
+        self.mock_object(smanager.access_helper, 'update_access_rules')
         self.mock_object(quota.QUOTAS, 'reserve', mock.Mock(return_value=[]))
         share = db_utils.create_share()
         share_id = share['id']
         share_instance_id = share.instance['id']
 
-        self.share_manager.unmanage_share(self.context, share_id)
+        smanager.unmanage_share(self.context, share_id)
 
-        self.share_manager.driver.unmanage.\
-            assert_called_once_with(mock.ANY)
-        self.share_manager._remove_share_access_rules.assert_called_once_with(
-            mock.ANY, mock.ANY, mock.ANY, mock.ANY
+        smanager.driver.unmanage.assert_called_once_with(mock.ANY)
+        smanager.access_helper.update_access_rules.assert_called_once_with(
+            mock.ANY, mock.ANY, delete_rules='all', share_server=None
         )
-        self.share_manager.db.share_instance_delete.assert_called_once_with(
+        smanager.db.share_instance_delete.assert_called_once_with(
             mock.ANY, share_instance_id)
-
-    def test_remove_share_access_rules(self):
-        self.mock_object(self.share_manager.db,
-                         'share_access_get_all_for_share',
-                         mock.Mock(return_value=['fake_ref', 'fake_ref2']))
-        self.mock_object(self.share_manager, '_deny_access')
-        share_ref = db_utils.create_share()
-        share_server = 'fake'
-
-        self.share_manager._remove_share_access_rules(
-            self.context, share_ref, share_ref.instance, share_server)
-
-        self.share_manager.db.share_access_get_all_for_share.\
-            assert_called_once_with(mock.ANY, share_ref['id'])
-        self.assertEqual(2, self.share_manager._deny_access.call_count)
 
     def test_delete_share_instance_share_server_not_found(self):
         share_net = db_utils.create_share_network()
@@ -1322,28 +2080,27 @@ class ShareManagerTestCase(test.TestCase):
 
     def test_allow_deny_access(self):
         """Test access rules to share can be created and deleted."""
-        self.mock_object(manager.LOG, 'info')
+        self.mock_object(share_access.LOG, 'info')
 
         share = db_utils.create_share()
         share_id = share['id']
         access = db_utils.create_access(share_id=share_id)
         access_id = access['id']
         self.share_manager.allow_access(self.context, share.instance['id'],
-                                        access_id)
-        self.assertEqual('active', db.share_access_get(self.context,
-                                                       access_id).state)
+                                        [access_id])
+        self.assertEqual('active', db.share_instance_get(
+            self.context, share.instance['id']).access_rules_status)
 
-        exp_args = {'access_level': access['access_level'],
-                    'share_instance_id': share.instance['id'],
-                    'access_to': access['access_to']}
-        manager.LOG.info.assert_called_with(mock.ANY, exp_args)
-        manager.LOG.info.reset_mock()
+        share_access.LOG.info.assert_called_with(mock.ANY,
+                                                 share.instance['id'])
+        share_access.LOG.info.reset_mock()
 
         self.share_manager.deny_access(self.context, share.instance['id'],
-                                       access_id)
-        exp_args = {'share_instance_id': share.instance['id'],
-                    'access_to': access['access_to']}
-        manager.LOG.info.assert_called_with(mock.ANY, exp_args)
+                                       [access_id])
+
+        share_access.LOG.info.assert_called_with(mock.ANY,
+                                                 share.instance['id'])
+        share_access.LOG.info.reset_mock()
 
     def test_allow_deny_access_error(self):
         """Test access rules to share can be created and deleted with error."""
@@ -1354,33 +2111,26 @@ class ShareManagerTestCase(test.TestCase):
         def _fake_deny_access(self, *args, **kwargs):
             raise exception.NotFound()
 
-        self.mock_object(self.share_manager.driver, "allow_access",
-                         _fake_allow_access)
-        self.mock_object(self.share_manager.driver, "deny_access",
-                         _fake_deny_access)
+        self.mock_object(self.share_manager.access_helper.driver,
+                         "allow_access", _fake_allow_access)
+        self.mock_object(self.share_manager.access_helper.driver,
+                         "deny_access", _fake_deny_access)
 
         share = db_utils.create_share()
         share_id = share['id']
         access = db_utils.create_access(share_id=share_id)
         access_id = access['id']
 
-        self.assertRaises(exception.NotFound,
-                          self.share_manager.allow_access,
-                          self.context,
-                          share.instance['id'],
-                          access_id)
+        def validate(method):
+            self.assertRaises(exception.ManilaException, method, self.context,
+                              share.instance['id'], [access_id])
 
-        acs = db.share_access_get(self.context, access_id)
-        self.assertEqual(constants.STATUS_ERROR, acs['state'])
+            inst = db.share_instance_get(self.context, share.instance['id'])
+            self.assertEqual(constants.STATUS_ERROR,
+                             inst['access_rules_status'])
 
-        self.assertRaises(exception.NotFound,
-                          self.share_manager.deny_access,
-                          self.context,
-                          share.instance['id'],
-                          access_id)
-
-        acs = db.share_access_get(self.context, access_id)
-        self.assertEqual(constants.STATUS_ERROR, acs['state'])
+        validate(self.share_manager.allow_access)
+        validate(self.share_manager.deny_access)
 
     def test_setup_server(self):
         # Setup required test data
@@ -1640,10 +2390,15 @@ class ShareManagerTestCase(test.TestCase):
                 self.assertEqual(1, mock_LOG.error.call_count)
 
     def test__form_server_setup_info(self):
-        fake_network_allocations = ['foo', 'bar']
+        def fake_network_allocations_get_for_share_server(*args, **kwargs):
+            if kwargs.get('label') != 'admin':
+                return ['foo', 'bar']
+            return ['admin-foo', 'admin-bar']
+
         self.mock_object(
             self.share_manager.db, 'network_allocations_get_for_share_server',
-            mock.Mock(return_value=fake_network_allocations))
+            mock.Mock(
+                side_effect=fake_network_allocations_get_for_share_server))
         fake_share_server = dict(
             id='fake_share_server_id', backend_details=dict(foo='bar'))
         fake_share_network = dict(
@@ -1662,7 +2417,10 @@ class ShareManagerTestCase(test.TestCase):
             neutron_subnet_id=fake_share_network['neutron_subnet_id'],
             nova_net_id=fake_share_network['nova_net_id'],
             security_services=fake_share_network['security_services'],
-            network_allocations=fake_network_allocations,
+            network_allocations=(
+                fake_network_allocations_get_for_share_server()),
+            admin_network_allocations=(
+                fake_network_allocations_get_for_share_server(label='admin')),
             backend_details=fake_share_server['backend_details'],
             network_type=fake_share_network['network_type'])
 
@@ -1671,7 +2429,10 @@ class ShareManagerTestCase(test.TestCase):
 
         self.assertEqual(expected, network_info)
         self.share_manager.db.network_allocations_get_for_share_server.\
-            assert_called_once_with(self.context, fake_share_server['id'])
+            assert_has_calls([
+                mock.call(self.context, fake_share_server['id'], label='user'),
+                mock.call(self.context, fake_share_server['id'], label='admin')
+            ])
 
     @ddt.data(
         {'network_info': {'network_type': 'vlan', 'segmentation_id': '100'}},
@@ -2419,444 +3180,742 @@ class ShareManagerTestCase(test.TestCase):
             assert_called_once_with(mock.ANY, fake_snap['id'],
                                     {'status': constants.STATUS_ERROR})
 
-    def test_get_migration_info(self):
-        share_instance = 'fake-share-instance'
+    def test_migration_get_info(self):
+        share_instance = {'share_server_id': 'fake_server_id'}
+        share_instance_id = 'fake_id'
+        share_server = 'fake_share_server'
+        migration_info = 'fake_info'
+
+        # mocks
+        self.mock_object(self.share_manager.db, 'share_instance_get',
+                         mock.Mock(return_value=share_instance))
+        self.mock_object(self.share_manager.db, 'share_server_get',
+                         mock.Mock(return_value=share_server))
+        self.mock_object(self.share_manager.driver, 'migration_get_info',
+                         mock.Mock(return_value=migration_info))
+
+        # run
+        result = self.share_manager.migration_get_info(
+            self.context, share_instance_id)
+
+        # asserts
+        self.assertEqual(migration_info, result)
+
+        self.share_manager.db.share_instance_get.assert_called_once_with(
+            self.context, share_instance_id, with_share_data=True)
+
+        self.share_manager.driver.migration_get_info.assert_called_once_with(
+            self.context, share_instance, share_server)
+
+    def test_migration_get_driver_info(self):
+        share_instance = {'share_server_id': 'fake_server_id'}
         share_instance_id = 'fake-id'
         share_server = 'fake-share-server'
+        migration_info = 'fake_info'
 
-        manager = self.share_manager
-
-        self.mock_object(manager.db, 'share_instance_get',
+        # mocks
+        self.mock_object(self.share_manager.db, 'share_instance_get',
                          mock.Mock(return_value=share_instance))
-        self.mock_object(manager.driver, 'get_migration_info')
-
-        manager.get_migration_info(self.context,
-                                   share_instance_id, share_server)
-
-        manager.db.share_instance_get.assert_called_once_with(
-            self.context, share_instance_id, with_share_data=True
-        )
-
-        manager.driver.get_migration_info.assert_called_once_with(
-            self.context, share_instance, share_server
-        )
-
-    def test_get_driver_migration_info(self):
-        share_instance = 'fake-share-instance'
-        share_instance_id = 'fake-id'
-        share_server = 'fake-share-server'
-
-        manager = self.share_manager
-
-        self.mock_object(manager.db, 'share_instance_get',
-                         mock.Mock(return_value=share_instance))
-        self.mock_object(manager.driver, 'get_driver_migration_info')
-
-        manager.get_driver_migration_info(self.context, share_instance_id,
-                                          share_server)
-
-        manager.db.share_instance_get.assert_called_once_with(
-            self.context, share_instance_id, with_share_data=True
-        )
-
-        manager.driver.get_driver_migration_info.assert_called_once_with(
-            self.context, share_instance, share_server
-        )
-
-    def test_migrate_share_not_moved_by_driver(self):
-        share = db_utils.create_share()
-        share_id = share['id']
-        host = 'fake-host'
-        status_migrating = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS
-        }
-        status_success = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_SUCCESS
-        }
-        share_server = {
-            'id': 'fake_share_server_id',
-            'share_network_id': 'fake_share_network_id',
-            'host': 'fake_host',
-            'status': 'fake_status',
-            'backend_details': {'foo': 'bar'},
-        }
-        migration_info = 'fake-info'
-
-        manager = self.share_manager
-
-        self.mock_object(manager, 'driver')
-        self.mock_object(manager.db, 'share_update')
-        self.mock_object(manager, '_get_share_server',
+        self.mock_object(self.share_manager.db, 'share_server_get',
                          mock.Mock(return_value=share_server))
-        self.mock_object(rpcapi.ShareAPI, 'get_driver_migration_info',
+        self.mock_object(self.share_manager.driver,
+                         'migration_get_driver_info',
                          mock.Mock(return_value=migration_info))
-        self.mock_object(manager.driver,
-                         'migrate_share',
-                         mock.Mock(return_value=[False, None]))
-        self.mock_object(manager, '_migrate_share_generic',
-                         mock.Mock(return_value=True))
 
-        manager.migrate_share(self.context, share_id, host)
+        result = self.share_manager.migration_get_driver_info(
+            self.context, share_instance_id)
 
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_migrating
-        )
+        # asserts
+        self.assertEqual(migration_info, result)
 
-        manager.driver.migrate_share.assert_called_once_with(
-            self.context, utils.IsAMatcher(models.ShareInstance),
-            host, migration_info
-        )
+        self.share_manager.db.share_instance_get.assert_called_once_with(
+            self.context, share_instance_id, with_share_data=True)
 
-        manager._migrate_share_generic.assert_called_once_with(
-            self.context, utils.IsAMatcher(models.Share), host
-        )
+        self.share_manager.driver.migration_get_driver_info.\
+            assert_called_once_with(self.context, share_instance, share_server)
 
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_success
-        )
+    @ddt.data((True, 'fake_model_update'), exception.ManilaException())
+    def test_migration_start(self, exc):
 
-    def test_migrate_share_driver_migration(self):
-        share = db_utils.create_share()
-        share_id = share['id']
-        host = 'fake-host'
-        status_migrating = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS
-        }
-        status_success = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_SUCCESS
-        }
-        share_server = {
-            'id': 'fake_share_server_id',
-            'share_network_id': 'fake_share_network_id',
-            'host': 'fake_host',
-            'status': 'fake_status',
-            'backend_details': {'foo': 'bar'},
-        }
-        migration_info = 'fake-info'
+        server = 'fake_share_server'
+        instance = db_utils.create_share_instance(
+            share_id='fake_id',
+            status=constants.STATUS_AVAILABLE,
+            share_server_id='fake_server_id')
+        share = db_utils.create_share(id='fake_id', instances=[instance])
+        host = 'fake_host'
+        driver_migration_info = 'driver_fake_info'
 
-        manager = self.share_manager
+        # mocks
+        self.mock_object(self.share_manager.db, 'share_get',
+                         mock.Mock(return_value=share))
+        self.mock_object(self.share_manager.db, 'share_instance_get',
+                         mock.Mock(return_value=instance))
+        self.mock_object(self.share_manager.db, 'share_server_get',
+                         mock.Mock(return_value=server))
+        self.mock_object(self.share_manager.db, 'share_update')
+        self.mock_object(self.share_manager.db, 'share_instance_update')
+        self.mock_object(rpcapi.ShareAPI, 'migration_get_driver_info',
+                         mock.Mock(return_value=driver_migration_info))
 
-        self.mock_object(manager, 'driver')
-        self.mock_object(manager.db, 'share_update')
-        self.mock_object(manager, '_get_share_server',
-                         mock.Mock(return_value=share_server))
-        self.mock_object(rpcapi.ShareAPI, 'get_driver_migration_info',
-                         mock.Mock(return_value=migration_info))
-        self.mock_object(manager.driver,
-                         'migrate_share',
-                         mock.Mock(return_value=[True, None]))
-        self.mock_object(manager.db, 'share_instance_update')
+        if isinstance(exc, exception.ManilaException):
+            self.mock_object(self.share_manager.driver, 'migration_start',
+                             mock.Mock(side_effect=exc))
+            self.mock_object(self.share_manager, '_migration_start_generic',
+                             mock.Mock(side_effect=Exception('fake')))
+            self.mock_object(manager.LOG, 'exception')
+        else:
+            self.mock_object(self.share_manager.driver, 'migration_start',
+                             mock.Mock(return_value=exc))
 
-        manager.migrate_share(self.context, share_id, host)
+        # run
+        if isinstance(exc, exception.ManilaException):
+            self.assertRaises(exception.ShareMigrationFailed,
+                              self.share_manager.migration_start,
+                              self.context, 'fake_id', host, False, False)
+        else:
+            self.share_manager.migration_start(
+                self.context, 'fake_id', host, False, False)
 
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_migrating
-        )
+        # asserts
+        self.share_manager.db.share_get.assert_called_once_with(
+            self.context, share['id'])
+        self.share_manager.db.share_instance_get.assert_called_once_with(
+            self.context, instance['id'], with_share_data=True)
+        self.share_manager.db.share_server_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext),
+            instance['share_server_id'])
 
-        manager.driver.migrate_share.assert_called_once_with(
-            self.context, utils.IsAMatcher(models.ShareInstance),
-            host, migration_info
-        )
+        share_update_calls = [
+            mock.call(
+                self.context, share['id'],
+                {'task_state': constants.TASK_STATE_MIGRATION_IN_PROGRESS}),
+            mock.call(
+                self.context, share['id'],
+                {'task_state': (
+                    constants.TASK_STATE_MIGRATION_DRIVER_IN_PROGRESS)})
+        ]
+        share_instance_update_calls = [
+            mock.call(self.context, instance['id'],
+                      {'status': constants.STATUS_MIGRATING})
+        ]
+        if isinstance(exc, exception.ManilaException):
+            share_update_calls.append(mock.call(
+                self.context, share['id'],
+                {'task_state': constants.TASK_STATE_MIGRATION_ERROR}))
+            share_instance_update_calls.append(
+                mock.call(self.context, instance['id'],
+                          {'status': constants.STATUS_AVAILABLE}))
+            self.share_manager._migration_start_generic.\
+                assert_called_once_with(self.context, share, instance, host,
+                                        False)
+            self.assertTrue(manager.LOG.exception.called)
+        else:
+            share_update_calls.append(mock.call(
+                self.context, share['id'],
+                {'task_state':
+                 constants.TASK_STATE_MIGRATION_DRIVER_PHASE1_DONE}))
+            share_instance_update_calls.append(
+                mock.call(self.context, instance['id'], 'fake_model_update'))
 
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_success
-        )
+        self.share_manager.db.share_update.assert_has_calls(share_update_calls)
+        self.share_manager.db.share_instance_update.assert_has_calls(
+            share_instance_update_calls)
+        rpcapi.ShareAPI.migration_get_driver_info.assert_called_once_with(
+            self.context, instance)
+        self.share_manager.driver.migration_start.assert_called_once_with(
+            self.context, instance, server, host, driver_migration_info, False)
 
-    def test_migrate_share_driver_migration_instance_update(self):
-        share = db_utils.create_share()
-        share_id = share['id']
-        host = 'fake-host'
-        status_migrating = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS
-        }
-        status_success = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_SUCCESS
-        }
-        share_server = {
-            'id': 'fake_share_server_id',
-            'share_network_id': 'fake_share_network_id',
-            'host': 'fake_host',
-            'status': 'fake_status',
-            'backend_details': {'foo': 'bar'},
-        }
-        migration_info = 'fake-info'
+    @ddt.data(None, Exception('fake'))
+    def test__migration_start_generic(self, exc):
+        instance = db_utils.create_share_instance(
+            share_id='fake_id',
+            status=constants.STATUS_AVAILABLE,
+            share_server_id='fake_server_id')
+        new_instance = db_utils.create_share_instance(
+            share_id='new_fake_id',
+            status=constants.STATUS_AVAILABLE)
+        share = db_utils.create_share(id='fake_id', instances=[instance])
+        server = 'share_server'
+        src_migration_info = 'src_fake_info'
+        dest_migration_info = 'dest_fake_info'
 
-        manager = self.share_manager
-
-        self.mock_object(manager, 'driver')
-        self.mock_object(manager.db, 'share_update')
-        self.mock_object(manager, '_get_share_server',
-                         mock.Mock(return_value=share_server))
-        self.mock_object(rpcapi.ShareAPI, 'get_driver_migration_info',
-                         mock.Mock(return_value=migration_info))
-        self.mock_object(manager.driver,
-                         'migrate_share',
-                         mock.Mock(return_value=[True, mock.ANY]))
-        self.mock_object(manager.db, 'share_instance_update')
-
-        manager.migrate_share(self.context, share_id, host)
-
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_migrating
-        )
-
-        manager.driver.migrate_share.assert_called_once_with(
-            self.context, utils.IsAMatcher(models.ShareInstance),
-            host, migration_info
-        )
-
-        manager.db.share_instance_update.assert_called_once_with(
-            self.context, mock.ANY, mock.ANY
-        )
-
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_success
-        )
-
-    def test_migrate_share_exception_driver(self):
-        share = db_utils.create_share()
-        share_id = share['id']
-        host = 'fake-host'
-        status_migrating = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS
-        }
-        status_error = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_ERROR
-        }
-        share_server = {
-            'id': 'fake_share_server_id',
-            'share_network_id': 'fake_share_network_id',
-            'host': 'fake_host',
-            'status': 'fake_status',
-            'backend_details': {'foo': 'bar'},
-        }
-        migration_info = 'fake-info'
-
-        manager = self.share_manager
-
-        self.mock_object(manager, 'driver')
-        self.mock_object(manager.db, 'share_update')
-        self.mock_object(manager, '_get_share_server',
-                         mock.Mock(return_value=share_server))
-        self.mock_object(rpcapi.ShareAPI, 'get_driver_migration_info',
-                         mock.Mock(return_value=migration_info))
-        self.mock_object(manager.driver,
-                         'migrate_share',
-                         mock.Mock(side_effect=exception.ManilaException))
-        self.mock_object(manager, '_migrate_share_generic',
-                         mock.Mock(return_value=False))
-
-        self.assertRaises(exception.ShareMigrationFailed,
-                          manager.migrate_share,
-                          self.context, share_id, host)
-
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_migrating
-        )
-
-        manager.driver.migrate_share.assert_called_once_with(
-            self.context, utils.IsAMatcher(models.ShareInstance),
-            host, migration_info
-        )
-
-        manager._migrate_share_generic.assert_called_once_with(
-            self.context, utils.IsAMatcher(models.Share), host
-        )
-
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_error
-        )
-
-    def test_migrate_share_exception_generic(self):
-        share = db_utils.create_share()
-        share_id = share['id']
-        host = 'fake-host'
-        status_migrating = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS
-        }
-        status_error = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_ERROR
-        }
-        share_server = 'fake-share-server'
-        migration_info = 'fake-info'
-
-        manager = self.share_manager
-
-        self.mock_object(manager, 'driver')
-        self.mock_object(manager.db, 'share_update')
-        self.mock_object(manager, '_get_share_server',
-                         mock.Mock(return_value=share_server))
-        self.mock_object(rpcapi.ShareAPI, 'get_driver_migration_info',
-                         mock.Mock(return_value=migration_info))
-        self.mock_object(manager.driver,
-                         'migrate_share',
-                         mock.Mock(return_value=[False, None]))
-        self.mock_object(manager,
-                         '_migrate_share_generic',
-                         mock.Mock(side_effect=Exception))
-
-        self.assertRaises(exception.ShareMigrationFailed,
-                          manager.migrate_share,
-                          self.context, share_id, host, migration_info)
-
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_migrating
-        )
-
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_error
-        )
-
-    def test_migrate_share_force_host_copy(self):
-        share = db_utils.create_share()
-        share_id = share['id']
-        host = 'fake-host'
-        status_migrating = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_IN_PROGRESS
-        }
-        status_success = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_SUCCESS
-        }
-
-        manager = self.share_manager
-
-        self.mock_object(manager, 'driver')
-        self.mock_object(manager.db, 'share_update')
-        self.mock_object(manager, '_migrate_share_generic',
-                         mock.Mock(return_value=True))
-
-        manager.migrate_share(self.context, share_id, host, True)
-
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_migrating
-        )
-
-        manager._migrate_share_generic.assert_called_once_with(
-            self.context, utils.IsAMatcher(models.Share), host
-        )
-
-        manager.db.share_update.assert_any_call(
-            self.context, share_id, status_success
-        )
-
-    def test_migrate_share_generic(self):
-        share = db_utils.create_share()
-        share_id = share['id']
-        host = {'host': 'fake-host'}
-        status_completing = {
-            'task_state': constants.STATUS_TASK_STATE_MIGRATION_COMPLETING
-        }
-        status_inactive = {'status': constants.STATUS_INACTIVE}
-        status_available = {'status': constants.STATUS_AVAILABLE}
-        share_server = {
-            'id': 'fake_share_server_id',
-            'share_network_id': 'fake_share_network_id',
-            'host': 'fake_host',
-            'status': 'fake_status',
-            'backend_details': {'foo': 'bar'},
-        }
-        new_share_server = {
-            'id': 'fake_share_server_id2',
-            'share_network_id': 'fake_share_network_id2',
-            'host': 'fake_host2',
-            'status': 'fake_status2',
-            'backend_details': {'foo2': 'bar2'},
-        }
-        src_migration_info = 'fake-src-migration-info'
-        dest_migration_info = 'fake-dest-migration-info'
-
-        manager = self.share_manager
-
-        manager.create_share_instance(self.context, share.instance['id'])
-        share_instance = manager._get_share_instance(self.context, share)
-
-        new_share_instance = {'id': 'fake-id',
-                              'status': constants.STATUS_CREATING}
-
-        self.mock_object(manager, '_get_share_instance',
-                         mock.Mock(return_value=share_instance))
-        self.mock_object(migration.ShareMigrationHelper,
+        # mocks
+        self.mock_object(self.share_manager.db, 'share_server_get',
+                         mock.Mock(return_value=server))
+        self.mock_object(self.share_manager.db, 'share_instance_update',
+                         mock.Mock(return_value=server))
+        self.mock_object(migration_api.ShareMigrationHelper,
                          'change_to_read_only')
-        self.mock_object(migration.ShareMigrationHelper,
-                         'create_instance_and_wait',
-                         mock.Mock(return_value=new_share_instance))
-        self.mock_object(manager.db, 'share_instance_update')
-        self.mock_object(
-            manager,
-            '_get_share_server',
-            mock.Mock(side_effect=[share_server, new_share_server])
-        )
-        self.mock_object(manager.driver, 'get_migration_info',
-                         mock.Mock(return_value=src_migration_info))
-        self.mock_object(rpcapi.ShareAPI, 'get_migration_info',
-                         mock.Mock(return_value=dest_migration_info))
-        self.mock_object(manager.driver, 'copy_share_data')
-        self.mock_object(manager.db, 'share_update')
-        self.mock_object(migration.ShareMigrationHelper,
-                         'revert_access_rules')
-        self.mock_object(migration.ShareMigrationHelper,
+        if exc is None:
+            self.mock_object(migration_api.ShareMigrationHelper,
+                             'create_instance_and_wait',
+                             mock.Mock(return_value=new_instance))
+            self.mock_object(self.share_manager.driver, 'migration_get_info',
+                             mock.Mock(return_value=src_migration_info))
+            self.mock_object(rpcapi.ShareAPI, 'migration_get_info',
+                             mock.Mock(return_value=dest_migration_info))
+            self.mock_object(data_rpc.DataAPI, 'migration_start',
+                             mock.Mock(side_effect=Exception('fake')))
+            self.mock_object(migration_api.ShareMigrationHelper,
+                             'cleanup_new_instance')
+        else:
+            self.mock_object(migration_api.ShareMigrationHelper,
+                             'create_instance_and_wait',
+                             mock.Mock(side_effect=exc))
+        self.mock_object(migration_api.ShareMigrationHelper,
+                         'cleanup_access_rules')
+
+        # run
+        self.assertRaises(
+            exception.ShareMigrationFailed,
+            self.share_manager._migration_start_generic,
+            self.context, share, instance, 'fake_host', False)
+
+        # asserts
+        self.share_manager.db.share_server_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext),
+            instance['share_server_id'])
+
+        migration_api.ShareMigrationHelper.change_to_read_only.\
+            assert_called_once_with(instance, server, True,
+                                    self.share_manager.driver)
+        migration_api.ShareMigrationHelper.create_instance_and_wait.\
+            assert_called_once_with(share, instance, 'fake_host')
+        migration_api.ShareMigrationHelper.\
+            cleanup_access_rules.assert_called_once_with(
+                instance, server, self.share_manager.driver)
+        if exc is None:
+            self.share_manager.db.share_instance_update.\
+                assert_called_once_with(
+                    self.context, new_instance['id'],
+                    {'status': constants.STATUS_MIGRATING_TO})
+            self.share_manager.driver.migration_get_info.\
+                assert_called_once_with(self.context, instance, server)
+            rpcapi.ShareAPI.migration_get_info.assert_called_once_with(
+                self.context, new_instance)
+            data_rpc.DataAPI.migration_start.assert_called_once_with(
+                self.context, share['id'], ['lost+found'], instance['id'],
+                new_instance['id'], src_migration_info, dest_migration_info,
+                False)
+            migration_api.ShareMigrationHelper.\
+                cleanup_new_instance.assert_called_once_with(new_instance)
+
+    @ddt.data('fake_model_update', Exception('fake'))
+    def test_migration_complete_driver(self, exc):
+        server = 'fake_server'
+        model_update = 'fake_model_update'
+        instance = db_utils.create_share_instance(
+            share_id='fake_id',
+            status=constants.STATUS_AVAILABLE,
+            share_server_id='fake_server_id')
+        share = db_utils.create_share(
+            id='fake_id',
+            instances=[instance],
+            task_state=constants.TASK_STATE_MIGRATION_DRIVER_PHASE1_DONE)
+
+        # mocks
+        self.mock_object(self.share_manager.db, 'share_get',
+                         mock.Mock(return_value=share))
+        self.mock_object(self.share_manager.db, 'share_instance_get',
+                         mock.Mock(return_value=instance))
+        self.mock_object(self.share_manager.db, 'share_server_get',
+                         mock.Mock(return_value=server))
+        self.mock_object(self.share_manager.db, 'share_update')
+        if isinstance(exc, Exception):
+            self.mock_object(self.share_manager.driver, 'migration_complete',
+                             mock.Mock(side_effect=exc))
+        else:
+            self.mock_object(self.share_manager.driver, 'migration_complete',
+                             mock.Mock(return_value=exc))
+        self.mock_object(self.share_manager.db, 'share_instance_update')
+        self.mock_object(rpcapi.ShareAPI, 'migration_get_driver_info',
+                         mock.Mock(return_value='fake_info'))
+        self.mock_object(manager.LOG, 'exception')
+
+        # run
+        if isinstance(exc, Exception):
+            self.assertRaises(
+                exception.ShareMigrationFailed,
+                self.share_manager.migration_complete,
+                self.context, 'fake_id', 'fake_ins_id', 'new_fake_ins_id')
+        else:
+            self.share_manager.migration_complete(
+                self.context, 'fake_id', 'fake_ins_id', 'new_fake_ins_id')
+
+        # asserts
+        self.share_manager.db.share_get.assert_called_once_with(
+            self.context, share['id'])
+        self.share_manager.db.share_instance_get.assert_called_once_with(
+            self.context, instance['id'], with_share_data=True)
+        self.share_manager.db.share_server_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), 'fake_server_id')
+        self.share_manager.driver.migration_complete.assert_called_once_with(
+            self.context, instance, server, 'fake_info')
+        rpcapi.ShareAPI.migration_get_driver_info.assert_called_once_with(
+            self.context, instance)
+        if isinstance(exc, Exception):
+            self.share_manager.db.share_update.assert_called_once_with(
+                self.context, share['id'],
+                {'task_state': constants.TASK_STATE_MIGRATION_ERROR})
+            self.assertTrue(manager.LOG.exception.called)
+        else:
+            self.share_manager.db.share_update.assert_called_once_with(
+                self.context, share['id'],
+                {'task_state': constants.TASK_STATE_MIGRATION_SUCCESS})
+            self.share_manager.db.share_instance_update.\
+                assert_called_once_with(self.context, instance['id'],
+                                        model_update)
+
+    @ddt.data(None, Exception('fake'))
+    def test_migration_complete_generic(self, exc):
+        share = db_utils.create_share(
+            id='fake_id',
+            task_state=constants.TASK_STATE_DATA_COPYING_COMPLETED)
+
+        # mocks
+        self.mock_object(self.share_manager.db, 'share_get',
+                         mock.Mock(return_value=share))
+        self.mock_object(self.share_manager, '_migration_complete',
+                         mock.Mock(side_effect=exc))
+        self.mock_object(self.share_manager.db, 'share_update')
+        self.mock_object(self.share_manager.db, 'share_instance_update')
+        self.mock_object(manager.LOG, 'exception')
+
+        # run
+        if exc:
+            self.assertRaises(
+                exception.ShareMigrationFailed,
+                self.share_manager.migration_complete,
+                self.context, 'fake_id', 'fake_ins_id', 'new_fake_ins_id')
+        else:
+            self.share_manager.migration_complete(
+                self.context, 'fake_id', 'fake_ins_id', 'new_fake_ins_id')
+
+        # asserts
+        self.share_manager.db.share_get.assert_called_once_with(
+            self.context, share['id'])
+        self.share_manager._migration_complete.assert_called_once_with(
+            self.context, share, 'fake_ins_id', 'new_fake_ins_id')
+        if exc:
+            self.share_manager.db.share_update.assert_called_once_with(
+                self.context, share['id'],
+                {'task_state': constants.TASK_STATE_MIGRATION_ERROR})
+            self.share_manager.db.share_instance_update.\
+                assert_called_once_with(
+                    self.context, 'fake_ins_id',
+                    {'status': constants.STATUS_AVAILABLE})
+            self.assertTrue(manager.LOG.exception.called)
+
+    @ddt.data(constants.TASK_STATE_DATA_COPYING_ERROR,
+              constants.TASK_STATE_DATA_COPYING_CANCELLED,
+              constants.TASK_STATE_DATA_COPYING_COMPLETED,
+              'other')
+    def test__migration_complete_status(self, status):
+
+        instance = db_utils.create_share_instance(
+            share_id='fake_id',
+            share_server_id='fake_server_id')
+        new_instance = db_utils.create_share_instance(share_id='fake_id')
+        share = db_utils.create_share(id='fake_id', task_state=status)
+        server = 'fake_server'
+
+        # mocks
+        self.mock_object(self.share_manager.db, 'share_instance_get',
+                         mock.Mock(side_effect=[instance, new_instance]))
+        self.mock_object(self.share_manager.db, 'share_server_get',
+                         mock.Mock(return_value=server))
+        self.mock_object(migration_api.ShareMigrationHelper,
+                         'cleanup_new_instance')
+        self.mock_object(migration_api.ShareMigrationHelper,
+                         'cleanup_access_rules')
+        self.mock_object(self.share_manager.db, 'share_instance_update')
+        self.mock_object(self.share_manager.db, 'share_update')
+        if status == constants.TASK_STATE_DATA_COPYING_COMPLETED:
+            self.mock_object(migration_api.ShareMigrationHelper,
+                             'apply_new_access_rules',
+                             mock.Mock(side_effect=Exception('fake')))
+            self.mock_object(manager.LOG, 'exception')
+
+        # run
+        if status == constants.TASK_STATE_DATA_COPYING_CANCELLED:
+            self.share_manager._migration_complete(
+                self.context, share, instance['id'], new_instance['id'])
+        else:
+            self.assertRaises(
+                exception.ShareMigrationFailed,
+                self.share_manager._migration_complete, self.context, share,
+                instance['id'], new_instance['id'])
+
+        # asserts
+        self.share_manager.db.share_instance_get.assert_has_calls([
+            mock.call(self.context, instance['id'], with_share_data=True),
+            mock.call(self.context, new_instance['id'], with_share_data=True)
+        ])
+        self.share_manager.db.share_server_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), 'fake_server_id')
+
+        if status != 'other':
+            migration_api.ShareMigrationHelper.cleanup_new_instance.\
+                assert_called_once_with(new_instance)
+            migration_api.ShareMigrationHelper.cleanup_access_rules.\
+                assert_called_once_with(instance, server,
+                                        self.share_manager.driver)
+        if status == constants.TASK_STATE_MIGRATION_CANCELLED:
+            self.share_manager.db.share_instance_update.\
+                assert_called_once_with(self.context, instance['id'],
+                                        {'status': constants.STATUS_AVAILABLE})
+            self.share_manager.db.share_update.assert_called_once_with(
+                self.context, share['id'],
+                {'task_state': constants.TASK_STATE_MIGRATION_CANCELLED})
+        if status == constants.TASK_STATE_DATA_COPYING_COMPLETED:
+            migration_api.ShareMigrationHelper.apply_new_access_rules.\
+                assert_called_once_with(instance, new_instance)
+            self.assertTrue(manager.LOG.exception.called)
+
+    def test__migration_complete(self):
+
+        instance = db_utils.create_share_instance(
+            share_id='fake_id',
+            share_server_id='fake_server_id')
+        new_instance = db_utils.create_share_instance(share_id='fake_id')
+        share = db_utils.create_share(
+            id='fake_id',
+            task_state=constants.TASK_STATE_DATA_COPYING_COMPLETED)
+        server = 'fake_server'
+
+        # mocks
+        self.mock_object(self.share_manager.db, 'share_instance_get',
+                         mock.Mock(side_effect=[instance, new_instance]))
+        self.mock_object(self.share_manager.db, 'share_server_get',
+                         mock.Mock(return_value=server))
+        self.mock_object(self.share_manager.db, 'share_instance_update')
+        self.mock_object(self.share_manager.db, 'share_update')
+        self.mock_object(migration_api.ShareMigrationHelper,
                          'delete_instance_and_wait')
+        self.mock_object(migration_api.ShareMigrationHelper,
+                         'apply_new_access_rules')
 
-        manager._migrate_share_generic(self.context, share, host)
+        # run
+        self.share_manager._migration_complete(
+            self.context, share, instance['id'], new_instance['id'])
 
-        manager._get_share_instance.assert_called_once_with(
-            self.context, share
-        )
+        # asserts
+        self.share_manager.db.share_instance_get.assert_has_calls([
+            mock.call(self.context, instance['id'], with_share_data=True),
+            mock.call(self.context, new_instance['id'], with_share_data=True)
+        ])
+        self.share_manager.db.share_server_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), 'fake_server_id')
 
-        manager.db.share_instance_update.assert_any_call(
-            self.context, new_share_instance['id'], status_inactive
-        )
+        self.share_manager.db.share_instance_update.assert_has_calls([
+            mock.call(self.context, new_instance['id'],
+                      {'status': constants.STATUS_AVAILABLE}),
+            mock.call(self.context, instance['id'],
+                      {'status': constants.STATUS_INACTIVE})
+        ])
+        self.share_manager.db.share_update.assert_has_calls([
+            mock.call(
+                self.context, share['id'],
+                {'task_state': constants.TASK_STATE_MIGRATION_COMPLETING}),
+            mock.call(
+                self.context, share['id'],
+                {'task_state': constants.TASK_STATE_MIGRATION_SUCCESS}),
+        ])
+        migration_api.ShareMigrationHelper.apply_new_access_rules.\
+            assert_called_once_with(instance, new_instance)
+        migration_api.ShareMigrationHelper.delete_instance_and_wait.\
+            assert_called_once_with(instance)
 
-        manager._get_share_server.assert_any_call(
-            mock.ANY, share_instance
-        )
+    def test_migration_cancel(self):
 
-        manager._get_share_server.assert_any_call(
-            mock.ANY, new_share_instance
-        )
+        server = db_utils.create_share_server()
+        share = db_utils.create_share(
+            task_state=constants.TASK_STATE_MIGRATION_DRIVER_IN_PROGRESS,
+            share_server_id=server['id'])
 
-        manager.driver.get_migration_info.assert_called_once_with(
-            self.context, share_instance, share_server
-        )
+        self.mock_object(db, 'share_get', mock.Mock(return_value=share))
 
-        manager.driver.copy_share_data.assert_called_once_with(
-            self.context, mock.ANY, share, share_instance,
-            share_server, new_share_instance, new_share_server,
-            src_migration_info, dest_migration_info
-        )
+        self.mock_object(db, 'share_server_get',
+                         mock.Mock(return_value=server))
 
-        manager.db.share_update.assert_called_once_with(
-            self.context, share_id, status_completing
-        )
+        self.mock_object(rpcapi.ShareAPI, 'migration_get_driver_info',
+                         mock.Mock(return_value='migration_info'))
 
-        manager.db.share_instance_update.assert_any_call(
-            self.context, new_share_instance['id'], status_available
-        )
+        self.mock_object(self.share_manager.driver, 'migration_cancel')
 
-    def test_migrate_share_generic_exception(self):
+        self.share_manager.migration_cancel(self.context, share)
+
+        rpcapi.ShareAPI.migration_get_driver_info.assert_called_once_with(
+            self.context, share.instance)
+
+        self.share_manager.driver.migration_cancel.assert_called_once_with(
+            self.context, share.instance, server, 'migration_info')
+
+    def test_migration_cancel_invalid(self):
+
         share = db_utils.create_share()
-        host = {'host': 'fake-host'}
 
-        manager = self.share_manager
+        self.mock_object(db, 'share_get', mock.Mock(return_value=share))
 
-        manager.create_share_instance(self.context, share.instance['id'])
-        share_instance = manager._get_share_instance(self.context, share)
+        self.assertRaises(
+            exception.InvalidShare, self.share_manager.migration_cancel,
+            self.context, share)
 
-        self.mock_object(manager, '_get_share_instance',
-                         mock.Mock(return_value=share_instance))
+    def test_migration_get_progress(self):
 
-        self.mock_object(migration.ShareMigrationHelper,
-                         'change_to_read_only')
-        self.mock_object(migration.ShareMigrationHelper,
-                         'create_instance_and_wait',
-                         mock.Mock(side_effect=exception.ShareMigrationFailed(
-                             reason='fake')))
-        self.mock_object(migration.ShareMigrationHelper,
-                         'revert_access_rules')
+        server = db_utils.create_share_server()
+        share = db_utils.create_share(
+            task_state=constants.TASK_STATE_MIGRATION_DRIVER_IN_PROGRESS,
+            share_server_id=server['id'])
 
-        self.assertRaises(exception.ShareMigrationFailed,
-                          manager._migrate_share_generic,
-                          self.context, share, host)
+        expected = 'fake_progress'
+
+        self.mock_object(db, 'share_get', mock.Mock(return_value=share))
+
+        self.mock_object(db, 'share_server_get',
+                         mock.Mock(return_value=server))
+
+        self.mock_object(rpcapi.ShareAPI, 'migration_get_driver_info',
+                         mock.Mock(return_value='migration_info'))
+
+        self.mock_object(self.share_manager.driver, 'migration_get_progress',
+                         mock.Mock(return_value=expected))
+
+        result = self.share_manager.migration_get_progress(self.context, share)
+
+        self.assertEqual(expected, result)
+
+        rpcapi.ShareAPI.migration_get_driver_info.assert_called_once_with(
+            self.context, share.instance)
+
+        self.share_manager.driver.migration_get_progress.\
+            assert_called_once_with(
+                self.context, share.instance, server, 'migration_info')
+
+    def test_migration_get_progress_invalid(self):
+
+        share = db_utils.create_share()
+
+        self.mock_object(db, 'share_get', mock.Mock(return_value=share))
+
+        self.assertRaises(
+            exception.InvalidShare, self.share_manager.migration_get_progress,
+            self.context, share)
+
+    def test_manage_snapshot_invalid_driver_mode(self):
+        self.mock_object(self.share_manager, 'driver')
+        self.share_manager.driver.driver_handles_share_servers = True
+        share = db_utils.create_share()
+        snapshot = db_utils.create_snapshot(share_id=share['id'])
+        driver_options = {'fake': 'fake'}
+
+        self.assertRaises(
+            exception.InvalidDriverMode,
+            self.share_manager.manage_snapshot, self.context,
+            snapshot['id'], driver_options)
+
+    def test_manage_snapshot_invalid_snapshot(self):
+        fake_share_server = 'fake_share_server'
+        self.mock_object(self.share_manager, 'driver')
+        self.share_manager.driver.driver_handles_share_servers = False
+        mock_get_share_server = self.mock_object(
+            self.share_manager,
+            '_get_share_server',
+            mock.Mock(return_value=fake_share_server))
+        share = db_utils.create_share()
+        snapshot = db_utils.create_snapshot(share_id=share['id'])
+        driver_options = {'fake': 'fake'}
+        mock_get = self.mock_object(self.share_manager.db,
+                                    'share_snapshot_get',
+                                    mock.Mock(return_value=snapshot))
+
+        self.assertRaises(
+            exception.InvalidShareSnapshot,
+            self.share_manager.manage_snapshot, self.context,
+            snapshot['id'], driver_options)
+
+        mock_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['id'])
+        mock_get_share_server.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['share'])
+
+    def test_manage_snapshot_driver_exception(self):
+        CustomException = type('CustomException', (Exception,), {})
+        self.mock_object(self.share_manager, 'driver')
+        self.share_manager.driver.driver_handles_share_servers = False
+        mock_manage = self.mock_object(self.share_manager.driver,
+                                       'manage_existing_snapshot',
+                                       mock.Mock(side_effect=CustomException))
+        mock_get_share_server = self.mock_object(self.share_manager,
+                                                 '_get_share_server',
+                                                 mock.Mock(return_value=None))
+        share = db_utils.create_share()
+        snapshot = db_utils.create_snapshot(share_id=share['id'])
+        driver_options = {}
+        mock_get = self.mock_object(self.share_manager.db,
+                                    'share_snapshot_get',
+                                    mock.Mock(return_value=snapshot))
+
+        self.assertRaises(
+            CustomException,
+            self.share_manager.manage_snapshot,
+            self.context, snapshot['id'], driver_options)
+
+        mock_manage.assert_called_once_with(mock.ANY, driver_options)
+        mock_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['id'])
+        mock_get_share_server.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['share'])
+
+    @ddt.data(
+        {'size': 1},
+        {'size': 2, 'name': 'fake'},
+        {'size': 3})
+    def test_manage_snapshot_valid_snapshot(self, driver_data):
+        mock_get_share_server = self.mock_object(self.share_manager,
+                                                 '_get_share_server',
+                                                 mock.Mock(return_value=None))
+        self.mock_object(self.share_manager.db, 'share_snapshot_update')
+        self.mock_object(self.share_manager, 'driver')
+        self.mock_object(self.share_manager, '_update_quota_usages')
+        self.share_manager.driver.driver_handles_share_servers = False
+        mock_manage = self.mock_object(
+            self.share_manager.driver,
+            "manage_existing_snapshot",
+            mock.Mock(return_value=driver_data))
+        size = driver_data['size']
+        share = db_utils.create_share(size=size)
+        snapshot = db_utils.create_snapshot(share_id=share['id'], size=size)
+        snapshot_id = snapshot['id']
+        driver_options = {}
+        mock_get = self.mock_object(self.share_manager.db,
+                                    'share_snapshot_get',
+                                    mock.Mock(return_value=snapshot))
+
+        self.share_manager.manage_snapshot(self.context, snapshot_id,
+                                           driver_options)
+
+        mock_manage.assert_called_once_with(mock.ANY, driver_options)
+        valid_snapshot_data = {
+            'status': constants.STATUS_AVAILABLE}
+        valid_snapshot_data.update(driver_data)
+        self.share_manager.db.share_snapshot_update.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext),
+            snapshot_id, valid_snapshot_data)
+        self.share_manager._update_quota_usages.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext),
+            snapshot['project_id'],
+            {'snapshots': 1, 'snapshot_gigabytes': size})
+        mock_get_share_server.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['share'])
+        mock_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot_id)
+
+    def test_unmanage_snapshot_invalid_driver_mode(self):
+        self.mock_object(self.share_manager, 'driver')
+        self.share_manager.driver.driver_handles_share_servers = True
+        share = db_utils.create_share()
+        snapshot = db_utils.create_snapshot(share_id=share['id'])
+        self.mock_object(self.share_manager.db, 'share_snapshot_update')
+
+        ret = self.share_manager.unmanage_snapshot(self.context,
+                                                   snapshot['id'])
+        self.assertIsNone(ret)
+        self.share_manager.db.share_snapshot_update.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext),
+            snapshot['id'],
+            {'status': constants.STATUS_UNMANAGE_ERROR})
+
+    def test_unmanage_snapshot_invalid_snapshot(self):
+        self.mock_object(self.share_manager, 'driver')
+        self.share_manager.driver.driver_handles_share_servers = False
+        mock_get_share_server = self.mock_object(
+            self.share_manager,
+            '_get_share_server',
+            mock.Mock(return_value='fake_share_server'))
+        self.mock_object(self.share_manager.db, 'share_snapshot_update')
+        share = db_utils.create_share()
+        snapshot = db_utils.create_snapshot(share_id=share['id'])
+        mock_get = self.mock_object(self.share_manager.db,
+                                    'share_snapshot_get',
+                                    mock.Mock(return_value=snapshot))
+
+        ret = self.share_manager.unmanage_snapshot(self.context,
+                                                   snapshot['id'])
+
+        self.assertIsNone(ret)
+        self.share_manager.db.share_snapshot_update.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext),
+            snapshot['id'],
+            {'status': constants.STATUS_UNMANAGE_ERROR})
+        mock_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['id'])
+        mock_get_share_server.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['share'])
+
+    def test_unmanage_snapshot_invalid_share(self):
+        self.mock_object(self.share_manager, 'driver')
+        self.share_manager.driver.driver_handles_share_servers = False
+        mock_unmanage = mock.Mock(
+            side_effect=exception.UnmanageInvalidShareSnapshot(reason="fake"))
+        self.mock_object(self.share_manager.driver, "unmanage_snapshot",
+                         mock_unmanage)
+        mock_get_share_server = self.mock_object(
+            self.share_manager,
+            '_get_share_server',
+            mock.Mock(return_value=None))
+        self.mock_object(self.share_manager.db, 'share_snapshot_update')
+        share = db_utils.create_share()
+        snapshot = db_utils.create_snapshot(share_id=share['id'])
+        mock_get = self.mock_object(self.share_manager.db,
+                                    'share_snapshot_get',
+                                    mock.Mock(return_value=snapshot))
+
+        self.share_manager.unmanage_snapshot(self.context, snapshot['id'])
+
+        self.share_manager.db.share_snapshot_update.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['id'],
+            {'status': constants.STATUS_UNMANAGE_ERROR})
+        self.share_manager.driver.unmanage_snapshot.assert_called_once_with(
+            mock.ANY)
+        mock_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['id'])
+        mock_get_share_server.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['share'])
+
+    @ddt.data(False, True)
+    def test_unmanage_snapshot_valid_snapshot(self, quota_error):
+        if quota_error:
+            self.mock_object(quota.QUOTAS, 'reserve', mock.Mock(
+                side_effect=exception.ManilaException(message='error')))
+        mock_log_warning = self.mock_object(manager.LOG, 'warning')
+        self.mock_object(self.share_manager, 'driver')
+        self.share_manager.driver.driver_handles_share_servers = False
+        self.mock_object(self.share_manager.driver, "unmanage_snapshot")
+        mock_get_share_server = self.mock_object(
+            self.share_manager,
+            '_get_share_server',
+            mock.Mock(return_value=None))
+        self.mock_object(self.share_manager.db, 'share_snapshot_destroy')
+        share = db_utils.create_share()
+        snapshot = db_utils.create_snapshot(share_id=share['id'])
+        mock_get = self.mock_object(self.share_manager.db,
+                                    'share_snapshot_get',
+                                    mock.Mock(return_value=snapshot))
+
+        self.share_manager.unmanage_snapshot(self.context, snapshot['id'])
+
+        self.share_manager.driver.unmanage_snapshot.assert_called_once_with(
+            mock.ANY)
+        self.share_manager.db.share_snapshot_destroy.assert_called_once_with(
+            mock.ANY, snapshot['id'])
+        mock_get.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['id'])
+        mock_get_share_server.assert_called_once_with(
+            utils.IsAMatcher(context.RequestContext), snapshot['share'])
+        if quota_error:
+            self.assertTrue(mock_log_warning.called)
 
 
 @ddt.ddt

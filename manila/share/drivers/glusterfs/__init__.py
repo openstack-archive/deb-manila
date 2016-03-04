@@ -33,7 +33,6 @@ from oslo_log import log
 
 from manila import exception
 from manila.i18n import _
-from manila.i18n import _LE
 from manila.share import driver
 from manila.share.drivers import ganesha
 from manila.share.drivers.ganesha import utils as ganesha_utils
@@ -97,10 +96,10 @@ class GlusterfsShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
         gluster_manager = share_manager['manager']
         # TODO(csaba): This should be refactored into proper dispatch to helper
         if self.nfs_helper == GlusterNFSHelper and not gluster_manager.path:
-            # default is 'on'
-            export_vol = gluster_manager.get_gluster_vol_option(
-                NFS_EXPORT_VOL) or 'on'
-            if export_vol.lower() not in ('on', '1', 'true', 'yes', 'enable'):
+            # default behavior of NFS_EXPORT_VOL is as if it were 'on'
+            export_vol = gluster_manager.get_vol_option(
+                NFS_EXPORT_VOL, boolean=True)
+            if export_vol is False:
                 raise exception.GlusterfsException(
                     _("Gluster-NFS with volume layout should be used "
                       "with `nfs.export-volumes = on`"))
@@ -108,15 +107,8 @@ class GlusterfsShareDriver(driver.ExecuteMixin, driver.GaneshaMixin,
         else:
             # gluster-nfs export of the whole volume must be prohibited
             # to not to defeat access control
-            setting = [NFS_EXPORT_VOL, 'off']
-        args = ['volume', 'set', gluster_manager.volume] + setting
-        try:
-            gluster_manager.gluster_call(*args)
-        except exception.ProcessExecutionError as exc:
-            LOG.error(_LE("Error in tuning GlusterFS volume to prevent "
-                          "exporting the entire volume: %s"), exc.stderr)
-            raise exception.GlusterfsException("gluster %s failed" %
-                                               ' '.join(args))
+            setting = [NFS_EXPORT_VOL, False]
+        gluster_manager.set_vol_option(*setting)
         return self.nfs_helper(self._execute, self.configuration,
                                gluster_manager=gluster_manager).get_export(
             share_manager['share'])
@@ -172,7 +164,7 @@ class GlusterNFSHelper(ganesha.NASHelperBase):
 
     def _get_export_dir_dict(self):
         """Get the export entries of shares in the GlusterFS volume."""
-        export_dir = self.gluster_manager.get_gluster_vol_option(
+        export_dir = self.gluster_manager.get_vol_option(
             NFS_EXPORT_DIR)
         edh = {}
         if export_dir:
@@ -222,16 +214,9 @@ class GlusterNFSHelper(ganesha.NASHelperBase):
         if export_dir_dict:
             export_dir_new = (",".join("/%s(%s)" % (d, "|".join(v))
                               for d, v in sorted(export_dir_dict.items())))
-            args = ('volume', 'set', self.gluster_manager.volume,
-                    NFS_EXPORT_DIR, export_dir_new)
         else:
-            args = ('volume', 'reset', self.gluster_manager.volume,
-                    NFS_EXPORT_DIR)
-        try:
-            self.gluster_manager.gluster_call(*args)
-        except exception.ProcessExecutionError as exc:
-            LOG.error(_LE("Error in gluster volume set: %s"), exc.stderr)
-            raise
+            export_dir_new = None
+        self.gluster_manager.set_vol_option(NFS_EXPORT_DIR, export_dir_new)
 
     def allow_access(self, base, share, access):
         """Allow access to a share."""
@@ -267,7 +252,7 @@ class GlusterNFSVolHelper(GlusterNFSHelper):
                                                **kwargs)
 
     def _get_vol_exports(self):
-        export_vol = self.gluster_manager.get_gluster_vol_option(
+        export_vol = self.gluster_manager.get_vol_option(
             NFS_RPC_AUTH_ALLOW)
         return export_vol.split(',') if export_vol else []
 
@@ -298,21 +283,13 @@ class GlusterNFSVolHelper(GlusterNFSHelper):
             return
 
         if export_vol_list:
-            argseq = (('volume', 'set', self.gluster_manager.volume,
-                       NFS_RPC_AUTH_ALLOW, ','.join(export_vol_list)),
-                      ('volume', 'reset', self.gluster_manager.volume,
-                       NFS_RPC_AUTH_REJECT))
+            argseq = ((NFS_RPC_AUTH_ALLOW, ','.join(export_vol_list)),
+                      (NFS_RPC_AUTH_REJECT, None))
         else:
-            argseq = (('volume', 'reset', self.gluster_manager.volume,
-                       NFS_RPC_AUTH_ALLOW),
-                      ('volume', 'set', self.gluster_manager.volume,
-                       NFS_RPC_AUTH_REJECT, '*'))
-        try:
-            for args in argseq:
-                self.gluster_manager.gluster_call(*args)
-        except exception.ProcessExecutionError as exc:
-            LOG.error(_LE("Error in gluster volume set: %s"), exc.stderr)
-            raise
+            argseq = ((NFS_RPC_AUTH_ALLOW, None),
+                      (NFS_RPC_AUTH_REJECT, '*'))
+        for args in argseq:
+            self.gluster_manager.set_vol_option(*args)
 
     def allow_access(self, base, share, access):
         """Allow access to a share."""
@@ -353,7 +330,7 @@ class GaneshaNFSHelper(ganesha.GaneshaNASHelper):
                                                **kwargs)
 
     def get_export(self, share):
-        return ':/'.join((self.ganesha_host, share['name']))
+        return ':/'.join((self.ganesha_host, share['name'] + "--<access-id>"))
 
     def init_helper(self):
         @utils.synchronized(self.tag)

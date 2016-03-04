@@ -29,6 +29,8 @@ class AdminActionsTest(base.BaseSharesAdminTest):
     def resource_setup(cls):
         super(AdminActionsTest, cls).resource_setup()
         cls.states = ["error", "available"]
+        cls.task_states = ["migration_starting", "data_copying_in_progress",
+                           "migration_success"]
         cls.bad_status = "error_deleting"
         cls.sh = cls.create_share()
         cls.sh_instance = (
@@ -70,7 +72,7 @@ class AdminActionsTest(base.BaseSharesAdminTest):
 
         # Check that status was changed
         check_status = self.shares_v2_client.get_share(share["id"])
-        self.assertEqual(check_status["status"], self.bad_status)
+        self.assertEqual(self.bad_status, check_status["status"])
 
         # Share with status 'error_deleting' should be deleted
         self.shares_v2_client.force_delete(share["id"])
@@ -111,8 +113,16 @@ class AdminActionsTest(base.BaseSharesAdminTest):
 
         # Check that status was changed
         check_status = self.shares_v2_client.get_snapshot(sn["id"])
-        self.assertEqual(check_status["status"], self.bad_status)
+        self.assertEqual(self.bad_status, check_status["status"])
 
         # Snapshot with status 'error_deleting' should be deleted
         self.shares_v2_client.force_delete(sn["id"], s_type="snapshots")
         self.shares_v2_client.wait_for_resource_deletion(snapshot_id=sn["id"])
+
+    @test.attr(type=["gate", ])
+    @base.skip_if_microversion_lt("2.15")
+    def test_reset_share_task_state(self):
+        for task_state in self.task_states:
+            self.shares_v2_client.reset_task_state(self.sh["id"], task_state)
+            self.shares_v2_client.wait_for_share_status(
+                self.sh["id"], task_state, 'task_state')

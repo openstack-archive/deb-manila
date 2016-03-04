@@ -56,7 +56,7 @@ hds_hnas_opts = [
                help="The time (in seconds) to wait for stalled HNAS jobs "
                     "before aborting."),
     cfg.StrOpt('hds_hnas_driver_helper',
-               default='manila.share.drivers.hitachi.hds_hnas.HDSHNASDriver',
+               default='manila.share.drivers.hitachi.ssh.HNASSSHBackend',
                help="Python class to be used for driver helper."),
 ]
 
@@ -132,60 +132,40 @@ class HDSHNASDriver(driver.ShareDriver):
                            hnas_evs_id, self.hnas_evs_ip, self.fs_name,
                            job_timeout)
 
-    def allow_access(self, context, share, access, share_server=None):
-        """Allow access to a share.
+    def update_access(self, context, share, access_rules, add_rules=None,
+                      delete_rules=None, share_server=None):
+        """Update access rules for given share.
 
         :param context: The `context.RequestContext` object for the request
-        :param share: Share to which access will be allowed.
-        :param access: Information about the access that will be allowed, e.g.
-        host allowed, type of access granted.
+        :param share: Share that will have its access rules updated.
+        :param access_rules: All access rules for given share. This list
+        is enough to update the access rules for given share.
+        :param add_rules: None or List of access rules which should be added.
+        access_rules already contains these rules. Not used by
+        this driver.
+        :param delete_rules: None or List of access rules which should be
+        removed. access_rules doesn't contain these rules. Not used by
+        this driver.
         :param share_server: Data structure with share server information.
         Not used by this driver.
         """
-        if ('nfs', 'ip') != (share['share_proto'].lower(),
-                             access['access_type'].lower()):
-            msg = _("Only NFS protocol and IP access type currently "
-                    "supported.")
-            raise exception.InvalidShareAccess(reason=msg)
-
-        LOG.debug("Sending HNAS Request to allow access to share: "
-                  "%(shr)s.", {'shr': (share['id'])})
-
+        host_list = []
         share_id = self._get_hnas_share_id(share['id'])
 
-        self._allow_access(share_id, access['access_to'],
-                           access['access_level'])
+        for rule in access_rules:
+            if rule['access_type'].lower() != 'ip':
+                msg = _("Only IP access type currently supported.")
+                raise exception.InvalidShareAccess(reason=msg)
+            host_list.append(rule['access_to'] + '(' +
+                             rule['access_level'] + ')')
 
-        LOG.info(_LI("Access allowed successfully to share: %(shr)s."),
-                 {'shr': six.text_type(share['id'])})
+        self.hnas.update_access_rule(share_id, host_list)
 
-    def deny_access(self, context, share, access, share_server=None):
-        """Deny access to a share.
-
-        :param context: The `context.RequestContext` object for the request
-        :param share: Share to which access will be denied.
-        :param access: Information about the access that will be denied, e.g.
-        host and type of access denied.
-        :param share_server: Data structure with share server information.
-        Not used by this driver.
-        """
-        if ('nfs', 'ip') != (share['share_proto'].lower(),
-                             access['access_type'].lower()):
-            msg = _("Only NFS protocol and IP access type currently "
-                    "supported.")
-            raise exception.InvalidShareAccess(reason=msg)
-
-        LOG.debug("Sending HNAS request to deny access to share:"
-                  " %(shr_id)s.",
-                  {'shr_id': six.text_type(share['id'])})
-
-        share_id = self._get_hnas_share_id(share['id'])
-
-        self._deny_access(share_id, access['access_to'],
-                          access['access_level'])
-
-        LOG.info(_LI("Access denied successfully to share: %(shr)s."),
-                 {'shr': six.text_type(share['id'])})
+        if host_list:
+            LOG.debug("Share %(share)s has the rules: %(rules)s",
+                      {'share': share_id, 'rules': ', '.join(host_list)})
+        else:
+            LOG.debug("Share %(share)s has no rules.", {'share': share_id})
 
     def create_share(self, context, share, share_server=None):
         """Creates share.
@@ -198,7 +178,7 @@ class HDSHNASDriver(driver.ShareDriver):
         of share in the filesystem (e.g. ['172.24.44.10:/shares/id']).
         """
         LOG.debug("Creating share in HNAS: %(shr)s.",
-                  {'shr': six.text_type(share['id'])})
+                  {'shr': share['id']})
 
         if share['share_proto'].lower() != 'nfs':
             msg = _("Only NFS protocol is currently supported.")
@@ -222,7 +202,7 @@ class HDSHNASDriver(driver.ShareDriver):
         share_id = self._get_hnas_share_id(share['id'])
 
         LOG.debug("Deleting share in HNAS: %(shr)s.",
-                  {'shr': six.text_type(share['id'])})
+                  {'shr': share['id']})
 
         self._delete_share(share_id)
 
@@ -276,7 +256,7 @@ class HDSHNASDriver(driver.ShareDriver):
         of new share in the filesystem (e.g. ['172.24.44.10:/shares/id']).
         """
         LOG.debug("Creating a new share from snapshot: %(ss_id)s.",
-                  {'ss_id': six.text_type(snapshot['id'])})
+                  {'ss_id': snapshot['id']})
 
         path = self._create_share_from_snapshot(share, snapshot)
         uri = self.hnas_evs_ip + ":" + path
@@ -296,7 +276,7 @@ class HDSHNASDriver(driver.ShareDriver):
         of share in the filesystem (e.g. ['172.24.44.10:/shares/id']).
         """
         LOG.debug("Ensuring share in HNAS: %(shr)s.",
-                  {'shr': six.text_type(share['id'])})
+                  {'shr': share['id']})
 
         share_id = self._get_hnas_share_id(share['id'])
 
@@ -306,7 +286,7 @@ class HDSHNASDriver(driver.ShareDriver):
         export_list = [export]
 
         LOG.debug("Share ensured in HNAS: %(shr)s.",
-                  {'shr': six.text_type(share['id'])})
+                  {'shr': share['id']})
         return export_list
 
     def extend_share(self, share, new_size, share_server=None):
@@ -320,12 +300,12 @@ class HDSHNASDriver(driver.ShareDriver):
         share_id = self._get_hnas_share_id(share['id'])
 
         LOG.debug("Expanding share in HNAS: %(shr_id)s.",
-                  {'shr_id': six.text_type(share['id'])})
+                  {'shr_id': share['id']})
 
         self._extend_share(share_id, share['size'], new_size)
         LOG.info(_LI("Share %(shr_id)s successfully extended to "
                      "%(shr_size)s."),
-                 {'shr_id': six.text_type(share['id']),
+                 {'shr_id': share['id'],
                   'shr_size': six.text_type(new_size)})
 
     # TODO(alyson): Implement in DHSS = true mode
@@ -378,9 +358,8 @@ class HDSHNASDriver(driver.ShareDriver):
             raise exception.HNASBackendException(msg=msg)
 
         LOG.info(_LI("Share %(shr_path)s will be managed with ID %(shr_id)s."),
-                 {'shr_path': six.text_type(
-                     share['export_locations'][0]['path']),
-                  'shr_id': six.text_type(share['id'])})
+                 {'shr_path': share['export_locations'][0]['path'],
+                  'shr_id': share['id']})
 
         old_path_info = share['export_locations'][0]['path'].split(':')
         old_path = old_path_info[1].split('/')
@@ -395,10 +374,10 @@ class HDSHNASDriver(driver.ShareDriver):
 
         if evs_ip != self.hnas_evs_ip:
             msg = _("The EVS IP %(evs)s is not "
-                    "configured.") % {'evs': six.text_type(evs_ip)}
+                    "configured.") % {'evs': evs_ip}
             raise exception.ShareBackendException(msg=msg)
 
-        if six.text_type(self.backend_name) not in share['host']:
+        if self.backend_name not in share['host']:
             msg = _("The backend passed in the host parameter (%(shr)s) is "
                     "not configured.") % {'shr': share['host']}
             raise exception.ShareBackendException(msg=msg)
@@ -418,13 +397,31 @@ class HDSHNASDriver(driver.ShareDriver):
 
         if len(share['export_locations']) == 0:
             LOG.info(_LI("The share with ID %(shr_id)s is no longer being "
-                         "managed."), {'shr_id': six.text_type(share['id'])})
+                         "managed."), {'shr_id': share['id']})
         else:
             LOG.info(_LI("The share with current path %(shr_path)s and ID "
                          "%(shr_id)s is no longer being managed."),
-                     {'shr_path': six.text_type(
-                         share['export_locations'][0]['path']),
-                         'shr_id': six.text_type(share['id'])})
+                     {'shr_path': share['export_locations'][0]['path'],
+                         'shr_id': share['id']})
+
+    def shrink_share(self, share, new_size, share_server=None):
+        """Shrinks a share to new size.
+
+        :param share: Share that will be shrunk.
+        :param new_size: New size of share.
+        :param share_server: Data structure with share server information.
+        Not used by this driver.
+        """
+        share_id = self._get_hnas_share_id(share['id'])
+
+        LOG.debug("Shrinking share in HNAS: %(shr_id)s.",
+                  {'shr_id': share['id']})
+
+        self._shrink_share(share_id, share['size'], new_size)
+        LOG.info(_LI("Share %(shr_id)s successfully shrunk to "
+                     "%(shr_size)sG."),
+                 {'shr_id': share['id'],
+                  'shr_size': six.text_type(new_size)})
 
     def _get_hnas_share_id(self, share_id):
         hnas_id = self.private_storage.get(share_id, 'hnas_id')
@@ -471,71 +468,6 @@ class HDSHNASDriver(driver.ShareDriver):
                       {'fs': self.fs_name})
             self.hnas.mount()
 
-    def _allow_access(self, share_id, host, permission='rw'):
-        """Allow access to the share.
-
-        :param share_id: ID of share that access will be allowed.
-        :param host: Host to which access will be allowed.
-        :param permission: permission (e.g. 'rw', 'ro') that will be allowed.
-        """
-        # check if the share exists
-        self._ensure_share(share_id)
-
-        # get the list that contains all the hosts allowed on the share
-        host_list = self.hnas.get_host_list(share_id)
-
-        if permission in ('ro', 'rw'):
-            host_access = host + '(' + permission + ')'
-        else:
-            msg = (_("Permission should be 'ro' or 'rw' instead "
-                     "of %s") % permission)
-            raise exception.HNASBackendException(msg=msg)
-
-        # check if the host(s) is already allowed
-        if any(host in x for x in host_list):
-            if host_access in host_list:
-                LOG.debug("Host: %(host)s is already allowed.",
-                          {'host': host})
-            else:
-                # remove all the hosts with different permissions
-                host_list = [
-                    x for x in host_list if not x.startswith(host)]
-                # add the host with new permission
-                host_list.append(host_access)
-                self.hnas.update_access_rule(share_id, host_list)
-        else:
-            host_list.append(host_access)
-            self.hnas.update_access_rule(share_id, host_list)
-
-    def _deny_access(self, share_id, host, permission):
-        """Deny access to the share.
-
-        :param share_id: ID of share that access will be denied.
-        :param host: Host to which access will be denied.
-        :param permission: permission (e.g. 'rw', 'ro') that will be denied.
-        """
-        # check if the share exists
-        self._ensure_share(share_id)
-
-        # get the list that contains all the hosts allowed on the share
-        host_list = self.hnas.get_host_list(share_id)
-
-        if permission in ('ro', 'rw'):
-            host_access = host + '(' + permission + ')'
-        else:
-            msg = (_("Permission should be 'ro' or 'rw' instead "
-                     "of %s") % permission)
-            raise exception.HNASBackendException(msg=msg)
-
-        # check if the host(s) is already not allowed
-        if host_access not in host_list:
-            LOG.debug("Host: %(host)s is already not allowed.",
-                      {'host': host})
-        else:
-            # remove the host on host_list
-            host_list.remove(host_access)
-            self.hnas.update_access_rule(share_id, host_list)
-
     def _ensure_share(self, share_id):
         """Ensure that share is exported.
 
@@ -550,6 +482,25 @@ class HDSHNASDriver(driver.ShareDriver):
         self.hnas.check_quota(share_id)
         self.hnas.check_export(share_id)
         return path
+
+    def _shrink_share(self, share_id, old_size, new_size):
+        """Shrinks a share to new size.
+
+        :param share_id: ID of share that will be shrunk.
+        :param old_size: Current size of share that will be shrunk.
+        :param new_size: New size of share after shrink operation.
+        """
+        self._ensure_share(share_id)
+
+        usage = self.hnas.get_share_usage(share_id)
+
+        LOG.debug("Usage space in share %(share)s: %(usage)sG",
+                  {'share': share_id, 'usage': usage})
+
+        if new_size > usage:
+            self.hnas.modify_quota(share_id, new_size)
+        else:
+            raise exception.ShareShrinkingPossibleDataLoss(share_id=share_id)
 
     def _extend_share(self, share_id, old_size, new_size):
         """Extends a share to new size.
@@ -602,7 +553,7 @@ class HDSHNASDriver(driver.ShareDriver):
                      "quota limit, please set it before manage.") % share_id)
             raise exception.ManageInvalidShare(msg)
 
-        path = six.text_type(self.hnas_evs_ip) + ':/shares/' + share_id
+        path = self.hnas_evs_ip + ':/shares/' + share_id
 
         return {'size': share_size, 'export_locations': [path]}
 

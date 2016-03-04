@@ -32,7 +32,11 @@
     "share:get_share_metadata": "rule:default",
     "share:delete_share_metadata": "rule:default",
     "share:update_share_metadata": "rule:default",
-    "share:migrate": "rule:admin_api",
+    "share:migration_start": "rule:admin_api",
+    "share:migration_complete": "rule:admin_api",
+    "share:migration_cancel": "rule:admin_api",
+    "share:migration_get_progress": "rule:admin_api",
+    "share:reset_task_state": "rule:admin_api",
     "share:manage": "rule:admin_api",
     "share:unmanage": "rule:admin_api",
     "share:force_delete": "rule:admin_api",
@@ -52,6 +56,8 @@
     "share_snapshot:get_snapshot": "rule:default",
     "share_snapshot:get_all_snapshots": "rule:default",
     "share_snapshot:snapshot_update": "rule:default",
+    "share_snapshot:manage_snapshot": "rule:admin_api",
+    "share_snapshot:unmanage_snapshot": "rule:admin_api",
     "share_snapshot:force_delete": "rule:admin_api",
     "share_snapshot:reset_status": "rule:admin_api",
 
@@ -110,5 +116,15 @@
     "cgsnapshot:update" : "rule:default",
     "cgsnapshot:delete": "rule:default",
     "cgsnapshot:get_cgsnapshot": "rule:default",
-    "cgsnapshot:get_all": "rule:default"
+    "cgsnapshot:get_all": "rule:default",
+
+    "share_replica:get_all": "rule:default",
+    "share_replica:show": "rule:default",
+    "share_replica:create" : "rule:default",
+    "share_replica:delete": "rule:default",
+    "share_replica:promote": "rule:default",
+    "share_replica:resync": "rule:admin_api",
+    "share_replica:reset_status": "rule:admin_api",
+    "share_replica:force_delete": "rule:admin_api",
+    "share_replica:reset_replica_state": "rule:admin_api"
 }

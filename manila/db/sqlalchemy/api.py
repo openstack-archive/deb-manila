@@ -1128,7 +1128,7 @@ def extract_share_instance_values(values):
 
 
 def extract_snapshot_instance_values(values):
-    fields = ['status', 'progress']
+    fields = ['status', 'progress', 'provider_location']
     return extract_instance_values(values, fields)
 
 
@@ -1294,6 +1294,162 @@ def share_instances_get_all_by_consistency_group_id(context, cg_id):
 
 ################
 
+def _share_replica_get_with_filters(context, share_id=None, replica_id=None,
+                                    replica_state=None, status=None,
+                                    with_share_server=True, session=None):
+
+    query = model_query(context, models.ShareInstance, session=session,
+                        read_deleted="no")
+
+    if share_id is not None:
+        query = query.filter(models.ShareInstance.share_id == share_id)
+
+    if replica_id is not None:
+        query = query.filter(models.ShareInstance.id == replica_id)
+
+    if replica_state is not None:
+        query = query.filter(
+            models.ShareInstance.replica_state == replica_state)
+    else:
+        query = query.filter(models.ShareInstance.replica_state.isnot(None))
+
+    if status is not None:
+        query = query.filter(models.ShareInstance.status == status)
+
+    if with_share_server:
+        query = query.options(joinedload('share_server'))
+
+    return query
+
+
+def _set_replica_share_data(context, replicas, session):
+    if replicas and not isinstance(replicas, list):
+        replicas = [replicas]
+
+    for replica in replicas:
+        parent_share = share_get(context, replica['share_id'], session=session)
+        replica.set_share_data(parent_share)
+
+    return replicas
+
+
+@require_context
+def share_replicas_get_all(context, with_share_data=False,
+                           with_share_server=True, session=None):
+    """Returns replica instances for all available replicated shares."""
+    session = session or get_session()
+
+    result = _share_replica_get_with_filters(
+        context, with_share_server=with_share_server, session=session).all()
+
+    if with_share_data:
+        result = _set_replica_share_data(context, result, session)
+
+    return result
+
+
+@require_context
+def share_replicas_get_all_by_share(context, share_id,
+                                    with_share_data=False,
+                                    with_share_server=False, session=None):
+    """Returns replica instances for a given share."""
+    session = session or get_session()
+
+    result = _share_replica_get_with_filters(
+        context, with_share_server=with_share_server,
+        share_id=share_id, session=session).all()
+
+    if with_share_data:
+        result = _set_replica_share_data(context, result, session)
+
+    return result
+
+
+@require_context
+def share_replicas_get_available_active_replica(context, share_id,
+                                                with_share_data=False,
+                                                with_share_server=False,
+                                                session=None):
+    """Returns an 'active' replica instance that is 'available'."""
+    session = session or get_session()
+
+    result = _share_replica_get_with_filters(
+        context, with_share_server=with_share_server, share_id=share_id,
+        replica_state=constants.REPLICA_STATE_ACTIVE,
+        status=constants.STATUS_AVAILABLE, session=session).first()
+
+    if result and with_share_data:
+        result = _set_replica_share_data(context, result, session)[0]
+
+    return result
+
+
+@require_context
+def share_replicas_get_active_replicas_by_share(context, share_id,
+                                                with_share_data=False,
+                                                with_share_server=False,
+                                                session=None):
+    """Returns all active replicas for a given share."""
+    session = session or get_session()
+
+    result = _share_replica_get_with_filters(
+        context, with_share_server=with_share_server, share_id=share_id,
+        replica_state=constants.REPLICA_STATE_ACTIVE, session=session).all()
+
+    if with_share_data:
+        result = _set_replica_share_data(context, result, session)
+
+    return result
+
+
+@require_context
+def share_replica_get(context, replica_id, with_share_data=False,
+                      with_share_server=False, session=None):
+    """Returns summary of requested replica if available."""
+    session = session or get_session()
+
+    result = _share_replica_get_with_filters(
+        context, with_share_server=with_share_server,
+        replica_id=replica_id, session=session).first()
+
+    if result is None:
+        raise exception.ShareReplicaNotFound(replica_id=replica_id)
+
+    if with_share_data:
+        result = _set_replica_share_data(context, result, session)[0]
+
+    return result
+
+
+@require_context
+@oslo_db_api.wrap_db_retry(max_retries=5, retry_on_deadlock=True)
+def share_replica_update(context, share_replica_id, values,
+                         with_share_data=False, session=None):
+    """Updates a share replica with specified values."""
+    session = session or get_session()
+
+    with session.begin():
+        ensure_availability_zone_exists(context, values, session, strict=False)
+        updated_share_replica = _share_instance_update(
+            context, share_replica_id, values, session=session)
+
+        if with_share_data:
+            updated_share_replica = _set_replica_share_data(
+                context, updated_share_replica, session)[0]
+
+    return updated_share_replica
+
+
+@require_context
+def share_replica_delete(context, share_replica_id, session=None):
+    """Deletes a share replica."""
+    session = session or get_session()
+
+    share_instance_delete(context, share_replica_id, session=session)
+
+
+################
+
 
 def _share_get_query(context, session=None):
     if session is None:
@@ -1306,7 +1462,7 @@ def _share_get_query(context, session=None):
 def _metadata_refs(metadata_dict, meta_class):
     metadata_refs = []
     if metadata_dict:
-        for k, v in six.iteritems(metadata_dict):
+        for k, v in metadata_dict.items():
             value = six.text_type(v) if isinstance(v, bool) else v
 
             metadata_ref = meta_class()
@@ -1378,8 +1534,10 @@ def share_update(context, share_id, values):
 @require_context
 def share_get(context, share_id, session=None):
     result = _share_get_query(context, session).filter_by(id=share_id).first()
+
     if result is None:
         raise exception.NotFound()
+
     return result
 
 
@@ -1538,9 +1696,12 @@ def _share_access_get_query(context, session, values, read_deleted='no'):
     return query.filter_by(**values)
 
 
-def _share_instance_access_query(context, session, access_id,
+def _share_instance_access_query(context, session, access_id=None,
                                  instance_id=None):
-    filters = {'access_id': access_id}
+    filters = {}
+
+    if access_id is not None:
+        filters.update({'access_id': access_id})
 
     if instance_id is not None:
         filters.update({'share_instance_id': instance_id})
@@ -1555,7 +1716,6 @@ def share_access_create(context, values):
     session = get_session()
     with session.begin():
         access_ref = models.ShareAccessMapping()
-        state = values.pop('state', None)
         access_ref.update(values)
         access_ref.save(session=session)
 
@@ -1566,12 +1726,27 @@ def share_access_create(context, values):
                 'share_instance_id': instance['id'],
                 'access_id': access_ref['id'],
             }
-            if state is not None:
-                vals.update({'state': state})
 
             _share_instance_access_create(vals, session)
 
     return share_access_get(context, access_ref['id'])
+
+
+def share_instance_access_copy(context, share_id, instance_id, session=None):
+    """Copy access rules from share to share instance."""
+    session = session or get_session()
+
+    share_access_rules = share_access_get_all_for_share(
+        context, share_id, session=session)
+    for access_rule in share_access_rules:
+        values = {
+            'share_instance_id': instance_id,
+            'access_id': access_rule['id'],
+        }
+
+        _share_instance_access_create(values, session)
+
+    return share_access_rules
 
 
 def _share_instance_access_create(values, session):
@@ -1608,10 +1783,22 @@ def share_instance_access_get(context, access_id, instance_id):
 
 
 @require_context
-def share_access_get_all_for_share(context, share_id):
-    session = get_session()
+def share_access_get_all_for_share(context, share_id, session=None):
+    session = session or get_session()
     return _share_access_get_query(context, session,
                                    {'share_id': share_id}).all()
+
+
+@require_context
+def share_access_get_all_for_instance(context, instance_id, session=None):
+    """Get all access rules related to a certain share instance."""
+    session = get_session()
+    return _share_access_get_query(context, session, {}).join(
+        models.ShareInstanceAccessMapping,
+        models.ShareInstanceAccessMapping.access_id ==
+        models.ShareAccessMapping.id).filter(
+        models.ShareInstanceAccessMapping.share_instance_id ==
+        instance_id).all()
 
 
 @require_context
@@ -1644,8 +1831,7 @@ def share_access_delete(context, access_id):
             raise exception.InvalidShareAccess(msg)
 
         session.query(models.ShareAccessMapping).\
-            filter_by(id=access_id).soft_delete(update_status=True,
-                                                status_field_name='state')
+            filter_by(id=access_id).soft_delete()
 
 
 @require_context
@@ -1653,8 +1839,7 @@ def share_access_delete_all_by_share(context, share_id):
     session = get_session()
     with session.begin():
         session.query(models.ShareAccessMapping). \
-            filter_by(share_id=share_id).soft_delete(update_status=True,
-                                                     status_field_name='state')
+            filter_by(share_id=share_id).soft_delete()
 
 
 @require_context
@@ -1668,8 +1853,7 @@ def share_instance_access_delete(context, mapping_id):
         if not mapping:
             exception.NotFound()
 
-        mapping.soft_delete(session, update_status=True,
-                            status_field_name='state')
+        mapping.soft_delete(session)
 
         other_mappings = share_instance_access_get_all(
             context, mapping['access_id'], session)
@@ -1679,18 +1863,18 @@ def share_instance_access_delete(context, mapping_id):
             (
                 session.query(models.ShareAccessMapping)
                 .filter_by(id=mapping['access_id'])
-                .soft_delete(update_status=True, status_field_name='state')
+                .soft_delete()
             )
 
 
 @require_context
 @oslo_db_api.wrap_db_retry(max_retries=5, retry_on_deadlock=True)
-def share_instance_access_update_state(context, mapping_id, state):
+def share_instance_update_access_status(context, share_instance_id, status):
     session = get_session()
     with session.begin():
-        mapping = session.query(models.ShareInstanceAccessMapping).\
-            filter_by(id=mapping_id).first()
-        mapping.update({'state': state})
+        mapping = session.query(models.ShareInstance).\
+            filter_by(id=share_instance_id).first()
+        mapping.update({'access_rules_status': status})
         mapping.save(session=session)
         return mapping
 
@@ -1992,7 +2176,7 @@ def _share_metadata_update(context, share_id, metadata, delete, session=None):
         if delete:
             original_metadata = _share_metadata_get(context, share_id,
                                                     session=session)
-            for meta_key, meta_value in six.iteritems(original_metadata):
+            for meta_key, meta_value in original_metadata.items():
                 if meta_key not in metadata:
                     meta_ref = _share_metadata_get_item(context, share_id,
                                                         meta_key,
@@ -2628,10 +2812,12 @@ def share_server_backend_details_delete(context, share_server_id,
 
 def _driver_private_data_query(session, context, host, entity_id, key=None,
                                read_deleted=False):
-    query = model_query(context, models.DriverPrivateData,
-                        session=session, read_deleted=read_deleted)\
-        .filter_by(host=host)\
-        .filter_by(entity_uuid=entity_id)
+    query = model_query(
+        context, models.DriverPrivateData, session=session,
+        read_deleted=read_deleted,
+    ).filter_by(
+        entity_uuid=entity_id,
+    )
 
     if isinstance(key, list):
         return query.filter(models.DriverPrivateData.key.in_(key))
@@ -2758,11 +2944,26 @@ def network_allocations_get_by_ip_address(context, ip_address):
 
 @require_context
 def network_allocations_get_for_share_server(context, share_server_id,
-                                             session=None):
+                                             session=None, label=None):
     if session is None:
         session = get_session()
-    result = model_query(context, models.NetworkAllocation, session=session).\
-        filter_by(share_server_id=share_server_id).all()
+
+    query = model_query(
+        context, models.NetworkAllocation, session=session,
+    ).filter_by(
+        share_server_id=share_server_id,
+    )
+    if label:
+        if label != 'admin':
+            query = query.filter(or_(
+                # NOTE(vponomaryov): we treat None as alias for 'user'.
+                models.NetworkAllocation.label == None,  # noqa
+                models.NetworkAllocation.label == label,
+            ))
+        else:
+            query = query.filter(models.NetworkAllocation.label == label)
+
+    result = query.all()
     return result
 
 
@@ -3085,7 +3286,7 @@ def share_type_extra_specs_update_or_create(context, share_type_id, specs):
     session = get_session()
     with session.begin():
         spec_ref = None
-        for key, value in six.iteritems(specs):
+        for key, value in specs.items():
             try:
                 spec_ref = _share_type_extra_specs_get_item(
                     context, share_type_id, key, session)

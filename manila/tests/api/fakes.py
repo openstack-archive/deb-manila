@@ -17,7 +17,6 @@ import uuid
 
 from oslo_utils import timeutils
 import routes
-import six
 import webob
 import webob.dec
 import webob.request
@@ -96,7 +95,7 @@ class FakeToken(object):
     def __init__(self, **kwargs):
         FakeToken.id_count += 1
         self.id = FakeToken.id_count
-        for k, v in six.iteritems(kwargs):
+        for k, v in kwargs.items():
             setattr(self, k, v)
 
 
@@ -180,6 +179,18 @@ def app():
     mapper['/v2'] = router_v2.APIRouter()
     return mapper
 
+fixture_reset_status_with_different_roles_v1 = (
+    {
+        'role': 'admin',
+        'valid_code': 202,
+        'valid_status': constants.STATUS_ERROR,
+    },
+    {
+        'role': 'member',
+        'valid_code': 403,
+        'valid_status': constants.STATUS_AVAILABLE,
+    },
+)
 
 fixture_reset_status_with_different_roles = (
     {
@@ -205,6 +216,49 @@ fixture_reset_status_with_different_roles = (
         'valid_code': 403,
         'valid_status': constants.STATUS_AVAILABLE,
         'version': '2.7',
+    },
+)
+
+
+fixture_reset_replica_status_with_different_roles = (
+    {
+        'role': 'admin',
+        'valid_code': 202,
+        'valid_status': constants.STATUS_ERROR,
+    },
+    {
+        'role': 'member',
+        'valid_code': 403,
+        'valid_status': constants.STATUS_AVAILABLE,
+    },
+)
+
+
+fixture_reset_replica_state_with_different_roles = (
+    {
+        'role': 'admin',
+        'valid_code': 202,
+        'valid_status': constants.REPLICA_STATE_ACTIVE,
+    },
+    {
+        'role': 'admin',
+        'valid_code': 202,
+        'valid_status': constants.REPLICA_STATE_OUT_OF_SYNC,
+    },
+    {
+        'role': 'admin',
+        'valid_code': 202,
+        'valid_status': constants.REPLICA_STATE_IN_SYNC,
+    },
+    {
+        'role': 'admin',
+        'valid_code': 202,
+        'valid_status': constants.STATUS_ERROR,
+    },
+    {
+        'role': 'member',
+        'valid_code': 403,
+        'valid_status': constants.REPLICA_STATE_IN_SYNC,
     },
 )
 

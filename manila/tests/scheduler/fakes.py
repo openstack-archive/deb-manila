@@ -17,7 +17,6 @@ Fakes For Scheduler tests.
 """
 
 from oslo_utils import timeutils
-import six
 
 from manila.scheduler.drivers import filter
 from manila.scheduler import host_manager
@@ -80,6 +79,7 @@ SHARE_SERVICE_STATES_WITH_POOLS = {
                       timestamp=None, reserved_percentage=0,
                       driver_handles_share_servers=False,
                       snapshot_support=True,
+                      replication_type=None,
                       pools=[dict(pool_name='pool1',
                                   total_capacity_gb=51,
                                   free_capacity_gb=41,
@@ -91,6 +91,7 @@ SHARE_SERVICE_STATES_WITH_POOLS = {
                       timestamp=None, reserved_percentage=0,
                       driver_handles_share_servers=False,
                       snapshot_support=True,
+                      replication_type=None,
                       pools=[dict(pool_name='pool2',
                                   total_capacity_gb=52,
                                   free_capacity_gb=42,
@@ -102,6 +103,7 @@ SHARE_SERVICE_STATES_WITH_POOLS = {
                       timestamp=None, reserved_percentage=0,
                       driver_handles_share_servers=False,
                       snapshot_support=True,
+                      replication_type=None,
                       pools=[dict(pool_name='pool3',
                                   total_capacity_gb=53,
                                   free_capacity_gb=43,
@@ -114,6 +116,7 @@ SHARE_SERVICE_STATES_WITH_POOLS = {
                       timestamp=None, reserved_percentage=0,
                       driver_handles_share_servers=False,
                       snapshot_support=True,
+                      replication_type=None,
                       pools=[dict(pool_name='pool4a',
                                   total_capacity_gb=541,
                                   free_capacity_gb=441,
@@ -134,6 +137,7 @@ SHARE_SERVICE_STATES_WITH_POOLS = {
                       timestamp=None, reserved_percentage=0,
                       driver_handles_share_servers=False,
                       snapshot_support=True,
+                      replication_type=None,
                       pools=[dict(pool_name='pool5a',
                                   total_capacity_gb=551,
                                   free_capacity_gb=451,
@@ -151,6 +155,8 @@ SHARE_SERVICE_STATES_WITH_POOLS = {
     'host6@FFF': dict(share_backend_name='FFF',
                       timestamp=None, reserved_percentage=0,
                       driver_handles_share_servers=False,
+                      snapshot_support=True,
+                      replication_type=None,
                       pools=[dict(pool_name='pool6a',
                                   total_capacity_gb='unknown',
                                   free_capacity_gb='unknown',
@@ -185,7 +191,10 @@ class FakeHostManager(host_manager.HostManager):
                       'thin_provisioning': False,
                       'reserved_percentage': 10,
                       'timestamp': None,
-                      'snapshot_support': True},
+                      'snapshot_support': True,
+                      'replication_type': 'writable',
+                      'replication_domain': 'endor',
+                      },
             'host2': {'total_capacity_gb': 2048,
                       'free_capacity_gb': 300,
                       'allocated_capacity_gb': 1748,
@@ -194,7 +203,10 @@ class FakeHostManager(host_manager.HostManager):
                       'thin_provisioning': True,
                       'reserved_percentage': 10,
                       'timestamp': None,
-                      'snapshot_support': True},
+                      'snapshot_support': True,
+                      'replication_type': 'readable',
+                      'replication_domain': 'kashyyyk',
+                      },
             'host3': {'total_capacity_gb': 512,
                       'free_capacity_gb': 256,
                       'allocated_capacity_gb': 256,
@@ -203,8 +215,9 @@ class FakeHostManager(host_manager.HostManager):
                       'thin_provisioning': False,
                       'consistency_group_support': 'host',
                       'reserved_percentage': 0,
+                      'snapshot_support': True,
                       'timestamp': None,
-                      'snapshot_support': True},
+                      },
             'host4': {'total_capacity_gb': 2048,
                       'free_capacity_gb': 200,
                       'allocated_capacity_gb': 1848,
@@ -213,7 +226,10 @@ class FakeHostManager(host_manager.HostManager):
                       'thin_provisioning': True,
                       'reserved_percentage': 5,
                       'timestamp': None,
-                      'snapshot_support': True},
+                      'snapshot_support': True,
+                      'replication_type': 'dr',
+                      'replication_domain': 'naboo',
+                      },
             'host5': {'total_capacity_gb': 2048,
                       'free_capacity_gb': 500,
                       'allocated_capacity_gb': 1548,
@@ -222,39 +238,46 @@ class FakeHostManager(host_manager.HostManager):
                       'thin_provisioning': True,
                       'reserved_percentage': 5,
                       'timestamp': None,
+                      'snapshot_support': True,
                       'consistency_group_support': 'pool',
-                      'snapshot_support': True},
+                      'replication_type': None,
+                      },
             'host6': {'total_capacity_gb': 'unknown',
                       'free_capacity_gb': 'unknown',
                       'allocated_capacity_gb': 1548,
                       'thin_provisioning': False,
                       'reserved_percentage': 5,
+                      'snapshot_support': True,
                       'timestamp': None,
-                      'snapshot_support': True},
+                      },
         }
 
 
 class FakeHostState(host_manager.HostState):
     def __init__(self, host, attribute_dict):
         super(FakeHostState, self).__init__(host)
-        for (key, val) in six.iteritems(attribute_dict):
+        for (key, val) in attribute_dict.items():
             setattr(self, key, val)
+
+FAKE_HOST_STRING_1 = 'openstack@BackendA#PoolX'
+FAKE_HOST_STRING_2 = 'openstack@BackendB#PoolY'
+FAKE_HOST_STRING_3 = 'openstack@BackendC#PoolZ'
 
 
 def mock_host_manager_db_calls(mock_obj, disabled=None):
     services = [
         dict(id=1, host='host1', topic='share', disabled=False,
-             availability_zone='zone1', updated_at=timeutils.utcnow()),
+             availability_zone_id='zone1', updated_at=timeutils.utcnow()),
         dict(id=2, host='host2', topic='share', disabled=False,
-             availability_zone='zone1', updated_at=timeutils.utcnow()),
+             availability_zone_id='zone1', updated_at=timeutils.utcnow()),
         dict(id=3, host='host3', topic='share', disabled=False,
-             availability_zone='zone2', updated_at=timeutils.utcnow()),
+             availability_zone_id='zone2', updated_at=timeutils.utcnow()),
         dict(id=4, host='host4', topic='share', disabled=False,
-             availability_zone='zone3', updated_at=timeutils.utcnow()),
+             availability_zone_id='zone3', updated_at=timeutils.utcnow()),
         dict(id=5, host='host5', topic='share', disabled=False,
-             availability_zone='zone3', updated_at=timeutils.utcnow()),
+             availability_zone_id='zone3', updated_at=timeutils.utcnow()),
         dict(id=6, host='host6', topic='share', disabled=False,
-             availability_zone='zone4', updated_at=timeutils.utcnow()),
+             availability_zone_id='zone4', updated_at=timeutils.utcnow()),
     ]
     if disabled is None:
         mock_obj.return_value = services
@@ -276,3 +299,45 @@ class FakeWeigher2(base_host_weigher.BaseHostWeigher):
 class FakeClass(object):
     def __init__(self):
         pass
+
+
+def fake_replica_request_spec(**kwargs):
+    request_spec = {
+        'share_properties': {
+            'id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+            'name': 'fakename',
+            'size': 1,
+            'share_network_id': '4ccd5318-65f1-11e5-9d70-feff819cdc9f',
+            'availability_zone': 'fake_az',
+            'replication_type': 'dr',
+        },
+        'share_instance_properties': {
+            'id': '8d5566df-1e83-4373-84b8-6f8153a0ac41',
+            'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+            'host': 'openstack@BackendZ#PoolA',
+            'status': 'available',
+            'availability_zone_id': 'f6e146d0-65f0-11e5-9d70-feff819cdc9f',
+            'share_network_id': '4ccd5318-65f1-11e5-9d70-feff819cdc9f',
+            'share_server_id': '53099868-65f1-11e5-9d70-feff819cdc9f',
+        },
+        'share_proto': 'nfs',
+        'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
+        'snapshot_id': None,
+        'share_type': 'fake_share_type',
+        'consistency_group': None,
+    }
+    request_spec.update(kwargs)
+    return request_spec
+
+
+def get_fake_host(host_name=None):
+
+    class FakeHost(object):
+        def __init__(self, host_name=None):
+            self.host = host_name or 'openstack@BackendZ#PoolA'
+
+    class FakeWeightedHost(object):
+        def __init__(self, host_name=None):
+            self.obj = FakeHost(host_name=host_name)
+
+    return FakeWeightedHost(host_name=host_name)

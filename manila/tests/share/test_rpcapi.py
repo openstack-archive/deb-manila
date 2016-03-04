@@ -20,7 +20,6 @@ import copy
 
 from oslo_config import cfg
 from oslo_serialization import jsonutils
-import six
 
 from manila.common import constants
 from manila import context
@@ -42,11 +41,20 @@ class ShareRpcAPITestCase(test.TestCase):
         )
         access = db_utils.create_access(share_id=share['id'])
         snapshot = db_utils.create_snapshot(share_id=share['id'])
+        share_replica = db_utils.create_share_replica(
+            id='fake_replica',
+            share_id='fake_share_id',
+            host='fake_host',
+        )
         share_server = db_utils.create_share_server()
         cg = {'id': 'fake_cg_id', 'host': 'fake_host'}
         cgsnapshot = {'id': 'fake_cg_id'}
         host = {'host': 'fake_host', 'capabilities': 1}
         self.fake_share = jsonutils.to_primitive(share)
+        # mock out the getattr on the share db model object since jsonutils
+        # doesn't know about those extra attributes to pull in
+        self.fake_share['instance'] = jsonutils.to_primitive(share.instance)
+        self.fake_share_replica = jsonutils.to_primitive(share_replica)
         self.fake_access = jsonutils.to_primitive(access)
         self.fake_snapshot = jsonutils.to_primitive(snapshot)
         self.fake_share_server = jsonutils.to_primitive(share_server)
@@ -84,7 +92,7 @@ class ShareRpcAPITestCase(test.TestCase):
         if 'access' in expected_msg:
             access = expected_msg['access']
             del expected_msg['access']
-            expected_msg['access_id'] = access['id']
+            expected_msg['access_rules'] = [access['id']]
         if 'host' in expected_msg:
             del expected_msg['host']
         if 'snapshot' in expected_msg:
@@ -94,6 +102,10 @@ class ShareRpcAPITestCase(test.TestCase):
         if 'dest_host' in expected_msg:
             del expected_msg['dest_host']
             expected_msg['host'] = self.fake_host
+        if 'share_replica' in expected_msg:
+            share_replica = expected_msg.pop('share_replica', None)
+            expected_msg['share_replica_id'] = share_replica['id']
+            expected_msg['share_id'] = share_replica['share_id']
 
         if 'host' in kwargs:
             host = kwargs['host']
@@ -103,6 +115,8 @@ class ShareRpcAPITestCase(test.TestCase):
             host = kwargs['share_instance']['host']
         elif 'share_server' in kwargs:
             host = kwargs['share_server']['host']
+        elif 'share_replica' in kwargs:
+            host = kwargs['share_replica']['host']
         else:
             host = kwargs['share']['host']
         target['server'] = host
@@ -132,7 +146,7 @@ class ShareRpcAPITestCase(test.TestCase):
         for arg, expected_arg in zip(self.fake_args, expected_args):
             self.assertEqual(expected_arg, arg)
 
-        for kwarg, value in six.iteritems(self.fake_kwargs):
+        for kwarg, value in self.fake_kwargs.items():
             self.assertEqual(expected_msg[kwarg], value)
 
     def test_create_share_instance(self):
@@ -154,14 +168,14 @@ class ShareRpcAPITestCase(test.TestCase):
     def test_allow_access(self):
         self._test_share_api('allow_access',
                              rpc_method='cast',
-                             version='1.4',
+                             version='1.7',
                              share_instance=self.fake_share,
                              access=self.fake_access)
 
     def test_deny_access(self):
         self._test_share_api('deny_access',
                              rpc_method='cast',
-                             version='1.4',
+                             version='1.7',
                              share_instance=self.fake_share,
                              access=self.fake_access)
 
@@ -224,28 +238,81 @@ class ShareRpcAPITestCase(test.TestCase):
                              cgsnapshot=self.fake_cgsnapshot,
                              host='fake_host1')
 
-    def test_migrate_share(self):
+    def test_migration_start(self):
         fake_dest_host = self.Desthost()
-        self._test_share_api('migrate_share',
+        self._test_share_api('migration_start',
                              rpc_method='cast',
                              version='1.6',
                              share=self.fake_share,
                              dest_host=fake_dest_host,
-                             force_host_copy='1')
+                             force_host_copy=True,
+                             notify=True)
 
-    def test_get_migration_info(self):
-        self._test_share_api('get_migration_info',
+    def test_migration_get_info(self):
+        self._test_share_api('migration_get_info',
                              rpc_method='call',
                              version='1.6',
-                             share_instance=self.fake_share,
-                             share_server=self.fake_share_server)
+                             share_instance=self.fake_share)
 
-    def test_get_driver_migration_info(self):
-        self._test_share_api('get_driver_migration_info',
+    def test_migration_get_driver_info(self):
+        self._test_share_api('migration_get_driver_info',
                              rpc_method='call',
                              version='1.6',
-                             share_instance=self.fake_share,
-                             share_server=self.fake_share_server)
+                             share_instance=self.fake_share)
+
+    def test_migration_complete(self):
+        self._test_share_api('migration_complete',
+                             rpc_method='cast',
+                             version='1.10',
+                             share=self.fake_share,
+                             share_instance_id='fake_ins_id',
+                             new_share_instance_id='new_fake_ins_id')
+
+    def test_migration_cancel(self):
+        self._test_share_api('migration_cancel',
+                             rpc_method='call',
+                             version='1.10',
+                             share=self.fake_share)
+
+    def test_migration_get_progress(self):
+        self._test_share_api('migration_get_progress',
+                             rpc_method='call',
+                             version='1.10',
+                             share=self.fake_share)
+
+    def test_delete_share_replica(self):
+        self._test_share_api('delete_share_replica',
+                             rpc_method='cast',
+                             version='1.8',
+                             share_replica=self.fake_share_replica,
+                             force=False)
+
+    def test_promote_share_replica(self):
+        self._test_share_api('promote_share_replica',
+                             rpc_method='cast',
+                             version='1.8',
+                             share_replica=self.fake_share_replica)
+
+    def test_update_share_replica(self):
+        self._test_share_api('update_share_replica',
+                             rpc_method='cast',
+                             version='1.8',
+                             share_replica=self.fake_share_replica)
+
+    def test_manage_snapshot(self):
+        self._test_share_api('manage_snapshot',
+                             rpc_method='cast',
+                             version='1.9',
+                             snapshot=self.fake_snapshot,
+                             host='fake_host',
+                             driver_options={'volume_snapshot_id': 'fake'})
+
+    def test_unmanage_snapshot(self):
+        self._test_share_api('unmanage_snapshot',
+                             rpc_method='cast',
+                             version='1.9',
+                             snapshot=self.fake_snapshot,
+                             host='fake_host')
 
     class Desthost(object):
         host = 'fake_host'

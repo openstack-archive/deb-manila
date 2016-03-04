@@ -75,6 +75,8 @@ def novaclient(context):
             CONF.nova_admin_password,
             CONF.nova_admin_tenant_name,
             CONF.nova_admin_auth_url,
+            insecure=CONF.nova_api_insecure,
+            cacert=CONF.nova_ca_certificates_file,
         )
         c.authenticate()
         return c
@@ -203,19 +205,6 @@ class API(base.Base):
             msg = _("Failed to get Nova VM. %s") % e
             raise exception.ManilaException(msg)
         return _untranslate_server_summary_view(server)
-
-    def server_list(self, context, search_opts=None, all_tenants=False):
-        if search_opts is None:
-            search_opts = {}
-        if all_tenants:
-            search_opts['all_tenants'] = True
-        else:
-            search_opts['project_id'] = context.project_id
-        servers = [_untranslate_server_summary_view(s)
-                   for s in novaclient(context).servers.list(True,
-                                                             search_opts)]
-
-        return servers
 
     @translate_server_exception
     def server_pause(self, context, instance_id):

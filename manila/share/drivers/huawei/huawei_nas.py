@@ -55,6 +55,7 @@ class HuaweiNasDriver(driver.ShareDriver):
         1.2 - Add share server support.
               Add ensure share.
               Add QoS support.
+              Add create share from snapshot.
     """
 
     def __init__(self, *args, **kwargs):
@@ -68,7 +69,8 @@ class HuaweiNasDriver(driver.ShareDriver):
             self.plugin = importutils.import_object(backend_driver,
                                                     self.configuration)
         else:
-            raise exception.InvalidShare(_("Huawei configuration missing."))
+            raise exception.InvalidShare(
+                reason=_("Huawei configuration missing."))
 
     def check_for_setup_error(self):
         """Returns an error if prerequisites aren't met."""
@@ -112,6 +114,13 @@ class HuaweiNasDriver(driver.ShareDriver):
         LOG.debug("Extend a share.")
         self.plugin.extend_share(share, new_size, share_server)
 
+    def create_share_from_snapshot(self, context, share, snapshot,
+                                   share_server=None):
+        """Create a share from snapshot."""
+        LOG.debug("Create a share from snapshot %s.", snapshot['snapshot_id'])
+        location = self.plugin.create_share_from_snapshot(share, snapshot)
+        return location
+
     def shrink_share(self, share, new_size, share_server=None):
         """Shrinks size of existing share."""
         LOG.debug("Shrink a share.")
@@ -120,11 +129,11 @@ class HuaweiNasDriver(driver.ShareDriver):
     def delete_share(self, context, share, share_server=None):
         """Delete a share."""
         LOG.debug("Delete a share.")
-
         self.plugin.delete_share(share, share_server)
 
     def create_snapshot(self, context, snapshot, share_server=None):
         """Create a snapshot."""
+        LOG.debug("Create a snapshot.")
         self.plugin.create_snapshot(snapshot, share_server)
 
     def delete_snapshot(self, context, snapshot, share_server=None):
@@ -141,14 +150,19 @@ class HuaweiNasDriver(driver.ShareDriver):
     def allow_access(self, context, share, access, share_server=None):
         """Allow access to the share."""
         LOG.debug("Allow access.")
-
         self.plugin.allow_access(share, access, share_server)
 
     def deny_access(self, context, share, access, share_server=None):
         """Deny access to the share."""
         LOG.debug("Deny access.")
-
         self.plugin.deny_access(share, access, share_server)
+
+    def update_access(self, context, share, access_rules, add_rules=None,
+                      delete_rules=None, share_server=None):
+        """Update access rules list."""
+        LOG.debug("Update access.")
+        self.plugin.update_access(share, access_rules,
+                                  add_rules, delete_rules, share_server)
 
     def get_pool(self, share):
         """Return pool name where the share resides on."""

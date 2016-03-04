@@ -32,11 +32,13 @@ SOCKET_TIMEOUT = 52
 LOGIN_SOCKET_TIMEOUT = 4
 QOS_NAME_PREFIX = 'OpenStack_'
 SYSTEM_NAME_PREFIX = "Array-"
-ARRAY_VERSION = 'V300R003C00'
+MIN_ARRAY_VERSION_FOR_QOS = 'V300R003C00'
+TMP_PATH_SRC_PREFIX = "huawei_manila_tmp_path_src_"
+TMP_PATH_DST_PREFIX = "huawei_manila_tmp_path_dst_"
 
 ACCESS_NFS_RW = "1"
 ACCESS_NFS_RO = "0"
-ACCESS_CIFS_RW = "5"
+ACCESS_CIFS_FULLCONTROL = "1"
 ACCESS_CIFS_RO = "0"
 
 ERROR_CONNECT_TO_SERVER = -403
@@ -47,6 +49,9 @@ ERROR_USER_OR_GROUP_NOT_EXIST = 1077939723
 PORT_TYPE_ETH = '1'
 PORT_TYPE_BOND = '7'
 PORT_TYPE_VLAN = '8'
+
+SORT_BY_VLAN = 1
+SORT_BY_LOGICAL = 2
 
 ALLOC_TYPE_THIN_FLAG = "1"
 ALLOC_TYPE_THICK_FLAG = "0"
@@ -65,12 +70,15 @@ OPTS_QOS_VALUE = {
     'iotype': None
 }
 
+QOS_LOWER_LIMIT = ['MINIOPS', 'LATENCY', 'MINBANDWIDTH']
+QOS_UPPER_LIMIT = ['MAXIOPS', 'MAXBANDWIDTH']
+
 OPTS_CAPABILITIES = {
     'dedupe': False,
     'compression': False,
     'huawei_smartcache': False,
     'huawei_smartpartition': False,
-    'thin_provisioning': False,
+    'thin_provisioning': None,
     'qos': False,
 }
 

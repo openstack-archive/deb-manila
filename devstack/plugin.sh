@@ -8,12 +8,61 @@ set -o xtrace
 # Entry Points
 # ------------
 
+function _clean_share_group {
+    local vg=$1
+    local vg_prefix=$2
+    # Clean out existing shares
+    for lv in `sudo lvs --noheadings -o lv_name $vg`; do
+        # vg_prefix prefixes the LVs we want
+        if [[ "${lv#$vg_prefix}" != "$lv" ]]; then
+            sudo umount -f $MANILA_MNT_DIR/$lv
+            sudo lvremove -f $vg/$lv
+            sudo rm -rf $MANILA_MNT_DIR/$lv
+        fi
+    done
+}
+
+function _clean_manila_lvm_backing_file {
+    local vg=$1
+
+    # if there is no logical volume left, it's safe to attempt a cleanup
+    # of the backing file
+    if [ -z "`sudo lvs --noheadings -o lv_name $vg`" ]; then
+        # if the backing physical device is a loop device, it was probably setup by devstack
+        VG_DEV=$(sudo losetup -j $DATA_DIR/${vg}-backing-file | awk -F':' '/backing-file/ { print $1
+}')
+        if [[ -n "$VG_DEV" ]]; then
+            sudo losetup -d $VG_DEV
+            rm -f $DATA_DIR/${vg}-backing-file
+        fi
+    fi
+}
+
+function _clean_zfsonlinux_data {
+    for filename in "$MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR"/*; do
+        if [[ $(sudo zpool list | grep $filename) ]]; then
+            echo "Destroying zpool named $filename"
+            sudo zpool destroy -f $filename
+            file="$MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR$filename"
+            echo "Destroying file named $file"
+            rm -f $file
+        fi
+    done
+}
+
 # cleanup_manila - Remove residual data files, anything left over from previous
 # runs that a clean run would need to clean up
 function cleanup_manila {
-    # This is placeholder.
-    # All stuff, that are created by Generic driver will be cleaned up by other services.
-    :
+    # All stuff, that are created by share drivers will be cleaned up by other services.
+    _clean_share_group $SHARE_GROUP $SHARE_NAME_PREFIX
+    _clean_manila_lvm_backing_file $SHARE_GROUP
+    _clean_zfsonlinux_data
+
+    if is_driver_enabled $MANILA_LXD_DRIVER; then
+        # Remove all containers created by manila
+        lxc delete `lxc list | grep -E 'manila-.*' | awk '{print $2}'`
+        remove_lxd_service_image
+    fi
 }
 
 # configure_default_backends - configures default Manila backends with generic driver.
@@ -123,14 +172,13 @@ function configure_manila {
     rm -f $MANILA_CONF
 
     iniset $MANILA_CONF keystone_authtoken identity_uri $KEYSTONE_AUTH_URI
-    iniset $MANILA_CONF keystone_authtoken admin_tenant_name $SERVICE_TENANT_NAME
+    iniset $MANILA_CONF keystone_authtoken admin_tenant_name $SERVICE_PROJECT_NAME
     iniset $MANILA_CONF keystone_authtoken admin_user manila
     iniset $MANILA_CONF keystone_authtoken admin_password $SERVICE_PASSWORD
     iniset $MANILA_CONF keystone_authtoken signing_dir $MANILA_AUTH_CACHE_DIR
 
     iniset $MANILA_CONF DEFAULT auth_strategy keystone
     iniset $MANILA_CONF DEFAULT debug True
-    iniset $MANILA_CONF DEFAULT verbose True
     iniset $MANILA_CONF DEFAULT scheduler_driver $MANILA_SCHEDULER_DRIVER
     iniset $MANILA_CONF DEFAULT share_name_template ${SHARE_NAME_PREFIX}%s
     iniset $MANILA_CONF DATABASE connection `database_connection_url manila`
@@ -150,6 +198,8 @@ function configure_manila {
     iniset $MANILA_CONF oslo_concurrency lock_path $MANILA_LOCK_PATH
 
     iniset $MANILA_CONF DEFAULT wsgi_keep_alive False
+
+    iniset $MANILA_CONF DEFAULT lvm_share_volume_group $SHARE_GROUP
 
     # Note: set up config group does not mean that this backend will be enabled.
     # To enable it, specify its name explicitly using "enabled_share_backends" opt.
@@ -201,8 +251,16 @@ function configure_manila {
 
 function configure_manila_ui {
     if is_service_enabled horizon && [ "$MANILA_UI_ENABLED" = "True" ]; then
+        # NOTE(vponomaryov): workaround for devstack bug: 1540328
+        # where devstack install 'test-requirements' but should not do it
+        # for manila-ui project as it installs Horizon from url.
+        # Remove following two 'mv' commands when mentioned bug is fixed.
+        mv $MANILA_UI_DIR/test-requirements.txt $MANILA_UI_DIR/_test-requirements.txt
+
         setup_develop $MANILA_UI_DIR
         cp $MANILA_UI_DIR/manila_ui/enabled/_90_manila_*.py $HORIZON_DIR/openstack_dashboard/local/enabled
+
+        mv $MANILA_UI_DIR/_test-requirements.txt $MANILA_UI_DIR/test-requirements.txt
     fi
 }
 
@@ -211,34 +269,72 @@ function create_manila_service_keypair {
     nova keypair-add $MANILA_SERVICE_KEYPAIR_NAME --pub-key $MANILA_PATH_TO_PUBLIC_KEY
 }
 
+function is_driver_enabled {
+    driver_name=$1
+
+    for BE in ${MANILA_ENABLED_BACKENDS//,/ }; do
+        share_driver=$(iniget $MANILA_CONF $BE share_driver)
+
+        if [ "$share_driver" == "$driver_name" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 # create_service_share_servers - creates service Nova VMs, one per generic
 # driver, and only if it is configured to mode without handling of share servers.
 function create_service_share_servers {
     private_net_id=$(nova net-list | grep ' private ' | get_field 1)
+    created_admin_network=false
     for BE in ${MANILA_ENABLED_BACKENDS//,/ }; do
         driver_handles_share_servers=$(iniget $MANILA_CONF $BE driver_handles_share_servers)
         share_driver=$(iniget $MANILA_CONF $BE share_driver)
         generic_driver='manila.share.drivers.generic.GenericShareDriver'
-        if [[ $(trueorfalse False driver_handles_share_servers) == False && $share_driver == $generic_driver ]]; then
-            vm_name='manila_service_share_server_'$BE
-            nova boot $vm_name \
-                --flavor $MANILA_SERVICE_VM_FLAVOR_NAME \
-                --image $MANILA_SERVICE_IMAGE_NAME \
-                --nic net-id=$private_net_id \
-                --security-groups $MANILA_SERVICE_SECGROUP \
-                --key-name $MANILA_SERVICE_KEYPAIR_NAME
+        if [[ $share_driver == $generic_driver ]]; then
+            if [[ $(trueorfalse False driver_handles_share_servers) == False ]]; then
+                vm_name='manila_service_share_server_'$BE
+                nova boot $vm_name \
+                    --flavor $MANILA_SERVICE_VM_FLAVOR_NAME \
+                    --image $MANILA_SERVICE_IMAGE_NAME \
+                    --nic net-id=$private_net_id \
+                    --security-groups $MANILA_SERVICE_SECGROUP \
+                    --key-name $MANILA_SERVICE_KEYPAIR_NAME
 
-            vm_id=$(nova show $vm_name | grep ' id ' | get_field 2)
+                vm_id=$(nova show $vm_name | grep ' id ' | get_field 2)
 
-            iniset $MANILA_CONF $BE service_instance_name_or_id $vm_id
-            iniset $MANILA_CONF $BE service_net_name_or_ip private
-            iniset $MANILA_CONF $BE tenant_net_name_or_ip private
-            iniset $MANILA_CONF $BE migration_data_copy_node_ip $PUBLIC_NETWORK_GATEWAY
+                iniset $MANILA_CONF $BE service_instance_name_or_id $vm_id
+                iniset $MANILA_CONF $BE service_net_name_or_ip private
+                iniset $MANILA_CONF $BE tenant_net_name_or_ip private
+            else
+                if is_service_enabled neutron; then
+                    if [ $created_admin_network == false ]; then
+                        admin_net_id=$(neutron net-create --tenant-id $TENANT_ID admin_net | grep ' id ' | get_field 2)
+                        admin_subnet_id=$(neutron subnet-create --tenant-id $TENANT_ID --ip_version 4 --no-gateway --name admin_subnet --subnetpool None $admin_net_id $FIXED_RANGE | grep ' id ' | get_field 2)
+                        created_admin_network=true
+                    fi
+                    iniset $MANILA_CONF $BE admin_network_id $admin_net_id
+                    iniset $MANILA_CONF $BE admin_subnet_id $admin_subnet_id
+                fi
+            fi
         fi
     done
+    configure_data_service_generic_driver
 }
 
+function configure_data_service_generic_driver {
+    enabled_backends=(${MANILA_ENABLED_BACKENDS//,/ })
+    share_driver=$(iniget $MANILA_CONF ${enabled_backends[0]} share_driver)
+    generic_driver='manila.share.drivers.generic.GenericShareDriver'
+    if [[ $share_driver == $generic_driver ]]; then
+        driver_handles_share_servers=$(iniget $MANILA_CONF ${enabled_backends[0]} driver_handles_share_servers)
+        if [[ $(trueorfalse False driver_handles_share_servers) == False ]]; then
+            iniset $MANILA_CONF DEFAULT data_node_access_ip $PUBLIC_NETWORK_GATEWAY
+        else
+            iniset $MANILA_CONF DEFAULT data_node_access_ip $FIXED_RANGE
+        fi
+    fi
+}
 # create_manila_service_flavor - creates flavor, that will be used by backends
 # with configured generic driver to boot Nova VMs with.
 function create_manila_service_flavor {
@@ -259,6 +355,11 @@ function create_manila_service_image {
     # Download Manila's image
     if is_service_enabled g-reg; then
         upload_image $MANILA_SERVICE_IMAGE_URL $TOKEN
+    fi
+
+    # Download LXD image
+    if is_driver_enabled $MANILA_LXD_DRIVER; then
+        import_lxd_service_image
     fi
 }
 
@@ -336,10 +437,37 @@ function create_default_share_type {
     enabled_backends=(${MANILA_ENABLED_BACKENDS//,/ })
     driver_handles_share_servers=$(iniget $MANILA_CONF ${enabled_backends[0]} driver_handles_share_servers)
 
-    manila type-create $MANILA_DEFAULT_SHARE_TYPE $driver_handles_share_servers
+    local command_args="$MANILA_DEFAULT_SHARE_TYPE $driver_handles_share_servers"
+
+    if is_driver_enabled $MANILA_LXD_DRIVER; then
+        # TODO(u_glide): Remove this condition when LXD driver supports
+        # snapshots
+        command_args="$command_args --snapshot_support false"
+    fi
+
+    manila type-create $command_args
     if [[ $MANILA_DEFAULT_SHARE_TYPE_EXTRA_SPECS ]]; then
         manila type-key $MANILA_DEFAULT_SHARE_TYPE set $MANILA_DEFAULT_SHARE_TYPE_EXTRA_SPECS
     fi
+}
+
+
+# configure_backing_file - Set up backing file for LVM
+function configure_backing_file {
+    if ! sudo vgs $SHARE_GROUP; then
+        if [ "$CONFIGURE_BACKING_FILE" = "True" ]; then
+            SHARE_BACKING_FILE=${SHARE_BACKING_FILE:-$DATA_DIR/${SHARE_GROUP}-backing-file}
+            # Only create if the file doesn't already exists
+            [[ -f $SHARE_BACKING_FILE ]] || truncate -s $SHARE_BACKING_FILE_SIZE $SHARE_BACKING_FILE
+            DEV=`sudo losetup -f --show $SHARE_BACKING_FILE`
+        else
+            DEV=$SHARE_BACKING_FILE
+        fi
+        # Only create if the loopback device doesn't contain $SHARE_GROUP
+        if ! sudo vgs $SHARE_GROUP; then sudo vgcreate $SHARE_GROUP $DEV; fi
+    fi
+
+    mkdir -p $MANILA_STATE_PATH/shares
 }
 
 
@@ -348,7 +476,7 @@ function init_manila {
 
     if is_service_enabled $DATABASE_BACKENDS; then
         # (re)create manila database
-        recreate_database manila utf8
+        recreate_database manila
 
         $MANILA_BIN_DIR/manila-manage db sync
 
@@ -363,6 +491,65 @@ function init_manila {
         $MANILA_BIN_DIR/manila-manage db version
     fi
 
+    if [ "$SHARE_DRIVER" == "manila.share.drivers.lvm.LVMShareDriver" ]; then
+        if is_service_enabled m-shr; then
+            # Configure a default volume group called '`lvm-shares`' for the share
+            # service if it does not yet exist.  If you don't wish to use a file backed
+            # volume group, create your own volume group called ``stack-volumes`` before
+            # invoking ``stack.sh``.
+            #
+            # By default, the backing file is 8G in size, and is stored in ``/opt/stack/data``.
+
+            configure_backing_file
+        fi
+    fi
+
+    if [ "$SHARE_DRIVER" == "manila.share.drivers.lxd.LXDDriver" ]; then
+        if is_service_enabled m-shr; then
+            SHARE_GROUP="manila_lxd_volumes"
+            configure_backing_file
+        fi
+    elif [ "$SHARE_DRIVER" == "manila.share.drivers.zfsonlinux.driver.ZFSonLinuxShareDriver" ]; then
+        if is_service_enabled m-shr; then
+            mkdir -p $MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR
+            file_counter=0
+            for BE in ${MANILA_ENABLED_BACKENDS//,/ }; do
+                if [[ $file_counter == 0 ]]; then
+                    # NOTE(vponomaryov): create two pools for first ZFS backend
+                    # to cover different use cases that are supported by driver:
+                    # - Support of more than one zpool for share backend.
+                    # - Support of nested datasets.
+                    local first_file="$MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR"/alpha
+                    local second_file="$MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR"/betta
+                    truncate -s $MANILA_ZFSONLINUX_ZPOOL_SIZE $first_file
+                    truncate -s $MANILA_ZFSONLINUX_ZPOOL_SIZE $second_file
+                    sudo zpool create alpha $first_file
+                    sudo zpool create betta $second_file
+                    # Create subdir (nested dataset) for second pool
+                    sudo zfs create betta/subdir
+                    iniset $MANILA_CONF $BE zfs_zpool_list alpha,betta/subdir
+                elif [[ $file_counter == 1 ]]; then
+                    local file="$MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR"/gamma
+                    truncate -s $MANILA_ZFSONLINUX_ZPOOL_SIZE $file
+                    sudo zpool create gamma $file
+                    iniset $MANILA_CONF $BE zfs_zpool_list gamma
+                else
+                    local filename=file"$file_counter"
+                    local file="$MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR"/"$filename"
+                    truncate -s $MANILA_ZFSONLINUX_ZPOOL_SIZE $file
+                    sudo zpool create $filename $file
+                    iniset $MANILA_CONF $BE zfs_zpool_list $filename
+                fi
+                iniset $MANILA_CONF $BE zfs_share_export_ip $MANILA_ZFSONLINUX_SHARE_EXPORT_IP
+                iniset $MANILA_CONF $BE zfs_service_ip $MANILA_ZFSONLINUX_SERVICE_IP
+                iniset $MANILA_CONF $BE zfs_dataset_creation_options $MANILA_ZFSONLINUX_DATASET_CREATION_OPTIONS
+                iniset $MANILA_CONF $BE zfs_ssh_username $MANILA_ZFSONLINUX_SSH_USERNAME
+                iniset $MANILA_CONF $BE replication_domain $MANILA_ZFSONLINUX_REPLICATION_DOMAIN
+                let "file_counter=file_counter+1"
+            done
+        fi
+    fi
+
     # Create cache dir
     sudo mkdir -p $MANILA_AUTH_CACHE_DIR
     sudo chown $STACK_USER $MANILA_AUTH_CACHE_DIR
@@ -373,9 +560,75 @@ function init_manila {
 function install_manila {
     git_clone $MANILACLIENT_REPO $MANILACLIENT_DIR $MANILACLIENT_BRANCH
 
+    if [ "$SHARE_DRIVER" == "manila.share.drivers.lvm.LVMShareDriver" ]; then
+        if is_service_enabled m-shr; then
+            if is_ubuntu; then
+                sudo apt-get install -y nfs-kernel-server nfs-common samba
+            elif is_fedora; then
+                sudo yum install -y nfs-utils nfs-utils-lib samba
+            fi
+        fi
+    elif [ "$SHARE_DRIVER" == "manila.share.drivers.zfsonlinux.driver.ZFSonLinuxShareDriver" ]; then
+        if is_service_enabled m-shr; then
+            if is_ubuntu; then
+                sudo apt-get install -y nfs-kernel-server nfs-common samba
+                # NOTE(vponomaryov): following installation is valid for Ubuntu 'trusty'.
+                sudo apt-get install -y software-properties-common
+                sudo apt-add-repository --yes ppa:zfs-native/stable
+                sudo apt-get -y -q update && sudo apt-get -y -q upgrade
+                sudo apt-get install -y linux-headers-generic
+                sudo apt-get install -y build-essential
+                sudo apt-get install -y ubuntu-zfs
+                sudo modprobe zfs
+
+                # TODO(vponomaryov): remove following line when we have this
+                # in 'requirements.txt' file.
+                # Package 'nsenter' is expected to be installed on host with
+                # ZFS, if it is remote for manila-share service host.
+                sudo pip install nsenter
+            else
+                echo "Manila Devstack plugin does not support installation "\
+                    "of ZFS packages for non-'Ubuntu-trusty' distros. "\
+                    "Please, install it first by other means or add its support "\
+                    "for your distro."
+                exit 1
+            fi
+        fi
+    fi
+
     # install manila-ui if horizon is enabled
     if is_service_enabled horizon && [ "$MANILA_UI_ENABLED" = "True" ]; then
         git_clone $MANILA_UI_REPO $MANILA_UI_DIR $MANILA_UI_BRANCH
+    fi
+}
+
+#configure_samba - Configure node as Samba server
+function configure_samba {
+    if [ "$SHARE_DRIVER" == "manila.share.drivers.lvm.LVMShareDriver" ]; then
+        # TODO(vponomaryov): add here condition for ZFSonLinux driver too
+        # when it starts to support SAMBA
+        samba_daemon_name=smbd
+        if is_service_enabled m-shr; then
+            if is_fedora; then
+                samba_daemon_name=smb
+            fi
+            sudo service $samba_daemon_name restart || echo "Couldn't restart '$samba_daemon_name' service"
+        fi
+
+        sudo cp /usr/share/samba/smb.conf $SMB_CONF
+        sudo chown $STACK_USER -R /etc/samba
+        iniset $SMB_CONF global include registry
+        iniset $SMB_CONF global security user
+        if [ ! -d "$SMB_PRIVATE_DIR" ]; then
+            sudo mkdir $SMB_PRIVATE_DIR
+            sudo touch $SMB_PRIVATE_DIR/secrets.tdb
+        fi
+
+        for backend_name in ${MANILA_ENABLED_BACKENDS//,/ }; do
+            iniset $MANILA_CONF $backend_name driver_handles_share_servers False
+            iniset $MANILA_CONF $backend_name lvm_share_export_ip $HOST_IP
+        done
+        iniset $MANILA_CONF DEFAULT data_node_access_ip $HOST_IP
     fi
 }
 
@@ -390,6 +643,7 @@ function start_manila {
     screen_it m-api "cd $MANILA_DIR && $MANILA_BIN_DIR/manila-api --config-file $MANILA_CONF"
     screen_it m-shr "cd $MANILA_DIR && $MANILA_BIN_DIR/manila-share --config-file $MANILA_CONF"
     screen_it m-sch "cd $MANILA_DIR && $MANILA_BIN_DIR/manila-scheduler --config-file $MANILA_CONF"
+    screen_it m-dat "cd $MANILA_DIR && $MANILA_BIN_DIR/manila-data --config-file $MANILA_CONF"
 
     # Start proxies if enabled
     if is_service_enabled tls-proxy; then
@@ -400,7 +654,7 @@ function start_manila {
 # stop_manila - Stop running processes
 function stop_manila {
     # Kill the manila screen windows
-    for serv in m-api m-sch m-shr; do
+    for serv in m-api m-sch m-shr m-dat; do
         screen -S $SCREEN_NAME -p $serv -X kill
     done
 }
@@ -414,6 +668,60 @@ function update_tempest {
     fi
 }
 
+function install_lxd {
+    sudo apt-get -y install software-properties-common
+    sudo apt-add-repository -y ppa:ubuntu-lxc/lxd-stable
+    sudo apt-get update
+    install_package lxd
+    install_package lxd-client
+
+    # Wait for LXD service
+    sleep 15
+
+    sudo chmod a+rw /var/lib/lxd/unix.socket
+}
+
+function download_image {
+    local image_url=$1
+
+    local image image_fname
+
+    image_fname=`basename "$image_url"`
+    if [[ $image_url != file* ]]; then
+        # Downloads the image (uec ami+akistyle), then extracts it.
+        if [[ ! -f $FILES/$image_fname || "$(stat -c "%s" $FILES/$image_fname)" = "0" ]]; then
+            wget --progress=dot:giga -c $image_url -O $FILES/$image_fname
+            if [[ $? -ne 0 ]]; then
+                echo "Not found: $image_url"
+                return
+            fi
+        fi
+        image="$FILES/${image_fname}"
+    else
+        # File based URL (RFC 1738): ``file://host/path``
+        # Remote files are not considered here.
+        # unix: ``file:///home/user/path/file``
+        # windows: ``file:///C:/Documents%20and%20Settings/user/path/file``
+        image=$(echo $image_url | sed "s/^file:\/\///g")
+        if [[ ! -f $image || "$(stat -c "%s" $image)" == "0" ]]; then
+            echo "Not found: $image_url"
+            return
+        fi
+    fi
+}
+
+function import_lxd_service_image {
+    download_image $MANILA_LXD_META_URL
+    download_image $MANILA_LXD_ROOTFS_URL
+
+    # Import image in LXD
+    lxc image import $FILES/`basename "$MANILA_LXD_META_URL"` $FILES/`basename "$MANILA_LXD_ROOTFS_URL"` --alias manila-lxd-image
+}
+
+function remove_lxd_service_image {
+    lxc image delete $MANILA_LXD_IMAGE_ALIAS || echo "LXD image $MANILA_LXD_IMAGE_ALIAS not found"
+}
+
 function install_libraries {
     if [ $(trueorfalse False MANILA_MULTI_BACKEND) == True ]; then
         if [ $(trueorfalse True RUN_MANILA_MIGRATION_TESTS) == True ]; then
@@ -423,6 +731,10 @@ function install_libraries {
                 install_package nfs-utils
             fi
         fi
+    fi
+
+    if is_driver_enabled $MANILA_LXD_DRIVER; then
+        install_lxd
     fi
 }
 
@@ -438,18 +750,32 @@ elif [[ "$1" == "stack" && "$2" == "post-config" ]]; then
     init_manila
     echo_summary "Installing extra libraries"
     install_libraries
+
+    # Neutron config update
     if is_service_enabled neutron; then
         iniset $Q_DHCP_CONF_FILE DEFAULT dnsmasq_local_resolv False
+    fi
+
+    # Cinder config update
+    if [[ -n "$CINDER_OVERSUBSCRIPTION_RATIO" ]]; then
+        CINDER_CONF=${CINDER_CONF:-/etc/cinder/cinder.conf}
+        CINDER_ENABLED_BACKENDS=$(iniget $CINDER_CONF DEFAULT enabled_backends)
+        for BN in ${CINDER_ENABLED_BACKENDS//,/ }; do
+            iniset $CINDER_CONF $BN lvm_max_over_subscription_ratio $CINDER_OVERSUBSCRIPTION_RATIO
+        done
+        iniset $CINDER_CONF DEFAULT max_over_subscription_ratio $CINDER_OVERSUBSCRIPTION_RATIO
     fi
 elif [[ "$1" == "stack" && "$2" == "extra" ]]; then
     echo_summary "Creating Manila entities for auth service"
     create_manila_accounts
 
-    echo_summary "Creating Manila service flavor"
-    create_manila_service_flavor
+    if is_service_enabled nova; then
+        echo_summary "Creating Manila service flavor"
+        create_manila_service_flavor
 
-    echo_summary "Creating Manila service security group"
-    create_manila_service_secgroup
+        echo_summary "Creating Manila service security group"
+        create_manila_service_secgroup
+    fi
 
     # Skip image downloads when disabled.
     # This way vendor Manila driver CI tests can skip
@@ -461,12 +787,17 @@ elif [[ "$1" == "stack" && "$2" == "extra" ]]; then
         echo_summary "Skipping download of Manila service image"
     fi
 
-    echo_summary "Creating Manila service keypair"
-    create_manila_service_keypair
+    if is_service_enabled nova; then
+        echo_summary "Creating Manila service keypair"
+        create_manila_service_keypair
 
-    echo_summary "Creating Manila service VMs for generic driver \
-        backends for which handlng of share servers is disabled."
-    create_service_share_servers
+        echo_summary "Creating Manila service VMs for generic driver \
+            backends for which handlng of share servers is disabled."
+        create_service_share_servers
+    fi
+
+    echo_summary "Configure Samba server"
+    configure_samba
 
     echo_summary "Starting Manila"
     start_manila

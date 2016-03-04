@@ -44,24 +44,34 @@ REST_API_VERSION_HISTORY = """
 
     REST API Version History:
 
-    * 1.0 - Initial version. Includes all V1 APIs and extensions in Kilo.
-    * 2.0 - Versions API updated to reflect beginning of microversions epoch.
-    * 2.1 - Share create() doesn't ignore availability_zone field of share.
-    * 2.2 - Snapshots become optional feature.
-    * 2.3 - Share instances admin API
-    * 2.4 - Consistency Group support
-    * 2.5 - Share Migration admin API
-    * 2.6 - Return share_type UUID instead of name in Share API
-    * 2.7 - Rename old extension-like API URLs to core-API-like
-    * 2.8 - Attr "is_public" can be set for share using API "manage"
-    * 2.9 - Add export locations API
+    * 1.0  - Initial version. Includes all V1 APIs and extensions in Kilo.
+    * 2.0  - Versions API updated to reflect beginning of microversions epoch.
+    * 2.1  - Share create() doesn't ignore availability_zone field of share.
+    * 2.2  - Snapshots become optional feature.
+    * 2.3  - Share instances admin API
+    * 2.4  - Consistency Group support
+    * 2.5  - Share Migration admin API
+    * 2.6  - Return share_type UUID instead of name in Share API
+    * 2.7  - Rename old extension-like API URLs to core-API-like
+    * 2.8  - Attr "is_public" can be set for share using API "manage"
+    * 2.9  - Add export locations API
+    * 2.10 - Field 'access_rules_status' was added to shares and share
+            instances.
+    * 2.11 - Share Replication support
+    * 2.12 - Manage/unmanage snapshot API.
+    * 2.13 - Add "cephx" auth type to allow_access
+    * 2.14 - 'Preferred' attribute in export location metadata
+    * 2.15 - Added Share migration 'migration_cancel',
+            'migration_get_progress', 'migration_complete' APIs, renamed
+            'migrate_share' to 'migration_start' and added notify parameter
+             to 'migration_start'.
 """
 
 # The minimum and maximum versions of the API supported
 # The default api version request is defined to be the
 # the minimum version of the API supported.
 _MIN_API_VERSION = "2.0"
-_MAX_API_VERSION = "2.9"
+_MAX_API_VERSION = "2.15"
 DEFAULT_API_VERSION = _MIN_API_VERSION
 
 

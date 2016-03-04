@@ -73,14 +73,9 @@ class SmartQos(object):
             if self._check_qos_high_priority(qos):
                 self.helper.change_fs_priority_high(fs_id)
             # Create QoS policy and activate it.
-            version = self.helper.find_array_version()
-            if version >= constants.ARRAY_VERSION:
-                (qos_id, fs_list) = self.helper.find_available_qos(qos)
-                if qos_id is not None:
-                    self.helper.add_share_to_qos(qos_id, fs_id, fs_list)
-                else:
-                    policy_id = self.helper.create_qos_policy(qos, fs_id)
-                    self.helper.activate_deactivate_qos(policy_id, True)
+            (qos_id, fs_list) = self.helper.find_available_qos(qos)
+            if qos_id is not None:
+                self.helper.add_share_to_qos(qos_id, fs_id, fs_list)
             else:
                 policy_id = self.helper.create_qos_policy(qos, fs_id)
                 self.helper.activate_deactivate_qos(policy_id, True)
@@ -106,6 +101,9 @@ class SmartQos(object):
 
 
 class SmartX(object):
+    def __init__(self, helper):
+        self.helper = helper
+
     def get_smartx_extra_specs_opts(self, opts):
         opts = self.get_capabilities_opts(opts, 'dedupe')
         opts = self.get_capabilities_opts(opts, 'compression')
@@ -124,10 +122,29 @@ class SmartX(object):
         return opts
 
     def get_smartprovisioning_opts(self, opts):
-        if strutils.bool_from_string(opts['thin_provisioning']):
-            opts['LUNType'] = 1
+        thin_provision = opts.get('thin_provisioning')
+        if thin_provision is None:
+            root = self.helper._read_xml()
+            fstype = root.findtext('Filesystem/AllocType')
+            if fstype:
+                fstype = fstype.strip().strip('\n')
+                if fstype == 'Thin':
+                    opts['LUNType'] = constants.ALLOC_TYPE_THIN_FLAG
+                elif fstype == 'Thick':
+                    opts['LUNType'] = constants.ALLOC_TYPE_THICK_FLAG
+                else:
+                    err_msg = (_(
+                        'Huawei config file is wrong. AllocType type must be '
+                        'set to "Thin" or "Thick". AllocType:%(fetchtype)s') %
+                        {'fetchtype': fstype})
+                    raise exception.InvalidShare(reason=err_msg)
+            else:
+                opts['LUNType'] = constants.ALLOC_TYPE_THICK_FLAG
         else:
-            opts['LUNType'] = 0
+            if strutils.bool_from_string(thin_provision):
+                opts['LUNType'] = constants.ALLOC_TYPE_THIN_FLAG
+            else:
+                opts['LUNType'] = constants.ALLOC_TYPE_THICK_FLAG
 
         return opts
 
@@ -172,4 +189,21 @@ class SmartX(object):
                                   'set to either 0, 1, or 2.')))
                 else:
                     qos[key.upper()] = value
+
+        if len(qos) <= 1 or 'IOTYPE' not in qos:
+            msg = (_('QoS config is incomplete. Please set more. '
+                     'QoS policy: %(qos_policy)s.')
+                   % {'qos_policy': qos})
+            raise exception.InvalidInput(reason=msg)
+
+        lowerlimit = constants.QOS_LOWER_LIMIT
+        upperlimit = constants.QOS_UPPER_LIMIT
+        if (set(lowerlimit).intersection(set(qos))
+                and set(upperlimit).intersection(set(qos))):
+            msg = (_('QoS policy conflict, both protection policy and '
+                     'restriction policy are set. '
+                     'QoS policy: %(qos_policy)s ')
+                   % {'qos_policy': qos})
+            raise exception.InvalidInput(reason=msg)
+
         return qos

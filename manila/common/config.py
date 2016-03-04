@@ -63,6 +63,9 @@ global_opts = [
     cfg.StrOpt('share_topic',
                default='manila-share',
                help='The topic share nodes listen on.'),
+    cfg.StrOpt('data_topic',
+               default='manila-data',
+               help='The topic data nodes listen on.'),
     cfg.BoolOpt('enable_v1_api',
                 default=False,
                 help=_('Deploy v1 of the Manila API. This option is '
@@ -81,9 +84,9 @@ global_opts = [
                 help='Specify list of extensions to load when using osapi_'
                      'share_extension option with manila.api.contrib.'
                      'select_extensions.'),
-    cfg.MultiStrOpt('osapi_share_extension',
-                    default=['manila.api.contrib.standard_extensions'],
-                    help='The osapi share extension to load.'),
+    cfg.ListOpt('osapi_share_extension',
+                default=['manila.api.contrib.standard_extensions'],
+                help='The osapi share extensions to load.'),
     cfg.StrOpt('sqlite_db',
                default='manila.sqlite',
                help='The filename to use with sqlite.'),
@@ -106,6 +109,9 @@ global_opts = [
     cfg.StrOpt('share_manager',
                default='manila.share.manager.ShareManager',
                help='Full class name for the share manager.'),
+    cfg.StrOpt('data_manager',
+               default='manila.data.manager.DataManager',
+               help='Full class name for the data manager.'),
     cfg.StrOpt('host',
                default=socket.gethostname(),
                help='Name of this node.  This can be an opaque identifier.  '

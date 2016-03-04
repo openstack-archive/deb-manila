@@ -14,8 +14,8 @@
 #    under the License.
 
 from tempest import config  # noqa
+from tempest.lib import exceptions as lib_exc  # noqa
 from tempest import test  # noqa
-from tempest_lib import exceptions as lib_exc  # noqa
 import testtools  # noqa
 
 from manila_tempest_tests import share_exceptions
@@ -112,6 +112,12 @@ class SharesNegativeTest(base.BaseSharesTest):
     def test_create_share_with_zero_size(self):
         self.assertRaises(lib_exc.BadRequest,
                           self.shares_client.create_share, size=0)
+
+    @test.attr(type=["negative", "gate", ])
+    def test_create_share_non_existent_az(self):
+        self.assertRaises(lib_exc.NotFound,
+                          self.shares_v2_client.create_share,
+                          availability_zone='fake_az')
 
     @test.attr(type=["negative", "gate", ])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,

@@ -13,10 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from tempest import config  # noqa
-from tempest import test  # noqa
-from tempest_lib import exceptions as lib_exc  # noqa
-import testtools  # noqa
+from tempest import config
+from tempest.lib import exceptions as lib_exc
+from tempest import test
+import testtools
 
 from manila_tempest_tests.tests.api import base
 from manila_tempest_tests import utils
@@ -56,6 +56,10 @@ class SharesNFSTest(base.BaseSharesTest):
         self.assertTrue(detailed_elements.issubset(share.keys()), msg)
         self.assertFalse(share['is_public'])
 
+        # The 'status' of the share returned by the create API must be
+        # the default value - 'creating'.
+        self.assertEqual('creating', share['status'])
+
         # Get share using v 2.1 - we expect key 'snapshot_support' to be absent
         share_get = self.shares_v2_client.get_share(share['id'], version='2.1')
         detailed_elements.add('export_location')
@@ -73,6 +77,12 @@ class SharesNFSTest(base.BaseSharesTest):
                 share['id'], version='2.9')
             detailed_elements.remove('export_location')
             self.assertTrue(detailed_elements.issubset(share_get.keys()), msg)
+
+        # In v 2.11 and beyond, we expect key 'replication_type' in the
+        # share data returned by the share create API.
+        if utils.is_microversion_supported('2.11'):
+            detailed_elements.add('replication_type')
+            self.assertTrue(detailed_elements.issubset(share.keys()), msg)
 
         # Delete share
         self.shares_v2_client.delete_share(share['id'])
@@ -117,6 +127,10 @@ class SharesNFSTest(base.BaseSharesTest):
         s2 = self.create_share(
             self.protocol, snapshot_id=snap["id"], cleanup_in_class=False)
 
+        # The 'status' of the share returned by the create API must be
+        # the default value - 'creating'.
+        self.assertEqual('creating', s2['status'])
+
         # verify share, created from snapshot
         get = self.shares_client.get_share(s2["id"])
         msg = "Expected snapshot_id %s as "\
@@ -143,6 +157,10 @@ class SharesNFSTest(base.BaseSharesTest):
         child = self.create_share(
             self.protocol, snapshot_id=snap["id"], cleanup_in_class=False)
 
+        # The 'status' of the share returned by the create API must be
+        # the default value - 'creating'.
+        self.assertEqual('creating', child['status'])
+
         # verify share, created from snapshot
         get = self.shares_client.get_share(child["id"])
         keys = {
@@ -150,7 +168,7 @@ class SharesNFSTest(base.BaseSharesTest):
             "actual_sn": get["share_network_id"],
             "expected_sn": parent["share_network_id"],
         }
-        msg = ("Expected share_network_id %(expected_sn)s for"
+        msg = ("Expected share_network_id %(expected_sn)s for "
                "share %(share)s, but %(actual_sn)s found." % keys)
         self.assertEqual(
             get["share_network_id"], parent["share_network_id"], msg)
@@ -169,3 +187,8 @@ class SharesGLUSTERFSTest(SharesNFSTest):
 class SharesHDFSTest(SharesNFSTest):
     """Covers share functionality that is related to HDFS share type."""
     protocol = "hdfs"
+
+
+class SharesCephFSTest(SharesNFSTest):
+    """Covers share functionality that is related to CEPHFS share type."""
+    protocol = "cephfs"

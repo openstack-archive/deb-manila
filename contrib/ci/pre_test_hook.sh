@@ -27,6 +27,10 @@ echo "TEMPEST_SERVICES+=,manila" >> $localrc_path
 echo "VOLUME_BACKING_FILE_SIZE=22G" >> $localrc_path
 echo "CINDER_LVM_TYPE=thin" >> $localrc_path
 
+# NOTE(vponomaryov): Set oversubscription ratio for Cinder LVM driver
+# bigger than 1.0, because in CI we do not need such small value.
+# It will allow us to avoid exceeding real capacity in CI test runs.
+echo "CINDER_OVERSUBSCRIPTION_RATIO=20.0" >> $localrc_path
 echo "MANILA_BACKEND1_CONFIG_GROUP_NAME=london" >> $localrc_path
 echo "MANILA_BACKEND2_CONFIG_GROUP_NAME=paris" >> $localrc_path
 echo "MANILA_SHARE_BACKEND1_NAME=LONDON" >> $localrc_path
@@ -55,6 +59,19 @@ if [[ "$BACK_END_TYPE" == "multibackend" ]]; then
     echo "MANILA_MULTI_BACKEND=True" >> $localrc_path
 else
     echo "MANILA_MULTI_BACKEND=False" >> $localrc_path
+fi
+
+if [[ "$DRIVER" == "lvm" ]]; then
+    echo "SHARE_DRIVER=manila.share.drivers.lvm.LVMShareDriver" >> $localrc_path
+    echo "SHARE_BACKING_FILE_SIZE=32000M" >> $localrc_path
+elif [[ "$DRIVER" == "zfsonlinux" ]]; then
+    echo "SHARE_DRIVER=manila.share.drivers.zfsonlinux.driver.ZFSonLinuxShareDriver" >> $localrc_path
+    echo "RUN_MANILA_REPLICATION_TESTS=True" >> $localrc_path
+fi
+
+if [[ "$DRIVER" == "lxd" ]]; then
+    echo "SHARE_DRIVER=manila.share.drivers.lxd.LXDDriver" >> $localrc_path
+    echo "SHARE_BACKING_FILE_SIZE=32000M" >> $localrc_path
 fi
 
 # Enabling isolated metadata in Neutron is required because
