@@ -1,3 +1,10 @@
+manila (1:2.0.0~b3-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Fixed (build-)depends for this release.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 07 Mar 2016 22:45:43 +0800
+
 manila (1:2.0.0~b2-2) experimental; urgency=medium
 
   * Build-depends on git to fix sphinx-build.
