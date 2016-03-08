@@ -1,0 +1,17 @@
+Description: Fix pylxd exception import
+ The path of the execptions submodule has changed. This patch fixes it.
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: no
+Last-Update: 2016-03-08
+
+--- manila-2.0.0~b3.orig/manila/share/drivers/lxd.py
++++ manila-2.0.0~b3/manila/share/drivers/lxd.py
+@@ -26,7 +26,7 @@ import re
+ from oslo_config import cfg
+ from oslo_log import log
+ from pylxd import api as lxd_api
+-from pylxd import exceptions as pylxd_exc
++from pylxd.deprecated import exceptions as pylxd_exc
+ import six
+ 
+ from manila.common import constants as const
