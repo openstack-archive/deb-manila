@@ -67,6 +67,7 @@ Build-Depends-Indep: alembic (>= 0.8.0),
                      python-webob,
                      subunit,
                      testrepository,
+Build-Conflicts: ipython
 Standards-Version: 3.9.7
 Vcs-Browser: https://anonscm.debian.org/gitweb/?p=openstack/manila.git;a=summary
 Vcs-Git: https://anonscm.debian.org/git/openstack/manila.git
