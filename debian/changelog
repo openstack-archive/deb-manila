@@ -1,3 +1,11 @@
+manila (1:2.0.0~rc1-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Fixed (build-)depends for this release.
+  * Removed pylxd import patch.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 22 Mar 2016 14:07:15 +0100
+
 manila (1:2.0.0~b3-1) experimental; urgency=medium
 
   * New upstream release.
