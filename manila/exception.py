@@ -457,6 +457,10 @@ class ShareSnapshotNotFound(NotFound):
     message = _("Snapshot %(snapshot_id)s could not be found.")
 
 
+class ShareSnapshotInstanceNotFound(NotFound):
+    message = _("Snapshot instance %(instance_id)s could not be found.")
+
+
 class ShareSnapshotNotSupported(ManilaException):
     message = _("Share %(share_name)s does not support snapshots.")
 
@@ -609,7 +613,7 @@ class StorageResourceNotFound(StorageResourceException):
     code = 404
 
 
-class SnapshotNotFound(StorageResourceNotFound):
+class SnapshotResourceNotFound(StorageResourceNotFound):
     message = _("Snapshot %(name)s not found.")
 
 
@@ -774,3 +778,7 @@ class ShareReplicaNotFound(NotFound):
 class TegileAPIException(ShareBackendException):
     message = _("Unexpected response from Tegile IntelliFlash API: "
                 "%(response)s")
+
+
+class StorageCommunicationException(ShareBackendException):
+    message = _("Could not communicate with storage array.")

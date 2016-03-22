@@ -57,6 +57,8 @@ class ShareAPI(object):
             migration_start(), rename get_migration_info() to
             migration_get_info(), rename get_driver_migration_info() to
             migration_get_driver_info()
+        1.11 - Add create_replicated_snapshot() and
+            delete_replicated_snapshot() methods
     """
 
     BASE_RPC_API_VERSION = '1.0'
@@ -65,7 +67,7 @@ class ShareAPI(object):
         super(ShareAPI, self).__init__()
         target = messaging.Target(topic=CONF.share_topic,
                                   version=self.BASE_RPC_API_VERSION)
-        self.client = rpc.get_client(target, version_cap='1.10')
+        self.client = rpc.get_client(target, version_cap='1.11')
 
     def create_share_instance(self, context, share_instance, host,
                               request_spec, filter_properties,
@@ -109,12 +111,13 @@ class ShareAPI(object):
                           'unmanage_snapshot',
                           snapshot_id=snapshot['id'])
 
-    def delete_share_instance(self, context, share_instance):
+    def delete_share_instance(self, context, share_instance, force=False):
         host = utils.extract_host(share_instance['host'])
         call_context = self.client.prepare(server=host, version='1.4')
         call_context.cast(context,
                           'delete_share_instance',
-                          share_instance_id=share_instance['id'])
+                          share_instance_id=share_instance['id'],
+                          force=force)
 
     def migration_start(self, context, share, dest_host, force_host_copy,
                         notify):
@@ -164,6 +167,24 @@ class ShareAPI(object):
         call_context.cast(context,
                           'delete_snapshot',
                           snapshot_id=snapshot['id'])
+
+    def create_replicated_snapshot(self, context, share, replicated_snapshot):
+        host = utils.extract_host(share['instance']['host'])
+        call_context = self.client.prepare(server=host, version='1.11')
+        call_context.cast(context,
+                          'create_replicated_snapshot',
+                          snapshot_id=replicated_snapshot['id'],
+                          share_id=share['id'])
+
+    def delete_replicated_snapshot(self, context, replicated_snapshot, host,
+                                   share_id=None, force=False):
+        host = utils.extract_host(host)
+        call_context = self.client.prepare(server=host, version='1.11')
+        call_context.cast(context,
+                          'delete_replicated_snapshot',
+                          snapshot_id=replicated_snapshot['id'],
+                          share_id=share_id,
+                          force=force)
 
     @staticmethod
     def _get_access_rules(access):

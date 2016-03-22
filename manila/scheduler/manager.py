@@ -59,7 +59,7 @@ MAPPING = {
 class SchedulerManager(manager.Manager):
     """Chooses a host to create shares."""
 
-    RPC_API_VERSION = '1.5'
+    RPC_API_VERSION = '1.6'
 
     def __init__(self, scheduler_driver=None, service_name=None,
                  *args, **kwargs):
@@ -120,6 +120,28 @@ class SchedulerManager(manager.Manager):
     def get_pools(self, context, filters=None):
         """Get active pools from the scheduler's cache."""
         return self.driver.get_pools(context, filters)
+
+    def manage_share(self, context, share_id, driver_options, request_spec,
+                     filter_properties=None):
+        """Ensure that the host exists and can accept the share."""
+
+        def _manage_share_set_error(self, context, ex, request_spec):
+            self._set_share_state_and_notify(
+                'manage_share',
+                {'status': constants.STATUS_MANAGE_ERROR},
+                context, ex, request_spec)
+
+        share_ref = db.share_get(context, share_id)
+
+        try:
+            self.driver.host_passes_filters(
+                context, share_ref['host'], request_spec, filter_properties)
+        except Exception as ex:
+            with excutils.save_and_reraise_exception():
+                _manage_share_set_error(self, context, ex, request_spec)
+        else:
+            share_rpcapi.ShareAPI().manage_share(context, share_ref,
+                                                 driver_options)
 
     def migrate_share_to_host(self, context, share_id, host,
                               force_host_copy, notify, request_spec,
@@ -207,20 +229,39 @@ class SchedulerManager(manager.Manager):
                 self._set_cg_error_state('create_consistency_group',
                                          context, ex, request_spec)
 
+    def _set_share_replica_error_state(self, context, method, exc,
+                                       request_spec):
+
+        LOG.warning(_LW("Failed to schedule_%(method)s: %(exc)s"),
+                    {'method': method, 'exc': exc})
+        status_updates = {
+            'status': constants.STATUS_ERROR,
+            'replica_state': constants.STATUS_ERROR,
+        }
+        share_replica_id = request_spec.get(
+            'share_instance_properties').get('id')
+
+        # Set any snapshot instances to 'error'.
+        replica_snapshots = db.share_snapshot_instance_get_all_with_filters(
+            context, {'share_instance_ids': share_replica_id})
+        for snapshot_instance in replica_snapshots:
+            db.share_snapshot_instance_update(
+                context, snapshot_instance['id'],
+                {'status': constants.STATUS_ERROR})
+
+        db.share_replica_update(context, share_replica_id, status_updates)
+
     def create_share_replica(self, context, request_spec=None,
                              filter_properties=None):
         try:
             self.driver.schedule_create_replica(context, request_spec,
                                                 filter_properties)
-        except Exception as ex:
+
+        except exception.NoValidHost as exc:
+            self._set_share_replica_error_state(
+                context, 'create_share_replica', exc, request_spec)
+
+        except Exception as exc:
             with excutils.save_and_reraise_exception():
-
-                msg = _LW("Failed to schedule the new share replica: %s")
-
-                LOG.warning(msg % ex)
-
-                db.share_replica_update(
-                    context,
-                    request_spec.get('share_instance_properties').get('id'),
-                    {'status': constants.STATUS_ERROR,
-                     'replica_state': constants.STATUS_ERROR})
+                self._set_share_replica_error_state(
+                    context, 'create_share_replica', exc, request_spec)

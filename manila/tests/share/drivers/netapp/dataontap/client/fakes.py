@@ -13,6 +13,10 @@
 #    under the License.
 
 from lxml import etree
+import mock
+from six.moves import urllib
+
+from manila.share.drivers.netapp.dataontap.client import api
 
 
 CONNECTION_INFO = {
@@ -110,6 +114,20 @@ NO_RECORDS_RESPONSE = etree.XML("""
 
 PASSED_RESPONSE = etree.XML("""
   <results status="passed" />
+""")
+
+INVALID_GET_ITER_RESPONSE_NO_ATTRIBUTES = etree.XML("""
+  <results status="passed">
+    <num-records>1</num-records>
+    <next-tag>fake_tag</next-tag>
+  </results>
+""")
+
+INVALID_GET_ITER_RESPONSE_NO_RECORDS = etree.XML("""
+  <results status="passed">
+    <attributes-list/>
+    <next-tag>fake_tag</next-tag>
+  </results>
 """)
 
 VSERVER_GET_ITER_RESPONSE = etree.XML("""
@@ -1289,6 +1307,23 @@ SNAPSHOT_MULTIDELETE_ERROR_RESPONSE = etree.XML("""
   </results>
 """ % {'volume': SHARE_NAME})
 
+SNAPSHOT_GET_ITER_DELETED_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <snapshot-info>
+        <name>deleted_manila_%(snap)s</name>
+        <volume>%(volume)s</volume>
+        <vserver>%(vserver)s</vserver>
+      </snapshot-info>
+    </attributes-list>
+    <num-records>1</num-records>
+  </results>
+""" % {
+    'snap': SNAPSHOT_NAME,
+    'volume': SHARE_NAME,
+    'vserver': VSERVER_NAME,
+})
+
 CIFS_SHARE_ACCESS_CONTROL_GET_ITER = etree.XML("""
   <results status="passed">
     <attributes-list>
@@ -1440,6 +1475,116 @@ STORAGE_DISK_GET_ITER_RESPONSE = etree.XML("""
   </results>
 """ % SHARE_AGGREGATE_DISK_TYPE)
 
+STORAGE_DISK_GET_ITER_RESPONSE_PAGE_1 = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.16</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.17</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.18</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.19</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.20</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.21</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.22</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.24</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.25</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.26</disk-name>
+      </storage-disk-info>
+    </attributes-list>
+    <next-tag>next_tag_1</next-tag>
+    <num-records>10</num-records>
+  </results>
+""")
+
+STORAGE_DISK_GET_ITER_RESPONSE_PAGE_2 = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.27</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.28</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.29</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v4.32</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.16</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.17</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.18</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.19</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.20</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.21</disk-name>
+      </storage-disk-info>
+    </attributes-list>
+    <next-tag>next_tag_2</next-tag>
+    <num-records>10</num-records>
+  </results>
+""")
+
+STORAGE_DISK_GET_ITER_RESPONSE_PAGE_3 = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.22</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.24</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.25</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.26</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.27</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.28</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.29</disk-name>
+      </storage-disk-info>
+      <storage-disk-info>
+        <disk-name>cluster3-01:v5.32</disk-name>
+      </storage-disk-info>
+    </attributes-list>
+    <num-records>8</num-records>
+  </results>
+""")
+
 GET_AGGREGATE_FOR_VOLUME_RESPONSE = etree.XML("""
   <results status="passed">
     <attributes-list>
@@ -1578,6 +1723,32 @@ VOLUME_GET_ITER_VOLUME_TO_MANAGE_RESPONSE = etree.XML("""
     'size': SHARE_SIZE,
 })
 
+CLONE_CHILD_1 = 'fake_child_1'
+CLONE_CHILD_2 = 'fake_child_2'
+VOLUME_GET_ITER_CLONE_CHILDREN_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <volume-attributes>
+        <volume-id-attributes>
+          <name>%(clone1)s</name>
+          <owning-vserver-name>%(vserver)s</owning-vserver-name>
+        </volume-id-attributes>
+      </volume-attributes>
+      <volume-attributes>
+        <volume-id-attributes>
+          <name>%(clone2)s</name>
+          <owning-vserver-name>%(vserver)s</owning-vserver-name>
+        </volume-id-attributes>
+      </volume-attributes>
+    </attributes-list>
+    <num-records>2</num-records>
+  </results>
+""" % {
+    'vserver': VSERVER_NAME,
+    'clone1': CLONE_CHILD_1,
+    'clone2': CLONE_CHILD_2,
+})
+
 SIS_GET_ITER_RESPONSE = etree.XML("""
   <results status="passed">
     <attributes-list>
@@ -1712,3 +1883,75 @@ SNAPMIRROR_INITIALIZE_RESULT = etree.XML("""
     <result-status>succeeded</result-status>
   </results>
 """)
+
+FAKE_VOL_XML = """<volume-info xmlns='http://www.netapp.com/filer/admin'>
+    <name>open123</name>
+    <state>online</state>
+    <size-total>0</size-total>
+    <size-used>0</size-used>
+    <size-available>0</size-available>
+    <is-inconsistent>false</is-inconsistent>
+    <is-invalid>false</is-invalid>
+    </volume-info>"""
+
+FAKE_XML1 = """<options>\
+<test1>abc</test1>\
+<test2>abc</test2>\
+</options>"""
+
+FAKE_XML2 = """<root><options>somecontent</options></root>"""
+
+FAKE_NA_ELEMENT = api.NaElement(etree.XML(FAKE_VOL_XML))
+
+FAKE_INVOKE_DATA = 'somecontent'
+
+FAKE_XML_STR = 'abc'
+
+FAKE_API_NAME = 'volume-get-iter'
+
+FAKE_API_NAME_ELEMENT = api.NaElement(FAKE_API_NAME)
+
+FAKE_NA_SERVER_STR = '127.0.0.1'
+
+FAKE_NA_SERVER = api.NaServer(FAKE_NA_SERVER_STR)
+
+FAKE_NA_SERVER_API_1_5 = api.NaServer(FAKE_NA_SERVER_STR)
+FAKE_NA_SERVER_API_1_5.set_vfiler('filer')
+FAKE_NA_SERVER_API_1_5.set_api_version(1, 5)
+
+
+FAKE_NA_SERVER_API_1_14 = api.NaServer(FAKE_NA_SERVER_STR)
+FAKE_NA_SERVER_API_1_14.set_vserver('server')
+FAKE_NA_SERVER_API_1_14.set_api_version(1, 14)
+
+
+FAKE_NA_SERVER_API_1_20 = api.NaServer(FAKE_NA_SERVER_STR)
+FAKE_NA_SERVER_API_1_20.set_vfiler('filer')
+FAKE_NA_SERVER_API_1_20.set_vserver('server')
+FAKE_NA_SERVER_API_1_20.set_api_version(1, 20)
+
+
+FAKE_QUERY = {'volume-attributes': None}
+
+FAKE_DES_ATTR = {'volume-attributes': ['volume-id-attributes',
+                                       'volume-space-attributes',
+                                       'volume-state-attributes',
+                                       'volume-qos-attributes']}
+
+FAKE_CALL_ARGS_LIST = [mock.call(80), mock.call(8088), mock.call(443),
+                       mock.call(8488)]
+
+FAKE_RESULT_API_ERR_REASON = api.NaElement('result')
+FAKE_RESULT_API_ERR_REASON.add_attr('errno', '000')
+FAKE_RESULT_API_ERR_REASON.add_attr('reason', 'fake_reason')
+
+FAKE_RESULT_API_ERRNO_INVALID = api.NaElement('result')
+FAKE_RESULT_API_ERRNO_INVALID.add_attr('errno', '000')
+
+FAKE_RESULT_API_ERRNO_VALID = api.NaElement('result')
+FAKE_RESULT_API_ERRNO_VALID.add_attr('errno', '14956')
+
+FAKE_RESULT_SUCCESS = api.NaElement('result')
+FAKE_RESULT_SUCCESS.add_attr('status', 'passed')
+
+FAKE_HTTP_OPENER = urllib.request.build_opener()

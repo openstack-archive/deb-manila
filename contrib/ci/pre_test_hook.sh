@@ -27,6 +27,9 @@ echo "TEMPEST_SERVICES+=,manila" >> $localrc_path
 echo "VOLUME_BACKING_FILE_SIZE=22G" >> $localrc_path
 echo "CINDER_LVM_TYPE=thin" >> $localrc_path
 
+# NOTE(mkoderer): switch to keystone v3 by default
+echo "IDENTITY_API_VERSION=3" >> $localrc_path
+
 # NOTE(vponomaryov): Set oversubscription ratio for Cinder LVM driver
 # bigger than 1.0, because in CI we do not need such small value.
 # It will allow us to avoid exceeding real capacity in CI test runs.
@@ -61,18 +64,27 @@ else
     echo "MANILA_MULTI_BACKEND=False" >> $localrc_path
 fi
 
-if [[ "$DRIVER" == "lvm" ]]; then
+MANILA_SERVICE_IMAGE_ENABLED=False
+if [[ "$DRIVER" == "generic" ]]; then
+    MANILA_SERVICE_IMAGE_ENABLED=True
+    echo "SHARE_DRIVER=manila.share.drivers.generic.GenericShareDriver" >> $localrc_path
+elif [[ "$DRIVER" == "windows" ]]; then
+    MANILA_SERVICE_IMAGE_ENABLED=True
+    echo "SHARE_DRIVER=manila.share.drivers.windows.windows_smb_driver.WindowsSMBDriver" >> $localrc_path
+elif [[ "$DRIVER" == "lvm" ]]; then
     echo "SHARE_DRIVER=manila.share.drivers.lvm.LVMShareDriver" >> $localrc_path
     echo "SHARE_BACKING_FILE_SIZE=32000M" >> $localrc_path
 elif [[ "$DRIVER" == "zfsonlinux" ]]; then
     echo "SHARE_DRIVER=manila.share.drivers.zfsonlinux.driver.ZFSonLinuxShareDriver" >> $localrc_path
     echo "RUN_MANILA_REPLICATION_TESTS=True" >> $localrc_path
+    # Set the replica_state_update_interval to 60 seconds to make
+    # replication tests run faster. The default is 300, which is greater than
+    # the build timeout for ZFS on the gate.
+    echo "MANILA_REPLICA_STATE_UPDATE_INTERVAL=60" >> $localrc_path
+    echo "MANILA_ZFSONLINUX_USE_SSH=True" >> $localrc_path
 fi
 
-if [[ "$DRIVER" == "lxd" ]]; then
-    echo "SHARE_DRIVER=manila.share.drivers.lxd.LXDDriver" >> $localrc_path
-    echo "SHARE_BACKING_FILE_SIZE=32000M" >> $localrc_path
-fi
+echo "MANILA_SERVICE_IMAGE_ENABLED=$MANILA_SERVICE_IMAGE_ENABLED" >> $localrc_path
 
 # Enabling isolated metadata in Neutron is required because
 # Tempest creates isolated networks and created vm's in scenario tests don't

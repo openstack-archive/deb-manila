@@ -124,10 +124,6 @@ class ExecuteMixin(driver.ExecuteMixin):
         """ZFS shell commands executor."""
         return self.execute('sudo', 'zfs', *cmd, **kwargs)
 
-    def zfs_with_retry(self, *cmd, **kwargs):
-        """ZFS shell commands executor with retries."""
-        return self.execute_with_retry('sudo', 'zfs', *cmd, **kwargs)
-
 
 @six.add_metaclass(abc.ABCMeta)
 class NASHelperBase(object):
@@ -160,8 +156,8 @@ class NASHelperBase(object):
         """Removes share exports."""
 
     @abc.abstractmethod
-    def update_access(self, dataset_name, access_rules, add_rules=None,
-                      delete_rules=None):
+    def update_access(self, dataset_name, access_rules, add_rules,
+                      delete_rules):
         """Update access rules for specified ZFS dataset."""
 
 
@@ -225,9 +221,15 @@ class NFSviaZFSHelper(ExecuteMixin, NASHelperBase):
             return
         self.zfs("set", "sharenfs=off", dataset_name)
 
+    def _get_parsed_access_to(self, access_to):
+        netmask = utils.cidr_to_netmask(access_to)
+        if netmask == '255.255.255.255':
+            return access_to.split('/')[0]
+        return access_to.split('/')[0] + '/' + netmask
+
     @zfs_dataset_synchronized
-    def update_access(self, dataset_name, access_rules, add_rules=None,
-                      delete_rules=None, make_all_ro=False):
+    def update_access(self, dataset_name, access_rules, add_rules,
+                      delete_rules, make_all_ro=False):
         """Update access rules for given ZFS dataset exported as NFS share."""
         rw_rules = []
         ro_rules = []
@@ -237,10 +239,10 @@ class NFSviaZFSHelper(ExecuteMixin, NASHelperBase):
                 raise exception.InvalidShareAccess(reason=msg)
             if (rule['access_level'] == constants.ACCESS_LEVEL_RW and
                     not make_all_ro):
-                rw_rules.append(rule['access_to'])
+                rw_rules.append(self._get_parsed_access_to(rule['access_to']))
             elif (rule['access_level'] in (constants.ACCESS_LEVEL_RW,
                                            constants.ACCESS_LEVEL_RO)):
-                ro_rules.append(rule['access_to'])
+                ro_rules.append(self._get_parsed_access_to(rule['access_to']))
             else:
                 msg = _("Unsupported access level provided - "
                         "%s.") % rule['access_level']
@@ -279,5 +281,6 @@ class NFSviaZFSHelper(ExecuteMixin, NASHelperBase):
             for rule in delete_rules:
                 if rule['access_type'].lower() != 'ip':
                     continue
-                export_location = rule['access_to'] + ':' + mountpoint
+                access_to = self._get_parsed_access_to(rule['access_to'])
+                export_location = access_to + ':' + mountpoint
                 self.execute('sudo', 'exportfs', '-u', export_location)

@@ -16,11 +16,13 @@
 import datetime
 import uuid
 
+from manila.common import constants
 from manila.db.sqlalchemy import models
 from manila.tests.db import fakes as db_fakes
 
 
 def fake_share(**kwargs):
+
     share = {
         'id': 'fakeid',
         'name': 'fakename',
@@ -36,6 +38,7 @@ def fake_share(**kwargs):
         'replication_type': None,
         'is_busy': False,
         'consistency_group_id': 'fakecgid',
+        'instance': {'host': 'fakehost'},
     }
     share.update(kwargs)
     return db_fakes.FakeModel(share)
@@ -59,7 +62,42 @@ def fake_share_instance(base_share=None, **kwargs):
     return db_fakes.FakeModel(share_instance)
 
 
-def fake_snapshot(**kwargs):
+def fake_share_type(**kwargs):
+
+    share_type = {
+        'id': "fakesharetype",
+        'name': "fakesharetypename",
+        'is_public': False,
+        'extra_specs': {
+            'driver_handles_share_servers': 'False',
+            'snapshot_support': 'True',
+        }
+    }
+
+    extra_specs = kwargs.pop('extra_specs', {})
+
+    for key, value in extra_specs.items():
+        share_type['extra_specs'][key] = value
+
+    share_type.update(kwargs)
+
+    return db_fakes.FakeModel(share_type)
+
+
+def fake_snapshot(create_instance=False, **kwargs):
+
+    instance_keys = ('instance_id', 'snapshot_id', 'share_instance_id',
+                     'status', 'progress', 'provider_location')
+    snapshot_keys = ('id', 'share_name', 'share_id', 'name', 'share_size',
+                     'share_proto', 'instance', 'aggregate_status')
+
+    instance_kwargs = {k: kwargs.get(k) for k in instance_keys if k in kwargs}
+    snapshot_kwargs = {k: kwargs.get(k) for k in snapshot_keys if k in kwargs}
+
+    aggregate_status = snapshot_kwargs.get(
+        'aggregate_status', instance_kwargs.get(
+            'status', constants.STATUS_CREATING))
+
     snapshot = {
         'id': 'fakesnapshotid',
         'share_name': 'fakename',
@@ -67,10 +105,45 @@ def fake_snapshot(**kwargs):
         'name': 'fakesnapshotname',
         'share_size': 1,
         'share_proto': 'fake_proto',
-        'export_location': 'fake_location:/fake_share',
+        'instance': None,
+        'share': 'fake_share',
+        'aggregate_status': aggregate_status,
     }
-    snapshot.update(kwargs)
+    snapshot.update(snapshot_kwargs)
+    if create_instance:
+        if 'instance_id' in instance_kwargs:
+            instance_kwargs['id'] = instance_kwargs.pop('instance_id')
+        snapshot['instance'] = fake_snapshot_instance(
+            base_snapshot=snapshot, **instance_kwargs)
+        snapshot['status'] = snapshot['instance']['status']
+        snapshot['provider_location'] = (
+            snapshot['instance']['provider_location']
+        )
+        snapshot['progress'] = snapshot['instance']['progress']
+    else:
+        snapshot['status'] = constants.STATUS_AVAILABLE
+        snapshot['progress'] = '0%'
+        snapshot['provider_location'] = 'fake'
+        snapshot.update(instance_kwargs)
+
     return db_fakes.FakeModel(snapshot)
+
+
+def fake_snapshot_instance(base_snapshot=None, **kwargs):
+    if base_snapshot is None:
+        base_snapshot = fake_snapshot()
+    snapshot_instance = {
+        'id': 'fakesnapshotinstanceid',
+        'snapshot_id': base_snapshot['id'],
+        'status': constants.STATUS_CREATING,
+        'progress': '0%',
+        'provider_location': 'i_live_here_actually',
+        'share_name': 'fakename',
+        'share_id': 'fakeshareinstanceid',
+        'share_instance_id': 'fakeshareinstanceid',
+    }
+    snapshot_instance.update(kwargs)
+    return db_fakes.FakeModel(snapshot_instance)
 
 
 def expected_snapshot(id='fake_snapshot_id', **kwargs):
@@ -167,16 +240,19 @@ def fake_replica(id=None, as_primitive=True, for_manager=False, **kwargs):
 
 
 def fake_replica_request_spec(as_primitive=True, **kwargs):
+    replica = fake_replica(id='9c0db763-a109-4862-b010-10f2bd395295')
+    all_replica_hosts = ','.join(['fake_active_replica_host', replica['host']])
     request_spec = {
         'share_properties': fake_share(
             id='f0e4bb5e-65f0-11e5-9d70-feff819cdc9f'),
-        'share_instance_properties': fake_replica(
-            id='9c0db763-a109-4862-b010-10f2bd395295'),
+        'share_instance_properties': replica,
         'share_proto': 'nfs',
         'share_id': 'f0e4bb5e-65f0-11e5-9d70-feff819cdc9f',
         'snapshot_id': None,
         'share_type': 'fake_share_type',
         'consistency_group': None,
+        'active_replica_host': 'fake_active_replica_host',
+        'all_replica_hosts': all_replica_hosts,
     }
     request_spec.update(kwargs)
     if as_primitive:

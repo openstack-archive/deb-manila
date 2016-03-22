@@ -23,13 +23,15 @@ import time
 from oslo_config import cfg
 from oslo_log import log
 from oslo_utils import importutils
+from oslo_utils import strutils
 from oslo_utils import timeutils
 
 from manila.common import constants
 from manila import exception
-from manila.i18n import _, _LW
+from manila.i18n import _, _LI, _LW
 from manila.share import driver
 from manila.share.drivers.zfsonlinux import utils as zfs_utils
+from manila.share import share_types
 from manila.share import utils as share_utils
 from manila import utils
 
@@ -145,6 +147,35 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
         self.private_storage = kwargs.get('private_storage')
         self._helpers = {}
 
+        # Set config based capabilities
+        self._init_common_capabilities()
+
+    def _init_common_capabilities(self):
+        self.common_capabilities = {}
+        if 'dedup=on' in self.dataset_creation_options:
+            self.common_capabilities['dedupe'] = [True]
+        elif 'dedup=off' in self.dataset_creation_options:
+            self.common_capabilities['dedupe'] = [False]
+        else:
+            self.common_capabilities['dedupe'] = [True, False]
+
+        if 'compression=off' in self.dataset_creation_options:
+            self.common_capabilities['compression'] = [False]
+        elif any('compression=' in option
+                 for option in self.dataset_creation_options):
+            self.common_capabilities['compression'] = [True]
+        else:
+            self.common_capabilities['compression'] = [True, False]
+
+        # NOTE(vponomaryov): Driver uses 'quota' approach for
+        # ZFS dataset. So, we can consider it as
+        # 'always thin provisioned' because this driver never reserves
+        # space for dataset.
+        self.common_capabilities['thin_provisioning'] = [True]
+        self.common_capabilities['max_over_subscription_ratio'] = (
+            self.configuration.max_over_subscription_ratio)
+        self.common_capabilities['qos'] = [False]
+
     def _get_zpool_list(self):
         zpools = []
         for zpool in self.configuration.zfs_zpool_list:
@@ -186,46 +217,29 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
                     msg=_("Could not destroy '%s' dataset, "
                           "because it had opened files.") % name)
 
-            try:
-                self.zfs('destroy', '-f', name)
-                return
-            except exception.ProcessExecutionError as e:
-                LOG.debug("Failed to run command, got error: %s\n"
-                          "Assuming other namespace-based services hold "
-                          "ZFS mounts.", e)
-
-            # NOTE(vponomaryov): perform workaround for Neutron bug #1546723
-            # We should release ZFS mount from all namespaces. It should not be
-            # there at all.
-            get_pids_cmd = (
-                "(echo $(grep -s %s /proc/*/mounts) ) 2>&1 " % mountpoint)
-            try:
-                raw_pids, err = self.execute('bash', '-c', get_pids_cmd)
-            except exception.ProcessExecutionError as e:
-                LOG.warning(
-                    _LW("Failed to get list of PIDs that hold ZFS dataset "
-                        "mountpoint. Got following error: %s"), e)
-            else:
-                pids = [s.split('/')[0] for s in raw_pids.split('/proc/') if s]
-                LOG.debug(
-                    "List of pids that hold ZFS mount '%(mnt)s': %(list)s", {
-                        'mnt': mountpoint, 'list': ' '.join(pids)})
-                for pid in pids:
-                    try:
-                        self.execute(
-                            'sudo', 'nsenter', '--mnt', '--target=%s' % pid,
-                            '/bin/umount', mountpoint)
-                    except exception.ProcessExecutionError as e:
-                        LOG.warning(
-                            _LW("Failed to run command with release of "
-                                "ZFS dataset mount, got error: %s"), e)
-
-            # NOTE(vponomaryov): sleep some time after unmount operations.
-            time.sleep(1)
-
         # NOTE(vponomaryov): Now, when no file usages and mounts of dataset
         # exist, destroy dataset.
-        self.zfs_with_retry('destroy', '-f', name)
+        try:
+            self.zfs('destroy', '-f', name)
+            return
+        except exception.ProcessExecutionError:
+            LOG.info(_LI("Failed to destroy ZFS dataset, retrying one time"))
+
+        # NOTE(bswartz): There appears to be a bug in ZFS when creating and
+        # destroying datasets concurrently where the filesystem remains mounted
+        # even though ZFS thinks it's unmounted. The most reliable workaround
+        # I've found is to force the unmount, then retry the destroy, with
+        # short pauses around the unmount.
+        time.sleep(1)
+        try:
+            self.execute('sudo', 'umount', mountpoint)
+        except exception.ProcessExecutionError:
+            # Ignore failed umount, it's normal
+            pass
+        time.sleep(1)
+
+        # This time the destroy is expected to succeed.
+        self.zfs('destroy', '-f', name)
 
     def _setup_helpers(self):
         """Setups share helper for ZFS backend."""
@@ -268,6 +282,11 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
                 reason=_("No zpools specified for usage: "
                          "%s") % self.zpool_list)
 
+        # Make pool mounts shared so that cloned namespaces receive unmounts
+        # and don't prevent us from unmounting datasets
+        for zpool in self.configuration.zfs_zpool_list:
+            self.execute('sudo', 'mount', '--make-rshared', ('/%s' % zpool))
+
         if self.configuration.zfs_use_ssh:
             # Check workability of SSH executor
             self.ssh_executor('whoami')
@@ -287,6 +306,7 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
                 'reserved_percentage':
                     self.configuration.reserved_share_percentage,
             }
+            pool.update(self.common_capabilities)
             if self.configuration.replication_domain:
                 pool['replication_type'] = 'readable'
             pools.append(pool)
@@ -320,18 +340,57 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
 
     def _get_dataset_creation_options(self, share, is_readonly=False):
         """Returns list of options to be used for dataset creation."""
-        if not self.dataset_creation_options:
-            return []
-        options = []
-        for option in self.dataset_creation_options:
-            if any(v in option for v in ('readonly', 'sharenfs', 'sharesmb')):
+        options = ['quota=%sG' % share['size']]
+        extra_specs = share_types.get_extra_specs_from_share(share)
+
+        dedupe_set = False
+        dedupe = extra_specs.get('dedupe')
+        if dedupe:
+            dedupe = strutils.bool_from_string(
+                dedupe.lower().split(' ')[-1], default=dedupe)
+            if (dedupe in self.common_capabilities['dedupe']):
+                options.append('dedup=%s' % ('on' if dedupe else 'off'))
+                dedupe_set = True
+            else:
+                raise exception.ZFSonLinuxException(msg=_(
+                    "Cannot use requested '%(requested)s' value of 'dedupe' "
+                    "extra spec. It does not fit allowed value '%(allowed)s' "
+                    "that is configured for backend.") % {
+                        'requested': dedupe,
+                        'allowed': self.common_capabilities['dedupe']})
+
+        compression_set = False
+        compression_type = extra_specs.get('zfsonlinux:compression')
+        if compression_type:
+            if (compression_type == 'off' and
+                    False in self.common_capabilities['compression']):
+                options.append('compression=off')
+                compression_set = True
+            elif (compression_type != 'off' and
+                    True in self.common_capabilities['compression']):
+                options.append('compression=%s' % compression_type)
+                compression_set = True
+            else:
+                raise exception.ZFSonLinuxException(msg=_(
+                    "Cannot use value '%s' of extra spec "
+                    "'zfsonlinux:compression' because compression is disabled "
+                    "for this backend. Set extra spec 'compression=True' to "
+                    "make scheduler pick up appropriate backend."
+                ) % compression_type)
+
+        for option in self.dataset_creation_options or []:
+            if any(v in option for v in (
+                    'readonly', 'sharenfs', 'sharesmb', 'quota')):
+                continue
+            if 'dedup' in option and dedupe_set is True:
+                continue
+            if 'compression' in option and compression_set is True:
                 continue
             options.append(option)
         if is_readonly:
             options.append('readonly=on')
         else:
             options.append('readonly=off')
-        options.append('quota=%sG' % share['size'])
         return options
 
     def _get_dataset_name(self, share):
@@ -374,7 +433,6 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
                 'dataset_name': dataset_name,
                 'ssh_cmd': ssh_cmd,  # used in replication
                 'pool_name': pool_name,  # used in replication
-                'provided_options': ' '.join(self.dataset_creation_options),
                 'used_options': ' '.join(options),
             }
         )
@@ -422,13 +480,13 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
     def create_snapshot(self, context, snapshot, share_server=None):
         """Is called to create a snapshot."""
         dataset_name = self.private_storage.get(
-            snapshot['share_id'], 'dataset_name')
-        snapshot_name = self._get_snapshot_name(snapshot['id'])
-        snapshot_name = dataset_name + '@' + snapshot_name
+            snapshot['share_instance_id'], 'dataset_name')
+        snapshot_tag = self._get_snapshot_name(snapshot['id'])
+        snapshot_name = dataset_name + '@' + snapshot_tag
         self.private_storage.update(
-            snapshot['id'], {
+            snapshot['snapshot_id'], {
                 'entity_type': 'snapshot',
-                'snapshot_name': snapshot_name,
+                'snapshot_tag': snapshot_tag,
             }
         )
         self.zfs('snapshot', snapshot_name)
@@ -436,11 +494,19 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
     @ensure_share_server_not_provided
     def delete_snapshot(self, context, snapshot, share_server=None):
         """Is called to remove a snapshot."""
-        snapshot_name = self.private_storage.get(
-            snapshot['id'], 'snapshot_name')
-        pool_name = snapshot_name.split('/')[0]
+        return self._delete_snapshot(context, snapshot)
 
-        out, err = self.zfs('list', '-r', '-t', 'snapshot', pool_name)
+    def _get_saved_snapshot_name(self, snapshot_instance):
+        snapshot_tag = self.private_storage.get(
+            snapshot_instance['snapshot_id'], 'snapshot_tag')
+        dataset_name = self.private_storage.get(
+            snapshot_instance['share_instance_id'], 'dataset_name')
+        snapshot_name = dataset_name + '@' + snapshot_tag
+        return snapshot_name
+
+    def _delete_snapshot(self, context, snapshot):
+        snapshot_name = self._get_saved_snapshot_name(snapshot)
+        out, err = self.zfs('list', '-r', '-t', 'snapshot', snapshot_name)
         data = self.parse_zfs_answer(out)
         for datum in data:
             if datum['NAME'] == snapshot_name:
@@ -463,23 +529,34 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
             'host': self.service_ip,
         }
         pool_name = share_utils.extract_host(share['host'], level='pool')
+        options = self._get_dataset_creation_options(share, is_readonly=False)
         self.private_storage.update(
             share['id'], {
                 'entity_type': 'share',
                 'dataset_name': dataset_name,
                 'ssh_cmd': ssh_cmd,  # used in replication
                 'pool_name': pool_name,  # used in replication
-                'provided_options': 'Cloned from source',
-                'used_options': 'Cloned from source',
+                'used_options': options,
             }
         )
-        snapshot_name = self.private_storage.get(
-            snapshot['id'], 'snapshot_name')
+        snapshot_name = self._get_saved_snapshot_name(snapshot)
 
-        self.zfs(
-            'clone', snapshot_name, dataset_name,
-            '-o', 'quota=%sG' % share['size'],
+        self.execute(
+            # NOTE(vponomaryov): SSH is used as workaround for 'execute'
+            # implementation restriction that does not support usage of '|'.
+            'ssh', ssh_cmd,
+            'sudo', 'zfs', 'send', '-vDp', snapshot_name, '|',
+            'sudo', 'zfs', 'receive', '-v', dataset_name,
         )
+        # Apply options based on used share type that may differ from
+        # one used for original share.
+        for option in options:
+            self.zfs('set', option, dataset_name)
+
+        # Delete with retry as right after creation it may be temporary busy.
+        self.execute_with_retry(
+            'sudo', 'zfs', 'destroy',
+            dataset_name + '@' + snapshot_name.split('@')[-1])
 
         return self._get_share_helper(
             share['share_proto']).create_exports(dataset_name)
@@ -504,6 +581,12 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
         data = self.parse_zfs_answer(out)
         for datum in data:
             if datum['NAME'] == dataset_name:
+                ssh_cmd = '%(username)s@%(host)s' % {
+                    'username': self.configuration.zfs_ssh_username,
+                    'host': self.service_ip,
+                }
+                self.private_storage.update(
+                    share['id'], {'ssh_cmd': ssh_cmd})
                 sharenfs = self.get_zfs_option(dataset_name, 'sharenfs')
                 if sharenfs != 'off':
                     self.zfs('share', dataset_name)
@@ -535,8 +618,8 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
         self.zfs('set', 'quota=%sG' % new_size, dataset_name)
 
     @ensure_share_server_not_provided
-    def update_access(self, context, share, access_rules, add_rules=None,
-                      delete_rules=None, share_server=None):
+    def update_access(self, context, share, access_rules, add_rules,
+                      delete_rules, share_server=None):
         """Updates access rules for given share."""
         dataset_name = self._get_dataset_name(share)
         return self._get_share_helper(share['share_proto']).update_access(
@@ -568,7 +651,7 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
 
     @ensure_share_server_not_provided
     def create_replica(self, context, replica_list, new_replica,
-                       access_rules, share_server=None):
+                       access_rules, replica_snapshots, share_server=None):
         """Replicates the active replica to a new replica on this backend."""
         active_replica = self._get_active_replica(replica_list)
         src_dataset_name = self.private_storage.get(
@@ -629,7 +712,8 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
 
         # Apply access rules from original share
         self._get_share_helper(new_replica['share_proto']).update_access(
-            dst_dataset_name, access_rules, make_all_ro=True)
+            dst_dataset_name, access_rules, add_rules=[], delete_rules=[],
+            make_all_ro=True)
 
         return {
             'export_locations': self._get_share_helper(
@@ -639,7 +723,7 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
         }
 
     @ensure_share_server_not_provided
-    def delete_replica(self, context, replica_list, replica,
+    def delete_replica(self, context, replica_list, replica_snapshots, replica,
                        share_server=None):
         """Deletes a replica. This is called on the destination backend."""
         pool_name = self.private_storage.get(replica['id'], 'pool_name')
@@ -672,8 +756,14 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
 
     @ensure_share_server_not_provided
     def update_replica_state(self, context, replica_list, replica,
-                             access_rules, share_server=None):
+                             access_rules, replica_snapshots,
+                             share_server=None):
         """Syncs replica and updates its 'replica_state'."""
+        return self._update_replica_state(
+            context, replica_list, replica, replica_snapshots, access_rules)
+
+    def _update_replica_state(self, context, replica_list, replica,
+                              replica_snapshots=None, access_rules=None):
         active_replica = self._get_active_replica(replica_list)
         src_dataset_name = self.private_storage.get(
             active_replica['id'], 'dataset_name')
@@ -727,6 +817,7 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
         data = self.parse_zfs_answer(out)
         for datum in data:
             if (dst_dataset_name in datum['NAME'] and
+                    '@' + self.replica_snapshot_prefix in datum['NAME'] and
                     datum['NAME'].split('@')[-1] not in snap_references):
                 self._delete_dataset_or_snapshot_with_retry(datum['NAME'])
 
@@ -748,13 +839,15 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
                     'sudo', 'zfs', 'destroy', '-f', datum['NAME'],
                 )
 
-        # Apply access rules from original share
-        # TODO(vponomaryov): we should remove somehow rules that were
-        # deleted on active replica after creation of secondary replica.
-        # For the moment there will be difference and it can be considered
-        # as a bug.
-        self._get_share_helper(replica['share_proto']).update_access(
-            dst_dataset_name, access_rules, make_all_ro=True)
+        if access_rules:
+            # Apply access rules from original share
+            # TODO(vponomaryov): we should remove somehow rules that were
+            # deleted on active replica after creation of secondary replica.
+            # For the moment there will be difference and it can be considered
+            # as a bug.
+            self._get_share_helper(replica['share_proto']).update_access(
+                dst_dataset_name, access_rules, add_rules=[], delete_rules=[],
+                make_all_ro=True)
 
         # Return results
         return constants.REPLICA_STATE_IN_SYNC
@@ -891,7 +984,7 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
             constants.REPLICA_STATE_ACTIVE)
 
         self._get_share_helper(replica['share_proto']).update_access(
-            dst_dataset_name, access_rules)
+            dst_dataset_name, access_rules, add_rules=[], delete_rules=[])
 
         replica_dict[replica['id']]['access_rules_status'] = (
             constants.STATUS_ACTIVE)
@@ -899,3 +992,145 @@ class ZFSonLinuxShareDriver(zfs_utils.ExecuteMixin, driver.ShareDriver):
         self.zfs('set', 'readonly=off', dst_dataset_name)
 
         return list(replica_dict.values())
+
+    @ensure_share_server_not_provided
+    def create_replicated_snapshot(self, context, replica_list,
+                                   replica_snapshots, share_server=None):
+        """Create a snapshot and update across the replicas."""
+        active_replica = self._get_active_replica(replica_list)
+        src_dataset_name = self.private_storage.get(
+            active_replica['id'], 'dataset_name')
+        ssh_to_src_cmd = self.private_storage.get(
+            active_replica['id'], 'ssh_cmd')
+        replica_snapshots_dict = {
+            si['id']: {'id': si['id']} for si in replica_snapshots}
+
+        active_snapshot_instance_id = [
+            si['id'] for si in replica_snapshots
+            if si['share_instance_id'] == active_replica['id']][0]
+        snapshot_tag = self._get_snapshot_name(active_snapshot_instance_id)
+        # Replication should not be dependent on manually created snapshots
+        # so, create additional one, newer, that will be used for replication
+        # synchronizations.
+        repl_snapshot_tag = self._get_replication_snapshot_tag(active_replica)
+        src_snapshot_name = src_dataset_name + '@' + repl_snapshot_tag
+
+        self.private_storage.update(
+            replica_snapshots[0]['snapshot_id'], {
+                'entity_type': 'snapshot',
+                'snapshot_tag': snapshot_tag,
+            }
+        )
+        for tag in (snapshot_tag, repl_snapshot_tag):
+            self.execute(
+                'ssh', ssh_to_src_cmd,
+                'sudo', 'zfs', 'snapshot', src_dataset_name + '@' + tag,
+            )
+
+        # Populate snapshot to all replicas
+        for replica_snapshot in replica_snapshots:
+            replica_id = replica_snapshot['share_instance_id']
+            if replica_id == active_replica['id']:
+                replica_snapshots_dict[replica_snapshot['id']]['status'] = (
+                    constants.STATUS_AVAILABLE)
+                continue
+            previous_snapshot_tag = self.private_storage.get(
+                replica_id, 'repl_snapshot_tag')
+            dst_dataset_name = self.private_storage.get(
+                replica_id, 'dataset_name')
+            ssh_to_dst_cmd = self.private_storage.get(replica_id, 'ssh_cmd')
+
+            try:
+                # Send/receive diff between previous snapshot and last one
+                out, err = self.execute(
+                    'ssh', ssh_to_src_cmd,
+                    'sudo', 'zfs', 'send', '-vDRI',
+                    previous_snapshot_tag, src_snapshot_name, '|',
+                    'ssh', ssh_to_dst_cmd,
+                    'sudo', 'zfs', 'receive', '-vF', dst_dataset_name,
+                )
+            except exception.ProcessExecutionError as e:
+                LOG.warning(
+                    _LW("Failed to sync snapshot instance %(id)s. %(e)s"),
+                    {'id': replica_snapshot['id'], 'e': e})
+                replica_snapshots_dict[replica_snapshot['id']]['status'] = (
+                    constants.STATUS_ERROR)
+                continue
+
+            replica_snapshots_dict[replica_snapshot['id']]['status'] = (
+                constants.STATUS_AVAILABLE)
+
+            msg = ("Info about last replica '%(replica_id)s' "
+                   "sync is following: \n%(out)s")
+            LOG.debug(msg, {'replica_id': replica_id, 'out': out})
+
+            # Update latest replication snapshot for replica
+            self.private_storage.update(
+                replica_id, {'repl_snapshot_tag': repl_snapshot_tag})
+
+        # Update latest replication snapshot for currently active replica
+        self.private_storage.update(
+            active_replica['id'], {'repl_snapshot_tag': repl_snapshot_tag})
+
+        return list(replica_snapshots_dict.values())
+
+    @ensure_share_server_not_provided
+    def delete_replicated_snapshot(self, context, replica_list,
+                                   replica_snapshots, share_server=None):
+        """Delete a snapshot by deleting its instances across the replicas."""
+        active_replica = self._get_active_replica(replica_list)
+        replica_snapshots_dict = {
+            si['id']: {'id': si['id']} for si in replica_snapshots}
+
+        for replica_snapshot in replica_snapshots:
+            replica_id = replica_snapshot['share_instance_id']
+            snapshot_name = self._get_saved_snapshot_name(replica_snapshot)
+            if active_replica['id'] == replica_id:
+                self._delete_snapshot(context, replica_snapshot)
+                replica_snapshots_dict[replica_snapshot['id']]['status'] = (
+                    constants.STATUS_DELETED)
+                continue
+            ssh_cmd = self.private_storage.get(replica_id, 'ssh_cmd')
+            out, err = self.execute(
+                'ssh', ssh_cmd,
+                'sudo', 'zfs', 'list', '-r', '-t', 'snapshot', snapshot_name,
+            )
+            data = self.parse_zfs_answer(out)
+            for datum in data:
+                if datum['NAME'] != snapshot_name:
+                    continue
+                self.execute_with_retry(
+                    'ssh', ssh_cmd,
+                    'sudo', 'zfs', 'destroy', '-f', datum['NAME'],
+                )
+
+            self.private_storage.delete(replica_snapshot['id'])
+            replica_snapshots_dict[replica_snapshot['id']]['status'] = (
+                constants.STATUS_DELETED)
+
+        return list(replica_snapshots_dict.values())
+
+    @ensure_share_server_not_provided
+    def update_replicated_snapshot(self, context, replica_list,
+                                   share_replica, replica_snapshots,
+                                   replica_snapshot, share_server=None):
+        """Update the status of a snapshot instance that lives on a replica."""
+
+        self._update_replica_state(context, replica_list, share_replica)
+
+        snapshot_name = self._get_saved_snapshot_name(replica_snapshot)
+
+        out, err = self.zfs('list', '-r', '-t', 'snapshot', snapshot_name)
+        data = self.parse_zfs_answer(out)
+        snapshot_found = False
+        for datum in data:
+            if datum['NAME'] == snapshot_name:
+                snapshot_found = True
+                break
+        return_dict = {'id': replica_snapshot['id']}
+        if snapshot_found:
+            return_dict.update({'status': constants.STATUS_AVAILABLE})
+        else:
+            return_dict.update({'status': constants.STATUS_ERROR})
+
+        return return_dict

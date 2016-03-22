@@ -50,13 +50,13 @@ class NASHelperBase(object):
         """Configure server before allowing access."""
         pass
 
-    def update_access(self, server, share_name, access_rules, add_rules=None,
-                      delete_rules=None):
+    def update_access(self, server, share_name, access_rules, add_rules,
+                      delete_rules):
         """Update access rules for given share.
 
         This driver has two different behaviors according to parameters:
         1. Recovery after error - 'access_rules' contains all access_rules,
-        'add_rules' and 'delete_rules' shall be None. Previously existing
+        'add_rules' and 'delete_rules' shall be empty. Previously existing
         access rules are cleared and then added back according
         to 'access_rules'.
 
@@ -68,9 +68,9 @@ class NASHelperBase(object):
         :param server: None or Share server's backend details
         :param share_name: Share's path according to id.
         :param access_rules: All access rules for given share
-        :param add_rules: None or List of access rules which should be added
-               access_rules already contains these rules.
-        :param delete_rules: None or List of access rules which should be
+        :param add_rules: Empty List or List of access rules which should be
+               added. access_rules already contains these rules.
+        :param delete_rules: Empty List or List of access rules which should be
                removed. access_rules doesn't contain these rules.
         """
         raise NotImplementedError()
@@ -121,9 +121,12 @@ class NASHelperBase(object):
 def nfs_synchronized(f):
 
     def wrapped_func(self, *args, **kwargs):
-        key = "nfs-%s" % args[0]["public_address"]
+        key = "nfs-%s" % args[0].get("lock_name", args[0]["instance_id"])
 
-        @utils.synchronized(key)
+        # NOTE(vponomaryov): 'external' lock is required for DHSS=False
+        # mode of LVM and Generic drivers, that may have lots of
+        # driver instances on single host.
+        @utils.synchronized(key, external=True)
         def source_func(self, *args, **kwargs):
             return f(self, *args, **kwargs)
 
@@ -154,9 +157,15 @@ class NFSHelper(NASHelperBase):
     def remove_export(self, server, share_name):
         """Remove export."""
 
+    def _get_parsed_access_to(self, access_to):
+        netmask = utils.cidr_to_netmask(access_to)
+        if netmask == '255.255.255.255':
+            return access_to.split('/')[0]
+        return access_to.split('/')[0] + '/' + netmask
+
     @nfs_synchronized
-    def update_access(self, server, share_name, access_rules, add_rules=None,
-                      delete_rules=None):
+    def update_access(self, server, share_name, access_rules, add_rules,
+                      delete_rules):
         """Update access rules for given share.
 
         Please refer to base class for a more in-depth description.
@@ -184,7 +193,8 @@ class NFSHelper(NASHelperBase):
                     server,
                     ['sudo', 'exportfs', '-o',
                      rules_options % access['access_level'],
-                     ':'.join((access['access_to'], local_path))])
+                     ':'.join((self._get_parsed_access_to(access['access_to']),
+                               local_path))])
             self._sync_nfs_temp_and_perm_files(server)
         # Adding/Deleting specific rules
         else:
@@ -193,7 +203,9 @@ class NFSHelper(NASHelperBase):
                 add_rules, ('ip',),
                 (const.ACCESS_LEVEL_RO, const.ACCESS_LEVEL_RW))
 
-            for access in (delete_rules or []):
+            for access in delete_rules:
+                access['access_to'] = self._get_parsed_access_to(
+                    access['access_to'])
                 try:
                     self.validate_access_rules(
                         [access], ('ip',),
@@ -211,17 +223,17 @@ class NFSHelper(NASHelperBase):
                                ':'.join((access['access_to'], local_path))])
             if delete_rules:
                 self._sync_nfs_temp_and_perm_files(server)
-            for access in (add_rules or []):
-                access_to, access_type = (access['access_to'],
-                                          access['access_type'])
+            for access in add_rules:
+                access['access_to'] = self._get_parsed_access_to(
+                    access['access_to'])
                 found_item = re.search(
-                    re.escape(local_path) + '[\s\n]*' + re.escape(access_to),
-                    out)
+                    re.escape(local_path) + '[\s\n]*' + re.escape(
+                        access['access_to']), out)
                 if found_item is not None:
                     LOG.warning(_LW("Access rule %(type)s:%(to)s already "
                                     "exists for share %(name)s") % {
-                        'to': access_to,
-                        'type': access_type,
+                        'to': access['access_to'],
+                        'type': access['access_type'],
                         'name': share_name
                     })
                 else:
@@ -376,8 +388,8 @@ class CIFSHelperIPAccess(NASHelperBase):
             self._ssh_exec(server, ['sudo', 'smbcontrol', 'all', 'close-share',
                                     share_name])
 
-    def update_access(self, server, share_name, access_rules, add_rules=None,
-                      delete_rules=None):
+    def update_access(self, server, share_name, access_rules, add_rules,
+                      delete_rules):
         """Update access rules for given share.
 
         Please refer to base class for a more in-depth description. For this
@@ -469,8 +481,8 @@ class CIFSHelperUserAccess(CIFSHelperIPAccess):
             'read only': 'no',
         }
 
-    def update_access(self, server, share_name, access_rules, add_rules=None,
-                      delete_rules=None):
+    def update_access(self, server, share_name, access_rules, add_rules,
+                      delete_rules):
         """Update access rules for given share.
 
         Please refer to base class for a more in-depth description. For this

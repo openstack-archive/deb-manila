@@ -213,16 +213,6 @@ foo_res  opt_3           some_value       local"""
         self.driver.execute.asssert_called_once_with(
             'sudo', 'zfs', 'foo', 'bar')
 
-    def test_zfs_with_retrying(self):
-        self.mock_object(self.driver, 'execute')
-        self.mock_object(self.driver, 'execute_with_retry')
-
-        self.driver.zfs_with_retry('foo', 'bar')
-
-        self.assertEqual(0, self.driver.execute.call_count)
-        self.driver.execute_with_retry.asssert_called_once_with(
-            'sudo', 'zfs', 'foo', 'bar')
-
 
 @ddt.ddt
 class NFSviaZFSHelperTestCase(test.TestCase):
@@ -342,16 +332,17 @@ class NFSviaZFSHelperTestCase(test.TestCase):
 
     @ddt.data(
         (('fake_modinfo_result', ''),
-         ('sharenfs=rw=1.1.1.1:3.3.3.3,no_root_squash,'
+         ('sharenfs=rw=1.1.1.1:3.3.3.0/255.255.255.0,no_root_squash,'
           'ro=2.2.2.2,no_root_squash'), False),
         (('fake_modinfo_result', ''),
-         ('sharenfs=ro=1.1.1.1:2.2.2.2:3.3.3.3,no_root_squash'), True),
+         ('sharenfs=ro=1.1.1.1:2.2.2.2:3.3.3.0/255.255.255.0,no_root_squash'),
+         True),
         (exception.ProcessExecutionError('Fake'),
-         ('sharenfs=1.1.1.1:rw,no_root_squash 3.3.3.3:rw,'
+         ('sharenfs=1.1.1.1:rw,no_root_squash 3.3.3.0/255.255.255.0:rw,'
           'no_root_squash 2.2.2.2:ro,no_root_squash'), False),
         (exception.ProcessExecutionError('Fake'),
          ('sharenfs=1.1.1.1:ro,no_root_squash 2.2.2.2:ro,'
-          'no_root_squash 3.3.3.3:ro,no_root_squash'), True),
+          'no_root_squash 3.3.3.0/255.255.255.0:ro,no_root_squash'), True),
     )
     @ddt.unpack
     def test_update_access_rw_and_ro(self, modinfo_response, access_str,
@@ -371,6 +362,8 @@ class NFSviaZFSHelperTestCase(test.TestCase):
             ('fake_1_result', ''),
             ('fake_2_result', ''),
             ('fake_3_result', ''),
+            ('fake_4_result', ''),
+            ('fake_5_result', ''),
         ]
         access_rules = [
             {'access_type': 'ip', 'access_level': 'rw',
@@ -378,13 +371,17 @@ class NFSviaZFSHelperTestCase(test.TestCase):
             {'access_type': 'ip', 'access_level': 'ro',
              'access_to': '2.2.2.2'},
             {'access_type': 'ip', 'access_level': 'rw',
-             'access_to': '3.3.3.3'},
+             'access_to': '3.3.3.0/24'},
         ]
         delete_rules = [
             {'access_type': 'ip', 'access_level': 'rw',
              'access_to': '4.4.4.4'},
             {'access_type': 'ip', 'access_level': 'ro',
-             'access_to': '5.5.5.5'},
+             'access_to': '5.5.5.5/32'},
+            {'access_type': 'ip', 'access_level': 'ro',
+             'access_to': '5.5.5.6/16'},
+            {'access_type': 'ip', 'access_level': 'ro',
+             'access_to': '5.5.5.7/0'},
             {'access_type': 'user', 'access_level': 'rw',
              'access_to': '6.6.6.6'},
             {'access_type': 'user', 'access_level': 'ro',
@@ -409,6 +406,12 @@ class NFSviaZFSHelperTestCase(test.TestCase):
                 run_as_root=True),
             mock.call(
                 'exportfs', '-u', '5.5.5.5:/%s' % dataset_name,
+                run_as_root=True),
+            mock.call(
+                'exportfs', '-u', '5.5.5.6/255.255.0.0:/%s' % dataset_name,
+                run_as_root=True),
+            mock.call(
+                'exportfs', '-u', '5.5.5.7/0.0.0.0:/%s' % dataset_name,
                 run_as_root=True),
         ])
 

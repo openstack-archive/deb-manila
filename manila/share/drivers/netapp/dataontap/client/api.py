@@ -28,7 +28,6 @@ from six.moves import urllib
 from manila import exception
 from manila.i18n import _
 
-
 LOG = log.getLogger(__name__)
 
 EONTAPI_EINVAL = '22'
@@ -49,6 +48,7 @@ ETRANSFER_IN_PROGRESS = '17137'
 EANOTHER_OP_ACTIVE = '17131'
 ERELATION_NOT_QUIESCED = '17127'
 ESOURCE_IS_DIFFERENT = '17105'
+EVOL_CLONE_BEING_SPLIT = '17151'
 
 
 class NaServer(object):
@@ -236,8 +236,10 @@ class NaServer(object):
                 response = self._opener.open(request)
         except urllib.error.HTTPError as e:
             raise NaApiError(e.code, e.msg)
+        except urllib.error.URLError as e:
+            raise exception.StorageCommunicationException(six.text_type(e))
         except Exception as e:
-            raise NaApiError('Unexpected error', e)
+            raise NaApiError(message=e)
 
         response_xml = response.read()
         response_element = self._get_result(response_xml)
@@ -379,7 +381,7 @@ class NaElement(object):
         if isinstance(na_element, NaElement):
             self._element.append(na_element._element)
             return
-        raise
+        raise ValueError(_("Can only add elements of type NaElement."))
 
     def get_child_by_name(self, name):
         """Get the child element by the tag name."""

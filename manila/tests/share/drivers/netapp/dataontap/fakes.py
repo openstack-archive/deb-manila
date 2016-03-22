@@ -262,7 +262,9 @@ SHARE_SERVER = {
 SNAPSHOT = {
     'id': SNAPSHOT_ID,
     'project_id': TENANT_ID,
-    'share_id': PARENT_SHARE_ID
+    'share_id': PARENT_SHARE_ID,
+    'status': constants.STATUS_CREATING,
+    'provider_location': None,
 }
 
 CDOT_SNAPSHOT = {
@@ -279,11 +281,25 @@ CDOT_SNAPSHOT_BUSY_VOLUME_CLONE = {
     'owners': {'volume clone'},
 }
 
+CDOT_SNAPSHOT_BUSY_SNAPMIRROR = {
+    'name': SNAPSHOT_NAME,
+    'volume': SHARE_NAME,
+    'busy': True,
+    'owners': {'snapmirror'},
+}
+
+CDOT_CLONE_CHILD_1 = 'fake_child_1'
+CDOT_CLONE_CHILD_2 = 'fake_child_2'
+CDOT_CLONE_CHILDREN = [
+    {'name': CDOT_CLONE_CHILD_1},
+    {'name': CDOT_CLONE_CHILD_2},
+]
+
 SHARE_FOR_CG1 = {
     'id': SHARE_ID,
     'host': '%(host)s@%(backend)s#%(pool)s' % {
         'host': HOST_NAME, 'backend': BACKEND_NAME, 'pool': POOL_NAME},
-    'name': 'share1',
+    'name': 'share_1',
     'share_proto': 'NFS',
     'source_cgsnapshot_member_id': None,
 }
@@ -292,7 +308,7 @@ SHARE_FOR_CG2 = {
     'id': SHARE_ID2,
     'host': '%(host)s@%(backend)s#%(pool)s' % {
         'host': HOST_NAME, 'backend': BACKEND_NAME, 'pool': POOL_NAME},
-    'name': 'share2',
+    'name': 'share_2',
     'share_proto': 'NFS',
     'source_cgsnapshot_member_id': None,
 }

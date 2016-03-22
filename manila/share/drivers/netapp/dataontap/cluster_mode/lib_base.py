@@ -22,7 +22,6 @@ single-SVM or multi-SVM functionality needed by the cDOT Manila drivers.
 import copy
 import math
 import socket
-import time
 
 from oslo_config import cfg
 from oslo_log import log
@@ -563,12 +562,13 @@ class NetAppCmodeFileStorageLibrary(object):
         """Clones existing share."""
         share_name = self._get_backend_share_name(share['id'])
         parent_share_name = self._get_backend_share_name(snapshot['share_id'])
-        parent_snapshot_name = snapshot_name_func(self, snapshot['id'])
-
+        if snapshot.get('provider_location') is None:
+            parent_snapshot_name = snapshot_name_func(self, snapshot['id'])
+        else:
+            parent_snapshot_name = snapshot['provider_location']
         LOG.debug('Creating share from snapshot %s', snapshot['id'])
         vserver_client.create_volume_clone(share_name, parent_share_name,
                                            parent_snapshot_name)
-        vserver_client.split_volume_clone(share_name)
 
     @na_utils.trace
     def _share_exists(self, share_name, vserver_client):
@@ -715,9 +715,11 @@ class NetAppCmodeFileStorageLibrary(object):
         snapshot_name = self._get_backend_snapshot_name(snapshot['id'])
         LOG.debug('Creating snapshot %s', snapshot_name)
         vserver_client.create_snapshot(share_name, snapshot_name)
+        return {'provider_location': snapshot_name}
 
     @na_utils.trace
-    def delete_snapshot(self, context, snapshot, share_server=None):
+    def delete_snapshot(self, context, snapshot, share_server=None,
+                        snapshot_name=None):
         """Deletes a snapshot of a share."""
         try:
             vserver, vserver_client = self._get_vserver(
@@ -732,50 +734,39 @@ class NetAppCmodeFileStorageLibrary(object):
             return
 
         share_name = self._get_backend_share_name(snapshot['share_id'])
-        snapshot_name = self._get_backend_snapshot_name(snapshot['id'])
+        snapshot_name = (snapshot.get('provider_location') or snapshot_name or
+                         self._get_backend_snapshot_name(snapshot['id']))
 
         try:
-            self._handle_busy_snapshot(vserver_client, share_name,
-                                       snapshot_name)
-        except exception.SnapshotNotFound:
-            LOG.info(_LI("Snapshot %s does not exist."), snapshot_name)
-            return
+            self._delete_snapshot(vserver_client, share_name, snapshot_name)
+        except exception.SnapshotResourceNotFound:
+            msg = _LI("Snapshot %(snap)s does not exist on share %(share)s.")
+            msg_args = {'snap': snapshot_name, 'share': share_name}
+            LOG.info(msg, msg_args)
+
+    def _delete_snapshot(self, vserver_client, share_name, snapshot_name):
+        """Deletes a backend snapshot, handling busy snapshots as needed."""
+
+        backend_snapshot = vserver_client.get_snapshot(share_name,
+                                                       snapshot_name)
 
         LOG.debug('Deleting snapshot %(snap)s for share %(share)s.',
                   {'snap': snapshot_name, 'share': share_name})
-        vserver_client.delete_snapshot(share_name, snapshot_name)
 
-    @na_utils.trace
-    def _handle_busy_snapshot(self, vserver_client, share_name, snapshot_name,
-                              wait_seconds=60):
-        """Checks for and handles a busy snapshot.
+        if not backend_snapshot['busy']:
+            vserver_client.delete_snapshot(share_name, snapshot_name)
 
-        If a snapshot is not busy, take no action.  If a snapshot is busy for
-        reasons other than a clone dependency, raise immediately.  Otherwise,
-        since we always start a clone split operation after cloning a share,
-        wait up to a minute for a clone dependency to clear before giving up.
-        """
-        snapshot = vserver_client.get_snapshot(share_name, snapshot_name)
-        if not snapshot['busy']:
-            return
+        elif backend_snapshot['owners'] == {'volume clone'}:
+            # Snapshots are locked by clone(s), so split clone and soft delete
+            snapshot_children = vserver_client.get_clone_children_for_snapshot(
+                share_name, snapshot_name)
+            for snapshot_child in snapshot_children:
+                vserver_client.split_volume_clone(snapshot_child['name'])
 
-        # Fail fast if snapshot is not busy due to a clone dependency
-        if snapshot['owners'] != {'volume clone'}:
+            vserver_client.soft_delete_snapshot(share_name, snapshot_name)
+
+        else:
             raise exception.ShareSnapshotIsBusy(snapshot_name=snapshot_name)
-
-        # Wait for clone dependency to clear.
-        retry_interval = 3  # seconds
-        for retry in range(int(wait_seconds / retry_interval)):
-            LOG.debug('Snapshot %(snap)s for share %(share)s is busy, waiting '
-                      'for volume clone dependency to clear.',
-                      {'snap': snapshot_name, 'share': share_name})
-
-            time.sleep(retry_interval)
-            snapshot = vserver_client.get_snapshot(share_name, snapshot_name)
-            if not snapshot['busy']:
-                return
-
-        raise exception.ShareSnapshotIsBusy(snapshot_name=snapshot_name)
 
     @na_utils.trace
     def manage_existing(self, share, driver_options):
@@ -1004,17 +995,14 @@ class NetAppCmodeFileStorageLibrary(object):
 
         for share_name in share_names:
             try:
-                self._handle_busy_snapshot(vserver_client, share_name,
-                                           snapshot_name)
-            except exception.SnapshotNotFound:
-                LOG.info(_LI("Snapshot %(snap)s does not exist for share "
-                             "%(share)s."),
-                         {'snap': snapshot_name, 'share': share_name})
+                self._delete_snapshot(
+                    vserver_client, share_name, snapshot_name)
+            except exception.SnapshotResourceNotFound:
+                msg = _LI("Snapshot %(snap)s does not exist on share "
+                          "%(share)s.")
+                msg_args = {'snap': snapshot_name, 'share': share_name}
+                LOG.info(msg, msg_args)
                 continue
-
-            LOG.debug("Deleting snapshot %(snap)s for share %(share)s.",
-                      {'snap': snapshot_name, 'share': share_name})
-            vserver_client.delete_snapshot(share_name, snapshot_name)
 
         return None, None
 
@@ -1037,8 +1025,8 @@ class NetAppCmodeFileStorageLibrary(object):
         vserver_client.set_volume_size(share_name, new_size)
 
     @na_utils.trace
-    def update_access(self, context, share, access_rules, add_rules=None,
-                      delete_rules=None, share_server=None):
+    def update_access(self, context, share, access_rules, add_rules,
+                      delete_rules, share_server=None):
         """Updates access rules for a share."""
         # NOTE(ameade): We do not need to add export rules to a non-active
         # replica as it will fail.
@@ -1064,8 +1052,7 @@ class NetAppCmodeFileStorageLibrary(object):
             helper.set_client(vserver_client)
             helper.update_access(share, share_name, access_rules)
         else:
-            LOG.warning(_LW("Could not update access rules, share %s does "
-                            "not exist."), share['id'])
+            raise exception.ShareResourceNotFound(share_id=share['id'])
 
     def setup_server(self, network_info, metadata=None):
         raise NotImplementedError()
@@ -1129,7 +1116,7 @@ class NetAppCmodeFileStorageLibrary(object):
                 return r
 
     def create_replica(self, context, replica_list, new_replica,
-                       access_rules=None, share_server=None):
+                       access_rules, share_snapshots, share_server=None):
         """Creates the new replica on this backend and sets up SnapMirror."""
         active_replica = self._find_active_replica(replica_list)
         dm_session = data_motion.DataMotionSession()
@@ -1157,7 +1144,7 @@ class NetAppCmodeFileStorageLibrary(object):
 
         return model_update
 
-    def delete_replica(self, context, replica_list, replica,
+    def delete_replica(self, context, replica_list, replica, share_snapshots,
                        share_server=None):
         """Removes the replica on this backend and destroys SnapMirror."""
         dm_session = data_motion.DataMotionSession()
@@ -1177,15 +1164,23 @@ class NetAppCmodeFileStorageLibrary(object):
         vserver_client = data_motion.get_client_for_backend(
             dest_backend, vserver_name=vserver)
         share_name = self._get_backend_share_name(replica['id'])
-        self._deallocate_container(share_name, vserver_client)
+        if self._share_exists(share_name, vserver_client):
+            self._deallocate_container(share_name, vserver_client)
 
     def update_replica_state(self, context, replica_list, replica,
-                             access_rules, share_server=None):
+                             access_rules, share_snapshots, share_server=None):
         """Returns the status of the given replica on this backend."""
         active_replica = self._find_active_replica(replica_list)
 
         share_name = self._get_backend_share_name(replica['id'])
         vserver, vserver_client = self._get_vserver(share_server=share_server)
+
+        if not vserver_client.volume_exists(share_name):
+            msg = _("Volume %(share_name)s does not exist on vserver "
+                    "%(vserver)s.")
+            msg_args = {'share_name': share_name, 'vserver': vserver}
+            raise exception.ShareResourceNotFound(msg % msg_args)
+
         dm_session = data_motion.DataMotionSession()
         try:
             snapmirrors = dm_session.get_snapmirrors(active_replica, replica)
@@ -1235,6 +1230,14 @@ class NetAppCmodeFileStorageLibrary(object):
                 3600))):
             return constants.REPLICA_STATE_OUT_OF_SYNC
 
+        # Check all snapshots exist
+        snapshots = [snap['share_replica_snapshot']
+                     for snap in share_snapshots]
+        for snap in snapshots:
+            snapshot_name = snap.get('provider_location')
+            if not vserver_client.snapshot_exists(snapshot_name, share_name):
+                return constants.REPLICA_STATE_OUT_OF_SYNC
+
         return constants.REPLICA_STATE_IN_SYNC
 
     def promote_replica(self, context, replica_list, replica, access_rules,
@@ -1260,10 +1263,21 @@ class NetAppCmodeFileStorageLibrary(object):
         new_replica_list = []
 
         # Setup the new active replica
-        new_active_replica = (
-            self._convert_destination_replica_to_independent(
-                context, dm_session, orig_active_replica, replica,
-                access_rules, share_server=share_server))
+        try:
+            new_active_replica = (
+                self._convert_destination_replica_to_independent(
+                    context, dm_session, orig_active_replica, replica,
+                    access_rules, share_server=share_server))
+        except exception.StorageCommunicationException:
+            LOG.exception(_LE("Could not communicate with the backend "
+                              "for replica %s during promotion."),
+                          replica['id'])
+            new_active_replica = copy.deepcopy(replica)
+            new_active_replica['replica_state'] = (
+                constants.STATUS_ERROR)
+            new_active_replica['status'] = constants.STATUS_ERROR
+            return [new_active_replica]
+
         new_replica_list.append(new_active_replica)
 
         # Change the source replica for all destinations to the new
@@ -1301,7 +1315,7 @@ class NetAppCmodeFileStorageLibrary(object):
             # 1. Start an update to try to get a last minute transfer before we
             # quiesce and break
             dm_session.update_snapmirror(orig_active_replica, replica)
-        except netapp_api.NaApiError:
+        except exception.StorageCommunicationException:
             # Ignore any errors since the current source replica may be
             # unreachable
             pass
@@ -1342,15 +1356,126 @@ class NetAppCmodeFileStorageLibrary(object):
                                                 orig_source_replica,
                                                 new_source_replica,
                                                 replica_list)
-        except Exception:
+        except exception.StorageCommunicationException:
+            replica['status'] = constants.STATUS_ERROR
             replica['replica_state'] = constants.STATUS_ERROR
             replica['export_locations'] = []
             msg = _LE("Failed to change replica (%s) to a SnapMirror "
-                      "destination."), replica['id']
-            LOG.exception(msg)
+                      "destination. Replica backend is unreachable.")
+
+            LOG.exception(msg, replica['id'])
+            return replica
+        except netapp_api.NaApiError:
+            replica['replica_state'] = constants.STATUS_ERROR
+            replica['export_locations'] = []
+            msg = _LE("Failed to change replica (%s) to a SnapMirror "
+                      "destination.")
+            LOG.exception(msg, replica['id'])
             return replica
 
         replica['replica_state'] = constants.REPLICA_STATE_OUT_OF_SYNC
         replica['export_locations'] = []
 
         return replica
+
+    def create_replicated_snapshot(self, context, replica_list,
+                                   snapshot_instances, share_server=None):
+        active_replica = self._find_active_replica(replica_list)
+        active_snapshot = [x for x in snapshot_instances
+                           if x['share_id'] == active_replica['id']][0]
+        snapshot_name = self._get_backend_snapshot_name(active_snapshot['id'])
+
+        self.create_snapshot(context, active_snapshot,
+                             share_server=share_server)
+
+        active_snapshot['status'] = constants.STATUS_AVAILABLE
+        active_snapshot['provider_location'] = snapshot_name
+        snapshots = [active_snapshot]
+        instances = zip(sorted(replica_list,
+                               key=lambda x: x['id']),
+                        sorted(snapshot_instances,
+                               key=lambda x: x['share_id']))
+
+        for replica, snapshot in instances:
+            if snapshot['id'] != active_snapshot['id']:
+                snapshot['provider_location'] = snapshot_name
+                snapshots.append(snapshot)
+                dm_session = data_motion.DataMotionSession()
+                if replica.get('host'):
+                    try:
+                        dm_session.update_snapmirror(active_replica,
+                                                     replica)
+                    except netapp_api.NaApiError as e:
+                        if e.code != netapp_api.EOBJECTNOTFOUND:
+                            raise
+        return snapshots
+
+    def delete_replicated_snapshot(self, context, replica_list,
+                                   snapshot_instances, share_server=None):
+        active_replica = self._find_active_replica(replica_list)
+        active_snapshot = [x for x in snapshot_instances
+                           if x['share_id'] == active_replica['id']][0]
+
+        self.delete_snapshot(context, active_snapshot,
+                             share_server=share_server,
+                             snapshot_name=active_snapshot['provider_location']
+                             )
+        active_snapshot['status'] = constants.STATUS_DELETED
+        instances = zip(sorted(replica_list,
+                               key=lambda x: x['id']),
+                        sorted(snapshot_instances,
+                               key=lambda x: x['share_id']))
+
+        for replica, snapshot in instances:
+            if snapshot['id'] != active_snapshot['id']:
+                dm_session = data_motion.DataMotionSession()
+                if replica.get('host'):
+                    try:
+                        dm_session.update_snapmirror(active_replica, replica)
+                    except netapp_api.NaApiError as e:
+                        if e.code != netapp_api.EOBJECTNOTFOUND:
+                            raise
+
+        return [active_snapshot]
+
+    def update_replicated_snapshot(self, replica_list, share_replica,
+                                   snapshot_instances, snapshot_instance,
+                                   share_server=None):
+        active_replica = self._find_active_replica(replica_list)
+        vserver, vserver_client = self._get_vserver(share_server=share_server)
+        share_name = self._get_backend_share_name(
+            snapshot_instance['share_id'])
+        snapshot_name = snapshot_instance.get('provider_location')
+        # NOTE(ameade): If there is no provider location,
+        # then grab from active snapshot instance
+        if snapshot_name is None:
+            active_snapshot = [x for x in snapshot_instances
+                               if x['share_id'] == active_replica['id']][0]
+            snapshot_name = active_snapshot.get('provider_location')
+            if not snapshot_name:
+                return
+
+        try:
+            snapshot_exists = vserver_client.snapshot_exists(snapshot_name,
+                                                             share_name)
+        except exception.SnapshotUnavailable:
+            # The volume must still be offline
+            return
+
+        if (snapshot_exists and
+                snapshot_instance['status'] == constants.STATUS_CREATING):
+            return {
+                'status': constants.STATUS_AVAILABLE,
+                'provider_location': snapshot_name,
+            }
+        elif (not snapshot_exists and
+              snapshot_instance['status'] == constants.STATUS_DELETING):
+            raise exception.SnapshotResourceNotFound(
+                name=snapshot_instance.get('provider_location'))
+
+        dm_session = data_motion.DataMotionSession()
+        try:
+            dm_session.update_snapmirror(active_replica, share_replica)
+        except netapp_api.NaApiError as e:
+            if e.code != netapp_api.EOBJECTNOTFOUND:
+                raise

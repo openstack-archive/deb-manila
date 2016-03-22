@@ -95,8 +95,10 @@ class NetAppCmodeMultiSvmShareDriver(driver.ShareDriver):
     def unmanage(self, share):
         raise NotImplementedError
 
-    def update_access(self, context, share, access_rules, **kwargs):
-        self.library.update_access(context, share, access_rules, **kwargs)
+    def update_access(self, context, share, access_rules, add_rules,
+                      delete_rules, **kwargs):
+        self.library.update_access(context, share, access_rules, add_rules,
+                                   delete_rules, **kwargs)
 
     def _update_share_stats(self, data=None):
         data = self.library.get_share_stats()
@@ -120,10 +122,11 @@ class NetAppCmodeMultiSvmShareDriver(driver.ShareDriver):
         self.library.teardown_server(server_details, **kwargs)
 
     def create_replica(self, context, replica_list, replica, access_rules,
-                       **kwargs):
+                       replica_snapshots, **kwargs):
         raise NotImplementedError()
 
-    def delete_replica(self, context, replica_list, replica, **kwargs):
+    def delete_replica(self, context, replica_list, replica_snapshots,
+                       replica, **kwargs):
         raise NotImplementedError()
 
     def promote_replica(self, context, replica_list, replica, access_rules,
@@ -131,5 +134,19 @@ class NetAppCmodeMultiSvmShareDriver(driver.ShareDriver):
         raise NotImplementedError()
 
     def update_replica_state(self, context, replica_list, replica,
-                             access_rules, share_server=None):
+                             access_rules, replica_snapshots,
+                             share_server=None):
+        raise NotImplementedError()
+
+    def create_replicated_snapshot(self, context, replica_list,
+                                   replica_snapshots, share_server=None):
+        raise NotImplementedError()
+
+    def delete_replicated_snapshot(self, context, replica_list,
+                                   replica_snapshots, share_server=None):
+        raise NotImplementedError()
+
+    def update_replicated_snapshot(self, context, replica_list,
+                                   share_replica, replica_snapshots,
+                                   replica_snapshot, share_server=None):
         raise NotImplementedError()

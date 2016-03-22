@@ -100,8 +100,8 @@ MANILA_PATH_TO_PRIVATE_KEY=${MANILA_PATH_TO_PRIVATE_KEY:-"$USER_HOME/.ssh/id_rsa
 MANILA_SERVICE_KEYPAIR_NAME=${MANILA_SERVICE_KEYPAIR_NAME:-"manila-service"}
 
 MANILA_SERVICE_INSTANCE_USER=${MANILA_SERVICE_INSTANCE_USER:-"manila"}
-MANILA_SERVICE_IMAGE_URL=${MANILA_SERVICE_IMAGE_URL:-"https://github.com/uglide/manila-image-elements/releases/download/0.1.0/manila-service-image.qcow2"}
-MANILA_SERVICE_IMAGE_NAME=${MANILA_SERVICE_IMAGE_NAME:-"manila-service-image"}
+MANILA_SERVICE_IMAGE_URL=${MANILA_SERVICE_IMAGE_URL:-"http://tarballs.openstack.org/manila-image-elements/images/manila-service-image-master.qcow2"}
+MANILA_SERVICE_IMAGE_NAME=${MANILA_SERVICE_IMAGE_NAME:-"manila-service-image-master"}
 
 # Third party CI Vendors should set this to false to skip the service image download
 MANILA_SERVICE_IMAGE_ENABLED=$(trueorfalse True MANILA_SERVICE_IMAGE_ENABLED)
@@ -141,6 +141,9 @@ SMB_CONF=${SMB_CONF:-/etc/samba/smb.conf}
 SMB_PRIVATE_DIR=${SMB_PRIVATE_DIR:-/var/lib/samba/private}
 CONFIGURE_BACKING_FILE=${CONFIGURE_BACKING_FILE:-"True"}
 
+# Options for replication
+MANILA_REPLICA_STATE_UPDATE_INTERVAL=${MANILA_REPLICA_STATE_UPDATE_INTERVAL:-300}
+
 # Options for configuration of ZFSonLinux driver
 # 'MANILA_ZFSONLINUX_ZPOOL_SIZE' defines size of each zpool. That value
 # will be used for creation of sparse files.
@@ -149,20 +152,11 @@ MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR=${MANILA_ZFSONLINUX_BACKEND_FILES_
 MANILA_ZFSONLINUX_SHARE_EXPORT_IP=${MANILA_ZFSONLINUX_SHARE_EXPORT_IP:-"127.0.0.1"}
 MANILA_ZFSONLINUX_SERVICE_IP=${MANILA_ZFSONLINUX_SERVICE_IP:-"127.0.0.1"}
 MANILA_ZFSONLINUX_DATASET_CREATION_OPTIONS=${MANILA_ZFSONLINUX_DATASET_CREATION_OPTIONS:-"compression=gzip"}
-MANILA_ZFSONLINUX_SSH_USERNAME=${MANILA_ZFSONLINUX_SSH_USERNAME:-"stack"}
+MANILA_ZFSONLINUX_USE_SSH=${MANILA_ZFSONLINUX_USE_SSH:-"False"}
+MANILA_ZFSONLINUX_SSH_USERNAME=${MANILA_ZFSONLINUX_SSH_USERNAME:-$STACK_USER}
 # If MANILA_ZFSONLINUX_REPLICATION_DOMAIN is set to empty value then
 # Manila will consider replication feature as disabled for ZFSonLinux share driver.
 MANILA_ZFSONLINUX_REPLICATION_DOMAIN=${MANILA_ZFSONLINUX_REPLICATION_DOMAIN:-"ZFSonLinux"}
-
-# LXD Driver
-MANILA_LXD_DRIVER=${MANILA_LXD_DRIVER:-"manila.share.drivers.lxd.LXDDriver"}
-MANILA_LXD_IMAGE_ALIAS=${MANILA_LXD_IMAGE_ALIAS:-"manila-lxd-image"}
-# (aovchinnikov): This location is temporary and will be changed to a
-# permanent one as soon as possible.
-MANILA_LXD_META_URL=${MANILA_LXD_META_URL:-"https://github.com/a-ovchinnikov/manila-image-elements-lxd-images/releases/download/0.1.0/manila-lxd-meta.tar"}
-# (aovchinnikov): This location is temporary and will be changed to a
-# permanent one as soon as possible.
-MANILA_LXD_ROOTFS_URL=${MANILA_LXD_ROOTFS_URL:-"https://github.com/a-ovchinnikov/manila-image-elements-lxd-images/releases/download/0.1.0/manila-service-image.tar.xz"}
 
 # Enable manila services
 # ----------------------

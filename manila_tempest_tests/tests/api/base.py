@@ -28,6 +28,7 @@ from tempest.lib import exceptions
 from tempest import test
 
 from manila_tempest_tests import clients_share as clients
+from manila_tempest_tests.common import constants
 from manila_tempest_tests import share_exceptions
 from manila_tempest_tests import utils
 
@@ -467,7 +468,7 @@ class BaseSharesTest(test.BaseTestCase):
                                         description=None, force=False,
                                         client=None, cleanup_in_class=True):
         if client is None:
-            client = cls.shares_client
+            client = cls.shares_v2_client
         if description is None:
             description = "Tempest's snapshot"
         snapshot = client.create_snapshot(share_id, name, description, force)
@@ -506,6 +507,69 @@ class BaseSharesTest(test.BaseTestCase):
             cls.method_resources.insert(0, resource)
         client.wait_for_cgsnapshot_status(cgsnapshot["id"], "available")
         return cgsnapshot
+
+    @classmethod
+    def get_availability_zones(cls, client=None):
+        """List the availability zones for "manila-share" services
+
+         that are currently in "up" state.
+         """
+        client = client or cls.shares_v2_client
+        cls.services = client.list_services()
+        zones = [service['zone'] for service in cls.services if
+                 service['binary'] == "manila-share" and
+                 service['state'] == 'up']
+        return zones
+
+    def get_pools_for_replication_domain(self):
+        # Get the list of pools for the replication domain
+        pools = self.admin_client.list_pools(detail=True)['pools']
+        instance_host = self.shares[0]['host']
+        host_pool = [p for p in pools if p['name'] == instance_host][0]
+        rep_domain = host_pool['capabilities']['replication_domain']
+        pools_in_rep_domain = [p for p in pools if p['capabilities'][
+            'replication_domain'] == rep_domain]
+        return rep_domain, pools_in_rep_domain
+
+    @classmethod
+    def create_share_replica(cls, share_id, availability_zone, client=None,
+                             cleanup_in_class=False, cleanup=True):
+        client = client or cls.shares_v2_client
+        replica = client.create_share_replica(share_id, availability_zone)
+        resource = {
+            "type": "share_replica",
+            "id": replica["id"],
+            "client": client,
+            "share_id": share_id,
+        }
+        # NOTE(Yogi1): Cleanup needs to be disabled during promotion tests.
+        if cleanup:
+            if cleanup_in_class:
+                cls.class_resources.insert(0, resource)
+            else:
+                cls.method_resources.insert(0, resource)
+        client.wait_for_share_replica_status(
+            replica["id"], constants.STATUS_AVAILABLE)
+        return replica
+
+    @classmethod
+    def delete_share_replica(cls, replica_id, client=None):
+        client = client or cls.shares_v2_client
+        try:
+            client.delete_share_replica(replica_id)
+            client.wait_for_resource_deletion(replica_id=replica_id)
+        except exceptions.NotFound:
+            pass
+
+    @classmethod
+    def promote_share_replica(cls, replica_id, client=None):
+        client = client or cls.shares_v2_client
+        replica = client.promote_share_replica(replica_id)
+        client.wait_for_share_replica_status(
+            replica["id"],
+            constants.REPLICATION_STATE_ACTIVE,
+            status_attr="replica_state")
+        return replica
 
     @classmethod
     def create_share_network(cls, client=None,
@@ -584,6 +648,19 @@ class BaseSharesTest(test.BaseTestCase):
                 ic["deleted"] = True
 
     @classmethod
+    def clear_share_replicas(cls, share_id, client=None):
+        client = client or cls.shares_v2_client
+        share_replicas = client.list_share_replicas(
+            share_id=share_id)
+
+        for replica in share_replicas:
+            try:
+                cls.delete_share_replica(replica['id'])
+            except exceptions.BadRequest:
+                # Ignore the exception due to deletion of last active replica
+                pass
+
+    @classmethod
     def clear_resources(cls, resources=None):
         """Deletes resources, that were created in test suites.
 
@@ -607,6 +684,7 @@ class BaseSharesTest(test.BaseTestCase):
                 client = res["client"]
                 with handle_cleanup_exceptions():
                     if res["type"] is "share":
+                        cls.clear_share_replicas(res_id)
                         cg_id = res.get('consistency_group_id')
                         if cg_id:
                             params = {'consistency_group_id': cg_id}
@@ -632,6 +710,9 @@ class BaseSharesTest(test.BaseTestCase):
                     elif res["type"] is "cgsnapshot":
                         client.delete_cgsnapshot(res_id)
                         client.wait_for_resource_deletion(cgsnapshot_id=res_id)
+                    elif res["type"] is "share_replica":
+                        client.delete_share_replica(res_id)
+                        client.wait_for_resource_deletion(replica_id=res_id)
                     else:
                         LOG.warning("Provided unsupported resource type for "
                                     "cleanup '%s'. Skipping." % res["type"])
@@ -698,7 +779,7 @@ class BaseSharesTest(test.BaseTestCase):
                 error = abs(float(d1value) - float(d2value))
                 within_tolerance = error <= tolerance
             except (ValueError, TypeError):
-                # If both values aren't convertable to float, just ignore
+                # If both values aren't convertible to float, just ignore
                 # ValueError if arg is a str, TypeError if it's something else
                 # (like None)
                 within_tolerance = False

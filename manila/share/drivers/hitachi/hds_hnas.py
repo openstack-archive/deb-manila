@@ -19,6 +19,7 @@ from oslo_utils import excutils
 from oslo_utils import importutils
 import six
 
+from manila.common import constants
 from manila import exception
 from manila.i18n import _
 from manila.i18n import _LI
@@ -67,8 +68,8 @@ CONF.register_opts(hds_hnas_opts)
 class HDSHNASDriver(driver.ShareDriver):
     """Manila HNAS Driver implementation.
 
-    1.0.0 - Initial Version
-    1.1.0 - Refactoring and bugfixes
+    1.0.0 - Initial Version.
+    2.0.0 - Refactoring, bugfixes, implemented Share Shrink and Update Access.
     """
 
     def __init__(self, *args, **kwargs):
@@ -132,23 +133,29 @@ class HDSHNASDriver(driver.ShareDriver):
                            hnas_evs_id, self.hnas_evs_ip, self.fs_name,
                            job_timeout)
 
-    def update_access(self, context, share, access_rules, add_rules=None,
-                      delete_rules=None, share_server=None):
+    def update_access(self, context, share, access_rules, add_rules,
+                      delete_rules, share_server=None):
         """Update access rules for given share.
 
         :param context: The `context.RequestContext` object for the request
         :param share: Share that will have its access rules updated.
         :param access_rules: All access rules for given share. This list
         is enough to update the access rules for given share.
-        :param add_rules: None or List of access rules which should be added.
-        access_rules already contains these rules. Not used by
-        this driver.
-        :param delete_rules: None or List of access rules which should be
+        :param add_rules: Empty List or List of access rules which should be
+        added. access_rules already contains these rules. Not used by this
+        driver.
+        :param delete_rules: Empty List or List of access rules which should be
         removed. access_rules doesn't contain these rules. Not used by
         this driver.
         :param share_server: Data structure with share server information.
         Not used by this driver.
         """
+
+        try:
+            self._ensure_share(share['id'])
+        except exception.HNASItemNotFoundException:
+            raise exception.ShareResourceNotFound(share_id=share['id'])
+
         host_list = []
         share_id = self._get_hnas_share_id(share['id'])
 
@@ -156,8 +163,14 @@ class HDSHNASDriver(driver.ShareDriver):
             if rule['access_type'].lower() != 'ip':
                 msg = _("Only IP access type currently supported.")
                 raise exception.InvalidShareAccess(reason=msg)
-            host_list.append(rule['access_to'] + '(' +
-                             rule['access_level'] + ')')
+
+            if rule['access_level'] == constants.ACCESS_LEVEL_RW:
+                host_list.append(rule['access_to'] + '(' +
+                                 rule['access_level'] +
+                                 ',norootsquash)')
+            else:
+                host_list.append(rule['access_to'] + '(' +
+                                 rule['access_level'] + ')')
 
         self.hnas.update_access_rule(share_id, host_list)
 
@@ -322,6 +335,8 @@ class HDSHNASDriver(driver.ShareDriver):
         """Updates the Capability of Backend."""
         LOG.debug("Updating Backend Capability Information - HDS HNAS.")
 
+        self._check_fs_mounted()
+
         total_space, free_space = self.hnas.get_stats()
 
         reserved = self.configuration.safe_get('reserved_share_percentage')
@@ -330,12 +345,13 @@ class HDSHNASDriver(driver.ShareDriver):
             'share_backend_name': self.backend_name,
             'driver_handles_share_servers': self.driver_handles_share_servers,
             'vendor_name': 'HDS',
-            'driver_version': '1.0',
+            'driver_version': '2.0.0',
             'storage_protocol': 'NFS',
             'total_capacity_gb': total_space,
             'free_capacity_gb': free_space,
             'reserved_percentage': reserved,
             'qos': False,
+            'thin_provisioning': True,
         }
 
         LOG.info(_LI("HNAS Capabilities: %(data)s."),
@@ -565,6 +581,7 @@ class HDSHNASDriver(driver.ShareDriver):
         :param share_id: ID of share for snapshot.
         :param snapshot_id: ID of new snapshot.
         """
+        self._ensure_share(share_id)
 
         saved_list = self.hnas.get_host_list(share_id)
         new_list = []

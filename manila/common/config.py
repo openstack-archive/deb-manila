@@ -28,6 +28,7 @@ import socket
 
 from oslo_config import cfg
 from oslo_log import log
+from oslo_middleware import cors
 from oslo_utils import netutils
 import six
 
@@ -45,7 +46,10 @@ core_opts = [
                help='File name for the paste.deploy config for manila-api.'),
     cfg.StrOpt('state_path',
                default='/var/lib/manila',
-               help="Top-level directory for maintaining manila's state."), ]
+               help="Top-level directory for maintaining manila's state."),
+    cfg.StrOpt('os_region_name',
+               help='Region name of this node.'),
+]
 
 debug_opts = [
 ]
@@ -188,3 +192,31 @@ def verify_share_protocols():
         # because of 'lazy' translations.
         msg = six.text_type(_(msg) % data)  # noqa H701
         raise exception.ManilaException(message=msg)
+
+
+def set_middleware_defaults():
+    """Update default configuration options for oslo.middleware."""
+    # CORS Defaults
+    # TODO(krotscheck): Update with https://review.openstack.org/#/c/285368/
+    cfg.set_defaults(cors.CORS_OPTS,
+                     allow_headers=['X-Auth-Token',
+                                    'X-OpenStack-Request-ID',
+                                    'X-Openstack-Manila-Api-Version',
+                                    'X-OpenStack-Manila-API-Experimental',
+                                    'X-Identity-Status',
+                                    'X-Roles',
+                                    'X-Service-Catalog',
+                                    'X-User-Id',
+                                    'X-Tenant-Id'],
+                     expose_headers=['X-Auth-Token',
+                                     'X-OpenStack-Request-ID',
+                                     'X-Openstack-Manila-Api-Version',
+                                     'X-OpenStack-Manila-API-Experimental',
+                                     'X-Subject-Token',
+                                     'X-Service-Token'],
+                     allow_methods=['GET',
+                                    'PUT',
+                                    'POST',
+                                    'DELETE',
+                                    'PATCH']
+                     )
