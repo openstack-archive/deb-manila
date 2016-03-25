@@ -1,0 +1,10 @@
+Description: Install missing files
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: not-needed
+Last-Update: 2016-03-25
+
+--- /dev/null	2016-03-15 18:18:48.046095192 +0100
++++ b/MANIFEST.in	2016-03-25 11:45:14.970086058 +0100
+@@ -0,0 +1,2 @@
++recursive-include manila/db *
++recursive-include manila/tests/var *
