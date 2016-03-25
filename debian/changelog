@@ -1,4 +1,4 @@
-manila (1:2.0.0~rc1-2) UNRELEASED; urgency=medium
+manila (1:2.0.0~rc1-2) experimental; urgency=medium
 
   * Adds install-missing-files.patch as PBR is (as always) missing the Alembic
     files.
