@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: manila 2014.1.2-1\n"
 "Report-Msgid-Bugs-To: manila@packages.debian.org\n"
-"POT-Creation-Date: 2016-02-03 16:45+0800\n"
+"POT-Creation-Date: 2016-03-29 13:41+0000\n"
 "PO-Revision-Date: 2014-09-04 08:49-0300\n"
 "Last-Translator: Adriano Rafael Gomes <adrianorg@arg.eti.br>\n"
 "Language-Team: Brazilian Portuguese <debian-l10n-portuguese@lists.debian."
@@ -230,9 +230,14 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../manila-api.templates:2001
+#, fuzzy
+#| msgid ""
+#| "Note that you will need to have an up and running Keystone server on "
+#| "which to connect using the Keystone authentication token."
 msgid ""
 "Note that you will need to have an up and running Keystone server on which "
-"to connect using the Keystone authentication token."
+"to connect using a known admin project name, admin username and password. "
+"The admin auth token is not used anymore."
 msgstr ""
 "Note que você precisará ter um servidor Keystone configurado e em execução "
 "no qual conectar usando o \"token\" de autenticação do Keystone."
@@ -254,38 +259,55 @@ msgstr ""
 "api possa contatar o Keystone para efetuar a criação do \"endpoint\" e do "
 "serviço Manila."
 
-#. Type: password
+#. Type: string
 #. Description
 #: ../manila-api.templates:4001
-msgid "Keystone authentication token:"
+#, fuzzy
+#| msgid "Keystone authentication token:"
+msgid "Keystone admin name:"
 msgstr "\"Token\" de autenticação Keystone:"
 
+#. Type: string
+#. Description
+#. Type: string
+#. Description
 #. Type: password
 #. Description
-#: ../manila-api.templates:4001
+#: ../manila-api.templates:4001 ../manila-api.templates:5001
+#: ../manila-api.templates:6001
 msgid ""
-"To configure its endpoint in Keystone, manila-api needs the Keystone "
-"authentication token."
+"To register the service endpoint, this package needs to know the Admin "
+"login, name, project name, and password to the Keystone server."
 msgstr ""
-"Para configurar o seu \"endpoint\" no Keystone, o manila-api precisa do "
-"\"token\" de autenticação do Keystone."
 
 #. Type: string
 #. Description
 #: ../manila-api.templates:5001
+msgid "Keystone admin project name:"
+msgstr ""
+
+#. Type: password
+#. Description
+#: ../manila-api.templates:6001
+msgid "Keystone admin password:"
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../manila-api.templates:7001
 msgid "Manila endpoint IP address:"
 msgstr "Endereço IP do \"endpoint\" Manila:"
 
 #. Type: string
 #. Description
-#: ../manila-api.templates:5001
+#: ../manila-api.templates:7001
 msgid "Please enter the IP address that will be used to contact Manila."
 msgstr ""
 "Por favor, informe o endereço IP que será usado para contatar o Manila."
 
 #. Type: string
 #. Description
-#: ../manila-api.templates:5001
+#: ../manila-api.templates:7001
 msgid ""
 "This IP address should be accessible from the clients that will use this "
 "service, so if you are installing a public cloud, this should be a public IP "
@@ -297,13 +319,13 @@ msgstr ""
 
 #. Type: string
 #. Description
-#: ../manila-api.templates:6001
+#: ../manila-api.templates:8001
 msgid "Name of the region to register:"
 msgstr "Nome da região para registrar:"
 
 #. Type: string
 #. Description
-#: ../manila-api.templates:6001
+#: ../manila-api.templates:8001
 msgid ""
 "OpenStack supports using availability zones, with each region representing a "
 "location. Please enter the zone that you wish to use when registering the "
@@ -312,6 +334,13 @@ msgstr ""
 "O OpenStack suporta usar zonas de disponibilidade, com cada região "
 "representando uma localidade. Por favor, informe a zona que você deseja usar "
 "ao registrar o \"endpoint\"."
+
+#~ msgid ""
+#~ "To configure its endpoint in Keystone, manila-api needs the Keystone "
+#~ "authentication token."
+#~ msgstr ""
+#~ "Para configurar o seu \"endpoint\" no Keystone, o manila-api precisa do "
+#~ "\"token\" de autenticação do Keystone."
 
 #~ msgid "keystone"
 #~ msgstr "keystone"

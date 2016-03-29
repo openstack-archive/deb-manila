@@ -1,3 +1,9 @@
+manila (1:2.0.0~rc1-3) experimental; urgency=medium
+
+  * Do not use Keystone admin auth token to register API endpoints.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 29 Mar 2016 13:41:24 +0000
+
 manila (1:2.0.0~rc1-2) experimental; urgency=medium
 
   * Adds install-missing-files.patch as PBR is (as always) missing the Alembic
