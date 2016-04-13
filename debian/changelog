@@ -1,4 +1,4 @@
-manila (1:2.0.0-2) UNRELEASED; urgency=medium
+manila (1:2.0.0-2) unstable; urgency=medium
 
   [ Ondřej Nový ]
   * Standards-Version is 3.9.8 now (no change)
@@ -6,8 +6,11 @@ manila (1:2.0.0-2) UNRELEASED; urgency=medium
   [ Thomas Goirand ]
   * Japanese debconf templates translation update (Closes: #820766).
   * Fix tempest.conf generation.
+  * Do not use manila/keystone_auth_token, but the admin credentials instead.
+  * Build-depends on openstack-pkg-tools >= 42 to ensure default shell is
+    /bin/false by default.
 
- -- Thomas Goirand <zigo@debian.org>  Sat, 23 Apr 2016 18:59:18 +0200
+ -- Thomas Goirand <zigo@debian.org>  Wed, 13 Apr 2016 20:38:31 +0000
 
 manila (1:2.0.0-1) unstable; urgency=medium
 
