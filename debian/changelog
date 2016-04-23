@@ -1,8 +1,12 @@
 manila (1:2.0.0-2) UNRELEASED; urgency=medium
 
+  [ Ondřej Nový ]
   * Standards-Version is 3.9.8 now (no change)
 
- -- Ondřej Nový <novy@ondrej.org>  Sat, 09 Apr 2016 19:23:40 +0200
+  [ Thomas Goirand ]
+  * Japanese debconf templates translation update (Closes: #820766).
+
+ -- Thomas Goirand <zigo@debian.org>  Sat, 23 Apr 2016 18:59:18 +0200
 
 manila (1:2.0.0-1) unstable; urgency=medium
 
