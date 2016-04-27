@@ -1,0 +1,14 @@
+Description: Fix tempest.conf generation
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: no
+Last-Update: 2016-04-27
+
+--- manila-2.0.0.orig/manila_tempest_tests/plugin.py
++++ manila-2.0.0/manila_tempest_tests/plugin.py
+@@ -47,4 +47,5 @@ class ManilaTempestPlugin(plugins.Tempes
+             )
+ 
+     def get_opt_lists(self):
+-        return [(config_share.share_group.name, config_share.ShareGroup)]
++        return [(config_share.share_group.name, config_share.ShareGroup),
++                ('service_available', config_application_catalog.ServiceAvailableGroup)]
