@@ -11,4 +11,4 @@ Last-Update: 2016-04-27
      def get_opt_lists(self):
 -        return [(config_share.share_group.name, config_share.ShareGroup)]
 +        return [(config_share.share_group.name, config_share.ShareGroup),
-+                ('service_available', config_application_catalog.ServiceAvailableGroup)]
++                ('service_available', config_share.ServiceAvailableGroup)]

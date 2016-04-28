@@ -1,3 +1,9 @@
+manila (1:2.0.0-4) unstable; urgency=medium
+
+  * Fix the tempest.conf generation patch.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 28 Apr 2016 03:18:57 +0000
+
 manila (1:2.0.0-3) unstable; urgency=medium
 
   * Japanese debconf templates translation update (Closes: #820766).
