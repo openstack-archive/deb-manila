@@ -1,6 +1,7 @@
 manila (1:2.0.0-4) unstable; urgency=medium
 
   * Fix the tempest.conf generation patch.
+  * Updated Brazilian Portuguese debconf templates (Closes: #820252).
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 28 Apr 2016 03:18:57 +0000
 
