@@ -1,6 +1,6 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: manila
-Source: http://github.com/stackforge/manila
+Source: https://github.com/openstack/manila
 
 Files: *
 Copyright: 2013 OpenStack Foundation
