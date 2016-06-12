@@ -21,6 +21,7 @@
 
 import copy
 import datetime
+import functools
 
 from oslo_config import cfg
 from oslo_log import log
@@ -140,7 +141,12 @@ def locked_share_replica_operation(operation):
 
 
 def add_hooks(f):
+    """Hook decorator to perform action before and after a share method call
 
+    The hook decorator can perform actions before some share driver methods
+    calls and after a call with results of driver call and preceding hook call.
+    """
+    @functools.wraps(f)
     def wrapped(self, *args, **kwargs):
         if not self.hooks:
             return f(self, *args, **kwargs)
@@ -244,6 +250,10 @@ class ShareManager(manager.SchedulerDependentManager):
         """Initialization for a standalone service."""
 
         ctxt = context.get_admin_context()
+        LOG.debug("Start initialization of driver: '%(driver)s"
+                  "@%(host)s'",
+                  {"driver": self.driver.__class__.__name__,
+                   "host": self.host})
         try:
             self.driver.do_setup(ctxt)
             self.driver.check_for_setup_error()
@@ -320,6 +330,10 @@ class ShareManager(manager.SchedulerDependentManager):
                     )
 
         self.publish_service_capabilities(ctxt)
+        LOG.info(_LI("Finished initialization of driver: '%(driver)s"
+                     "@%(host)s'"),
+                 {"driver": self.driver.__class__.__name__,
+                  "host": self.host})
 
     def _provide_share_server_for_share(self, context, share_network_id,
                                         share_instance, snapshot=None,
@@ -606,7 +620,6 @@ class ShareManager(manager.SchedulerDependentManager):
         if not force_host_copy:
 
             try:
-
                 dest_driver_migration_info = rpcapi.migration_get_driver_info(
                     context, share_instance)
 
@@ -624,12 +637,6 @@ class ShareManager(manager.SchedulerDependentManager):
                     context, share_instance, share_server, host,
                     dest_driver_migration_info, notify)
 
-                if moved and not notify:
-                    self.db.share_update(
-                        context, share_ref['id'],
-                        {'task_state':
-                            constants.TASK_STATE_MIGRATION_DRIVER_PHASE1_DONE})
-
                 # NOTE(ganso): Here we are allowing the driver to perform
                 # changes even if it has not performed migration. While this
                 # scenario may not be valid, I do not think it should be
@@ -646,10 +653,14 @@ class ShareManager(manager.SchedulerDependentManager):
                                 "with generic migration approach.") % share_id)
 
         if not moved:
-            try:
-                LOG.debug("Starting generic migration "
-                          "for share %s.", share_id)
+            LOG.debug("Starting generic migration "
+                      "for share %s.", share_id)
 
+            self.db.share_update(
+                context, share_id,
+                {'task_state': constants.TASK_STATE_MIGRATION_IN_PROGRESS})
+
+            try:
                 self._migration_start_generic(context, share_ref,
                                               share_instance, host, notify)
             except Exception:
@@ -662,6 +673,22 @@ class ShareManager(manager.SchedulerDependentManager):
                     context, share_instance['id'],
                     {'status': constants.STATUS_AVAILABLE})
                 raise exception.ShareMigrationFailed(reason=msg)
+        elif not notify:
+            self.db.share_update(
+                context, share_ref['id'],
+                {'task_state':
+                    constants.TASK_STATE_MIGRATION_DRIVER_PHASE1_DONE})
+        else:
+            self.db.share_instance_update(
+                context, share_instance['id'],
+                {'status': constants.STATUS_AVAILABLE,
+                 'host': host['host']})
+            self.db.share_update(
+                context, share_ref['id'],
+                {'task_state': constants.TASK_STATE_MIGRATION_SUCCESS})
+
+            LOG.info(_LI("Share Migration for share %s"
+                     " completed successfully."), share_ref['id'])
 
     def _migration_start_generic(self, context, share, share_instance, host,
                                  notify):
@@ -1558,6 +1585,11 @@ class ShareManager(manager.SchedulerDependentManager):
                 'availability_zone': CONF.storage_availability_zone,
             })
 
+            # If the share was managed with `replication_type` extra-spec, the
+            # instance becomes an `active` replica.
+            if share_ref.get('replication_type'):
+                share_update['replica_state'] = constants.REPLICA_STATE_ACTIVE
+
             # NOTE(vponomaryov): we should keep only those export locations
             # that driver has calculated to avoid incompatibilities with one
             # provided by user.
@@ -1874,13 +1906,14 @@ class ShareManager(manager.SchedulerDependentManager):
         )
         snapshot_instance_id = snapshot_instance['id']
 
-        try:
-            model_update = self.driver.create_snapshot(
-                context, snapshot_instance, share_server=share_server)
+        snapshot_instance = self._get_snapshot_instance_dict(
+            context, snapshot_instance)
 
-            if model_update:
-                self.db.share_snapshot_instance_update(
-                    context, snapshot_instance_id, model_update)
+        try:
+
+            model_update = self.driver.create_snapshot(
+                context, snapshot_instance, share_server=share_server) or {}
+
         except Exception:
             with excutils.save_and_reraise_exception():
                 self.db.share_snapshot_instance_update(
@@ -1888,17 +1921,16 @@ class ShareManager(manager.SchedulerDependentManager):
                     snapshot_instance_id,
                     {'status': constants.STATUS_ERROR})
 
+        if model_update.get('status') in (None, constants.STATUS_AVAILABLE):
+            model_update['status'] = constants.STATUS_AVAILABLE
+            model_update['progress'] = '100%'
+
         self.db.share_snapshot_instance_update(
-            context,
-            snapshot_instance_id,
-            {'status': constants.STATUS_AVAILABLE,
-             'progress': '100%'}
-        )
-        return snapshot_id
+            context, snapshot_instance_id, model_update)
 
     @add_hooks
     @utils.require_driver_initialized
-    def delete_snapshot(self, context, snapshot_id):
+    def delete_snapshot(self, context, snapshot_id, force=False):
         """Delete share snapshot."""
         context = context.elevated()
         snapshot_ref = self.db.share_snapshot_get(context, snapshot_id)
@@ -1906,8 +1938,7 @@ class ShareManager(manager.SchedulerDependentManager):
         share_server = self._get_share_server(
             context, snapshot_ref['share']['instance'])
         snapshot_instance = self.db.share_snapshot_instance_get(
-            context, snapshot_ref.instance['id'], with_share_data=True
-        )
+            context, snapshot_ref.instance['id'], with_share_data=True)
         snapshot_instance_id = snapshot_instance['id']
 
         if context.project_id != snapshot_ref['project_id']:
@@ -1915,35 +1946,43 @@ class ShareManager(manager.SchedulerDependentManager):
         else:
             project_id = context.project_id
 
+        snapshot_instance = self._get_snapshot_instance_dict(
+            context, snapshot_instance)
+
         try:
             self.driver.delete_snapshot(context, snapshot_instance,
                                         share_server=share_server)
-        except exception.ShareSnapshotIsBusy:
-            self.db.share_snapshot_instance_update(
-                context,
-                snapshot_instance_id,
-                {'status': constants.STATUS_AVAILABLE})
         except Exception:
-            with excutils.save_and_reraise_exception():
-                self.db.share_snapshot_instance_update(
-                    context,
-                    snapshot_instance_id,
-                    {'status': constants.STATUS_ERROR_DELETING})
-        else:
-            self.db.share_snapshot_instance_delete(
-                context, snapshot_instance_id)
-            try:
-                reservations = QUOTAS.reserve(
-                    context, project_id=project_id, snapshots=-1,
-                    snapshot_gigabytes=-snapshot_ref['size'],
-                    user_id=snapshot_ref['user_id'])
-            except Exception:
-                reservations = None
-                LOG.exception(_LE("Failed to update usages deleting snapshot"))
+            with excutils.save_and_reraise_exception() as exc:
+                if force:
+                    msg = _("The driver was unable to delete the "
+                            "snapshot %s on the backend. Since this "
+                            "operation is forced, the snapshot will "
+                            "be deleted from Manila's database. A cleanup on "
+                            "the backend may be necessary.")
+                    LOG.exception(msg, snapshot_id)
+                    exc.reraise = False
+                else:
+                    self.db.share_snapshot_instance_update(
+                        context,
+                        snapshot_instance_id,
+                        {'status': constants.STATUS_ERROR_DELETING})
 
-            if reservations:
-                QUOTAS.commit(context, reservations, project_id=project_id,
-                              user_id=snapshot_ref['user_id'])
+        self.db.share_snapshot_instance_delete(context, snapshot_instance_id)
+
+        try:
+            reservations = QUOTAS.reserve(
+                context, project_id=project_id, snapshots=-1,
+                snapshot_gigabytes=-snapshot_ref['size'],
+                user_id=snapshot_ref['user_id'])
+        except Exception:
+            reservations = None
+            LOG.exception(_LE("Failed to update quota usages while deleting "
+                              "snapshot %s."), snapshot_id)
+
+        if reservations:
+            QUOTAS.commit(context, reservations, project_id=project_id,
+                          user_id=snapshot_ref['user_id'])
 
     @add_hooks
     @utils.require_driver_initialized

@@ -65,7 +65,7 @@ CONF.register_opts(cephfs_native_opts)
 
 
 class CephFSNativeDriver(driver.ShareDriver,):
-    """Driver for the Ceph Filsystem.
+    """Driver for the Ceph Filesystem.
 
     This driver is 'native' in the sense that it exposes a CephFS filesystem
     for use directly by guests, with no intermediate layer like NFS.
@@ -227,7 +227,8 @@ class CephFSNativeDriver(driver.ShareDriver,):
 
         self.volume_client.deauthorize(self._share_path(share),
                                        access['access_to'])
-        self.volume_client.evict(access['access_to'])
+        self.volume_client.evict(self._share_path(share),
+                                 access['access_to'])
 
     def update_access(self, context, share, access_rules, add_rules,
                       delete_rules, share_server=None):
@@ -287,11 +288,13 @@ class CephFSNativeDriver(driver.ShareDriver,):
 
     def create_snapshot(self, context, snapshot, share_server=None):
         self.volume_client.create_snapshot_volume(
-            self._share_path(snapshot['share']), snapshot['name'])
+            self._share_path(snapshot['share']),
+            '_'.join([snapshot['snapshot_id'], snapshot['id']]))
 
     def delete_snapshot(self, context, snapshot, share_server=None):
         self.volume_client.destroy_snapshot_volume(
-            self._share_path(snapshot['share']), snapshot['name'])
+            self._share_path(snapshot['share']),
+            '_'.join([snapshot['snapshot_id'], snapshot['id']]))
 
     def create_consistency_group(self, context, cg_dict, share_server=None):
         self.volume_client.create_group(cg_dict['id'])

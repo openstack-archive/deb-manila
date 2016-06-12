@@ -32,8 +32,8 @@ class SchedulerAPI(object):
 
         1.0 - Initial version.
         1.1 - Add get_pools method
-        1.2 - Introduce Share Instances:
-            Replace create_share() - > create_share_instance()
+        1.2 - Introduce Share Instances. Replace ``create_share()`` with
+        ``create_share_instance()``
         1.3 - Add create_consistency_group method
         1.4 - Add migrate_share_to_host method
         1.5 - Add create_share_replica
@@ -108,7 +108,7 @@ class SchedulerAPI(object):
                      request_spec=None, filter_properties=None):
 
         call_context = self.client.prepare(version='1.6')
-        return call_context.call(context, 'manage_share',
+        return call_context.cast(context, 'manage_share',
                                  share_id=share_id,
                                  driver_options=driver_options,
                                  request_spec=request_spec,

@@ -201,8 +201,8 @@ class BaseSharesTest(test.BaseTestCase):
         if not hasattr(cls, "os"):
             cls.username = CONF.identity.username
             cls.password = CONF.identity.password
-            cls.tenant_name = CONF.identity.tenant_name
-            cls.verify_nonempty(cls.username, cls.password, cls.tenant_name)
+            cls.project_name = CONF.identity.project_name
+            cls.verify_nonempty(cls.username, cls.password, cls.project_name)
             cls.os = clients.Manager()
         if CONF.share.multitenancy_enabled:
             if not CONF.service_available.neutron:
@@ -431,8 +431,9 @@ class BaseSharesTest(test.BaseTestCase):
     def create_consistency_group(cls, client=None, cleanup_in_class=True,
                                  share_network_id=None, **kwargs):
         client = client or cls.shares_v2_client
-        kwargs['share_network_id'] = (share_network_id or
-                                      client.share_network_id or None)
+        if kwargs.get('source_cgsnapshot_id') is None:
+            kwargs['share_network_id'] = (share_network_id or
+                                          client.share_network_id or None)
         consistency_group = client.create_consistency_group(**kwargs)
         resource = {
             "type": "consistency_group",
@@ -807,8 +808,8 @@ class BaseSharesAltTest(BaseSharesTest):
     def resource_setup(cls):
         cls.username = CONF.identity.alt_username
         cls.password = CONF.identity.alt_password
-        cls.tenant_name = CONF.identity.alt_tenant_name
-        cls.verify_nonempty(cls.username, cls.password, cls.tenant_name)
+        cls.project_name = CONF.identity.alt_project_name
+        cls.verify_nonempty(cls.username, cls.password, cls.project_name)
         cls.os = clients.AltManager()
         alt_share_network_id = CONF.share.alt_share_network_id
         cls.os.shares_client.share_network_id = alt_share_network_id
@@ -824,12 +825,12 @@ class BaseSharesAdminTest(BaseSharesTest):
         if hasattr(CONF.identity, 'admin_username'):
             cls.username = CONF.identity.admin_username
             cls.password = CONF.identity.admin_password
-            cls.tenant_name = CONF.identity.admin_tenant_name
+            cls.project_name = CONF.identity.admin_project_name
         else:
             cls.username = CONF.auth.admin_username
             cls.password = CONF.auth.admin_password
-            cls.tenant_name = CONF.auth.admin_tenant_name
-        cls.verify_nonempty(cls.username, cls.password, cls.tenant_name)
+            cls.project_name = CONF.auth.admin_project_name
+        cls.verify_nonempty(cls.username, cls.password, cls.project_name)
         cls.os = clients.AdminManager()
         admin_share_network_id = CONF.share.admin_share_network_id
         cls.os.shares_client.share_network_id = admin_share_network_id

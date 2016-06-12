@@ -70,41 +70,41 @@ class HackingTestCase(test.TestCase):
     def test_check_explicit_underscore_import(self):
         self.assertEqual(1, len(list(checks.check_explicit_underscore_import(
             "LOG.info(_('My info message'))",
-            "cinder/tests/other_files.py"))))
+            "manila/tests/other_files.py"))))
         self.assertEqual(1, len(list(checks.check_explicit_underscore_import(
             "msg = _('My message')",
-            "cinder/tests/other_files.py"))))
+            "manila/tests/other_files.py"))))
         self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
-            "from cinder.i18n import _",
-            "cinder/tests/other_files.py"))))
+            "from manila.i18n import _",
+            "manila/tests/other_files.py"))))
         self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "LOG.info(_('My info message'))",
-            "cinder/tests/other_files.py"))))
+            "manila/tests/other_files.py"))))
         self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "msg = _('My message')",
-            "cinder/tests/other_files.py"))))
+            "manila/tests/other_files.py"))))
         self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
-            "from cinder.i18n import _LE, _, _LW",
-            "cinder/tests/other_files2.py"))))
+            "from manila.i18n import _LE, _, _LW",
+            "manila/tests/other_files2.py"))))
         self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "msg = _('My message')",
-            "cinder/tests/other_files2.py"))))
+            "manila/tests/other_files2.py"))))
         self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "_ = translations.ugettext",
-            "cinder/tests/other_files3.py"))))
+            "manila/tests/other_files3.py"))))
         self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "msg = _('My message')",
-            "cinder/tests/other_files3.py"))))
+            "manila/tests/other_files3.py"))))
         # Complete code coverage by falling through all checks
         self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
             "LOG.info('My info message')",
-            "cinder.tests.unit/other_files4.py"))))
+            "manila.tests.unit/other_files4.py"))))
         self.assertEqual(0, len(list(checks.check_explicit_underscore_import(
-            "from cinder.i18n import _LW",
-            "cinder.tests.unit/other_files5.py"))))
+            "from manila.i18n import _LW",
+            "manila.tests.unit/other_files5.py"))))
         self.assertEqual(1, len(list(checks.check_explicit_underscore_import(
             "msg = _('My message')",
-            "cinder.tests.unit/other_files5.py"))))
+            "manila.tests.unit/other_files5.py"))))
 
     # We are patching pep8 so that only the check under test is actually
     # installed.
@@ -238,3 +238,22 @@ class HackingTestCase(test.TestCase):
 
         self.assertEqual(0, len(list(checks.dict_constructor_with_list_copy(
             "      self._render_dict(xml, data_el, data.__dict__)"))))
+
+    def test_no_xrange(self):
+        self.assertEqual(1, len(list(checks.no_xrange("xrange(45)"))))
+
+        self.assertEqual(0, len(list(checks.no_xrange("range(45)"))))
+
+    def test_validate_assertTrue(self):
+        test_value = True
+        self.assertEqual(0, len(list(checks.validate_assertTrue(
+            "assertTrue(True)"))))
+        self.assertEqual(1, len(list(checks.validate_assertTrue(
+            "assertEqual(True, %s)" % test_value))))
+
+    def test_validate_assertIsNone(self):
+        test_value = None
+        self.assertEqual(0, len(list(checks.validate_assertIsNone(
+            "assertIsNone(None)"))))
+        self.assertEqual(1, len(list(checks.validate_assertIsNone(
+            "assertEqual(None, %s)" % test_value))))

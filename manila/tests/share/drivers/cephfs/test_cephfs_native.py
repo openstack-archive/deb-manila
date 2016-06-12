@@ -277,28 +277,30 @@ class CephFSNativeDriverTestCase(test.TestCase):
     def test_create_snapshot(self):
         self._driver.create_snapshot(self._context,
                                      {
+                                         "id": "instance1",
                                          "share": self._share,
-                                         "name": "snappy1"
+                                         "snapshot_id": "snappy1"
                                      },
                                      None)
 
         (self._driver._volume_client.create_snapshot_volume
             .assert_called_once_with(
                 self._driver._share_path(self._share),
-                "snappy1"))
+                "snappy1_instance1"))
 
     def test_delete_snapshot(self):
         self._driver.delete_snapshot(self._context,
                                      {
+                                         "id": "instance1",
                                          "share": self._share,
-                                         "name": "snappy1"
+                                         "snapshot_id": "snappy1"
                                      },
                                      None)
 
         (self._driver._volume_client.destroy_snapshot_volume
             .assert_called_once_with(
                 self._driver._share_path(self._share),
-                "snappy1"))
+                "snappy1_instance1"))
 
     def test_create_consistency_group(self):
         self._driver.create_consistency_group(self._context, {"id": "grp1"},
@@ -343,13 +345,14 @@ class CephFSNativeDriverTestCase(test.TestCase):
         vc.disconnect.assert_called_once_with()
 
     def test_delete_driver_no_client(self):
-        self.assertEqual(None, self._driver._volume_client)
+        self.assertIsNone(self._driver._volume_client)
         del self._driver
 
     def test_connect_noevict(self):
         # When acting as "admin", driver should skip evicting
         self._driver.configuration.local_conf.set_override('cephfs_auth_id',
-                                                           "admin")
+                                                           "admin",
+                                                           enforce_type=True)
 
         self._driver.create_share(self._context,
                                   self._share)

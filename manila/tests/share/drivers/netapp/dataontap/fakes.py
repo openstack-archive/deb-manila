@@ -506,7 +506,7 @@ POOLS = [
      'free_capacity_gb': 1.1,
      'allocated_capacity_gb': 2.2,
      'qos': 'False',
-     'reserved_percentage': 0,
+     'reserved_percentage': 5,
      'dedupe': [True, False],
      'compression': [True, False],
      'thin_provisioning': [True, False],
@@ -518,7 +518,7 @@ POOLS = [
      'free_capacity_gb': 2.0,
      'allocated_capacity_gb': 4.0,
      'qos': 'False',
-     'reserved_percentage': 0,
+     'reserved_percentage': 5,
      'dedupe': [True, False],
      'compression': [True, False],
      'thin_provisioning': [True, False],
@@ -533,7 +533,7 @@ POOLS_VSERVER_CREDS = [
      'free_capacity_gb': 1.1,
      'allocated_capacity_gb': 0.0,
      'qos': 'False',
-     'reserved_percentage': 0,
+     'reserved_percentage': 5,
      'dedupe': [True, False],
      'compression': [True, False],
      'thin_provisioning': [True, False],
@@ -545,7 +545,7 @@ POOLS_VSERVER_CREDS = [
      'free_capacity_gb': 2.0,
      'allocated_capacity_gb': 0.0,
      'qos': 'False',
-     'reserved_percentage': 0,
+     'reserved_percentage': 5,
      'dedupe': [True, False],
      'compression': [True, False],
      'thin_provisioning': [True, False],
@@ -567,7 +567,9 @@ SSC_DISK_TYPES = {
 
 def get_config_cmode():
     config = na_fakes.create_configuration_cmode()
-    config.local_conf.set_override('share_backend_name', BACKEND_NAME)
+    config.local_conf.set_override('share_backend_name', BACKEND_NAME,
+                                   enforce_type=True)
+    config.reserved_share_percentage = 5
     config.netapp_login = CLIENT_KWARGS['username']
     config.netapp_password = CLIENT_KWARGS['password']
     config.netapp_server_hostname = CLIENT_KWARGS['hostname']

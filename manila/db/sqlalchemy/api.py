@@ -20,6 +20,7 @@
 
 import copy
 import datetime
+from functools import wraps
 import sys
 import uuid
 import warnings
@@ -139,7 +140,7 @@ def require_admin_context(f):
     The first argument to the wrapped function must be the context.
 
     """
-
+    @wraps(f)
     def wrapper(*args, **kwargs):
         if not is_admin_context(args[0]):
             raise exception.AdminRequired()
@@ -157,7 +158,7 @@ def require_context(f):
     The first argument to the wrapped function must be the context.
 
     """
-
+    @wraps(f)
     def wrapper(*args, **kwargs):
         if not is_admin_context(args[0]) and not is_user_context(args[0]):
             raise exception.NotAuthorized()
@@ -171,7 +172,7 @@ def require_share_exists(f):
     Requires the wrapped function to use context and share_id as
     their first two arguments.
     """
-
+    @wraps(f)
     def wrapper(context, share_id, *args, **kwargs):
         share_get(context, share_id)
         return f(context, share_id, *args, **kwargs)
@@ -185,7 +186,7 @@ def require_share_instance_exists(f):
     Requires the wrapped function to use context and share_instance_id as
     their first two arguments.
     """
-
+    @wraps(f)
     def wrapper(context, share_instance_id, *args, **kwargs):
         share_instance_get(context, share_instance_id)
         return f(context, share_instance_id, *args, **kwargs)
@@ -427,7 +428,7 @@ def service_get_by_args(context, host, binary):
 def service_create(context, values):
     session = get_session()
 
-    ensure_availability_zone_exists(context, values, session)
+    _ensure_availability_zone_exists(context, values, session)
 
     service_ref = models.Service()
     service_ref.update(values)
@@ -444,7 +445,7 @@ def service_create(context, values):
 def service_update(context, service_id, values):
     session = get_session()
 
-    ensure_availability_zone_exists(context, values, session, strict=False)
+    _ensure_availability_zone_exists(context, values, session, strict=False)
 
     with session.begin():
         service_ref = service_get(context, service_id, session=session)
@@ -580,6 +581,7 @@ def quota_class_get(context, class_name, resource, session=None):
     return result
 
 
+@require_context
 def quota_class_get_default(context):
     rows = model_query(context, models.QuotaClass, read_deleted="no").\
         filter_by(class_name=_DEFAULT_QUOTA_NAME).\
@@ -1109,27 +1111,35 @@ def reservation_expire(context):
 
 ################
 
-def extract_instance_values(values, fields):
+def _extract_instance_values(values_to_extract, fields):
+    values = copy.deepcopy(values_to_extract)
     instance_values = {}
     for field in fields:
         field_value = values.pop(field, None)
         if field_value:
             instance_values.update({field: field_value})
 
-    return instance_values
+    return instance_values, values
 
 
-def extract_share_instance_values(values):
+def _extract_share_instance_values(values):
     share_instance_model_fields = [
         'status', 'host', 'scheduled_at', 'launched_at', 'terminated_at',
-        'share_server_id', 'share_network_id', 'availability_zone'
+        'share_server_id', 'share_network_id', 'availability_zone',
+        'replica_state',
     ]
-    return extract_instance_values(values, share_instance_model_fields)
+    share_instance_values, share_values = (
+        _extract_instance_values(values, share_instance_model_fields)
+    )
+    return share_instance_values, share_values
 
 
-def extract_snapshot_instance_values(values):
+def _extract_snapshot_instance_values(values):
     fields = ['status', 'progress', 'provider_location']
-    return extract_instance_values(values, fields)
+    snapshot_instance_values, snapshot_values = (
+        _extract_instance_values(values, fields)
+    )
+    return snapshot_instance_values, snapshot_values
 
 
 ################
@@ -1159,7 +1169,7 @@ def _share_instance_create(context, share_id, values, session):
 def share_instance_update(context, share_instance_id, values,
                           with_share_data=False):
     session = get_session()
-    ensure_availability_zone_exists(context, values, session, strict=False)
+    _ensure_availability_zone_exists(context, values, session, strict=False)
     with session.begin():
         instance_ref = _share_instance_update(
             context, share_instance_id, values, session
@@ -1171,7 +1181,6 @@ def share_instance_update(context, share_instance_id, values,
         return instance_ref
 
 
-@require_context
 def _share_instance_update(context, share_instance_id, values, session):
     share_instance_ref = share_instance_get(context, share_instance_id,
                                             session=session)
@@ -1429,7 +1438,8 @@ def share_replica_update(context, share_replica_id, values,
     session = session or get_session()
 
     with session.begin():
-        ensure_availability_zone_exists(context, values, session, strict=False)
+        _ensure_availability_zone_exists(context, values, session,
+                                         strict=False)
         updated_share_replica = _share_instance_update(
             context, share_replica_id, values, session=session)
 
@@ -1473,16 +1483,18 @@ def _metadata_refs(metadata_dict, meta_class):
 
 
 @require_context
-def share_create(context, values, create_share_instance=True):
+def share_create(context, share_values, create_share_instance=True):
+    values = copy.deepcopy(share_values)
     values = ensure_model_dict_has_id(values)
     values['share_metadata'] = _metadata_refs(values.get('metadata'),
                                               models.ShareMetadata)
     session = get_session()
     share_ref = models.Share()
-    share_instance_values = extract_share_instance_values(values)
-    ensure_availability_zone_exists(context, share_instance_values, session,
-                                    strict=False)
-    share_ref.update(values)
+    share_instance_values, share_values = _extract_share_instance_values(
+        values)
+    _ensure_availability_zone_exists(context, share_instance_values, session,
+                                     strict=False)
+    share_ref.update(share_values)
 
     with session.begin():
         share_ref.save(session=session)
@@ -1513,12 +1525,14 @@ def share_data_get_for_project(context, project_id, user_id, session=None):
 
 @require_context
 @oslo_db_api.wrap_db_retry(max_retries=5, retry_on_deadlock=True)
-def share_update(context, share_id, values):
+def share_update(context, share_id, update_values):
     session = get_session()
+    values = copy.deepcopy(update_values)
 
-    share_instance_values = extract_share_instance_values(values)
-    ensure_availability_zone_exists(context, share_instance_values, session,
-                                    strict=False)
+    share_instance_values, share_values = _extract_share_instance_values(
+        values)
+    _ensure_availability_zone_exists(context, share_instance_values, session,
+                                     strict=False)
 
     with session.begin():
         share_ref = share_get(context, share_id, session=session)
@@ -1526,7 +1540,7 @@ def share_update(context, share_id, values):
         _share_instance_update(context, share_ref.instance['id'],
                                share_instance_values, session=session)
 
-        share_ref.update(values)
+        share_ref.update(share_values)
         share_ref.save(session=session)
         return share_ref
 
@@ -1541,7 +1555,6 @@ def share_get(context, share_id, session=None):
     return result
 
 
-@require_context
 def _share_get_all_with_filters(context, project_id=None, share_server_id=None,
                                 consistency_group_id=None, filters=None,
                                 is_public=False, sort_key=None,
@@ -1732,6 +1745,7 @@ def share_access_create(context, values):
     return share_access_get(context, access_ref['id'])
 
 
+@require_context
 def share_instance_access_copy(context, share_id, instance_id, session=None):
     """Copy access rules from share to share instance."""
     session = session or get_session()
@@ -2023,17 +2037,21 @@ def _set_share_snapshot_instance_data(context, snapshot_instances, session):
 
 
 @require_context
-def share_snapshot_create(context, values, create_snapshot_instance=True):
+def share_snapshot_create(context, create_values,
+                          create_snapshot_instance=True):
+    values = copy.deepcopy(create_values)
     values = ensure_model_dict_has_id(values)
 
     snapshot_ref = models.ShareSnapshot()
-    snapshot_instance_values = extract_snapshot_instance_values(values)
-    share_ref = share_get(context, values.get('share_id'))
+    snapshot_instance_values, snapshot_values = (
+        _extract_snapshot_instance_values(values)
+    )
+    share_ref = share_get(context, snapshot_values.get('share_id'))
     snapshot_instance_values.update(
         {'share_instance_id': share_ref.instance.id}
     )
 
-    snapshot_ref.update(values)
+    snapshot_ref.update(snapshot_values)
     session = get_session()
     with session.begin():
         snapshot_ref.save(session=session)
@@ -2045,7 +2063,8 @@ def share_snapshot_create(context, values, create_snapshot_instance=True):
                 snapshot_instance_values,
                 session=session
             )
-        return share_snapshot_get(context, values['id'], session=session)
+        return share_snapshot_get(
+            context, snapshot_values['id'], session=session)
 
 
 @require_admin_context
@@ -2197,10 +2216,12 @@ def share_snapshot_update(context, snapshot_id, values):
         snapshot_ref = share_snapshot_get(context, snapshot_id,
                                           session=session)
 
-        instance_values = extract_snapshot_instance_values(values)
+        instance_values, snapshot_values = (
+            _extract_snapshot_instance_values(values)
+        )
 
-        if values:
-            snapshot_ref.update(values)
+        if snapshot_values:
+            snapshot_ref.update(snapshot_values)
             snapshot_ref.save(session=session)
 
         if instance_values:
@@ -2239,8 +2260,6 @@ def _share_metadata_get_query(context, share_id, session=None):
         options(joinedload('share'))
 
 
-@require_context
-@require_share_exists
 def _share_metadata_get(context, share_id, session=None):
     rows = _share_metadata_get_query(context, share_id,
                                      session=session).all()
@@ -2251,8 +2270,6 @@ def _share_metadata_get(context, share_id, session=None):
     return result
 
 
-@require_context
-@require_share_exists
 @oslo_db_api.wrap_db_retry(max_retries=5, retry_on_deadlock=True)
 def _share_metadata_update(context, share_id, metadata, delete, session=None):
     if not session:
@@ -3187,7 +3204,6 @@ def _share_type_get_id_from_share_type(context, id, session=None):
     return result['id']
 
 
-@require_context
 def _share_type_get(context, id, session=None, inactive=False,
                     expected_fields=None):
     expected_fields = expected_fields or []
@@ -3217,7 +3233,6 @@ def share_type_get(context, id, inactive=False, expected_fields=None):
                            expected_fields=expected_fields)
 
 
-@require_context
 def _share_type_get_by_name(context, name, session=None):
     result = model_query(context, models.ShareTypes, session=session).\
         options(joinedload('extra_specs')).\
@@ -3352,7 +3367,6 @@ def share_type_extra_specs_delete(context, share_type_id, key):
             filter_by(key=key).soft_delete()
 
 
-@require_context
 def _share_type_extra_specs_get_item(context, share_type_id, key,
                                      session=None):
     result = _share_type_extra_specs_query(
@@ -3387,7 +3401,7 @@ def share_type_extra_specs_update_or_create(context, share_type_id, specs):
         return specs
 
 
-def ensure_availability_zone_exists(context, values, session, strict=True):
+def _ensure_availability_zone_exists(context, values, session, strict=True):
     az_name = values.pop('availability_zone', None)
 
     if strict and not az_name:
@@ -3405,6 +3419,7 @@ def ensure_availability_zone_exists(context, values, session, strict=True):
     values.update({'availability_zone_id': az_ref['id']})
 
 
+@require_context
 def availability_zone_get(context, id_or_name, session=None):
     if session is None:
         session = get_session()
@@ -3424,6 +3439,7 @@ def availability_zone_get(context, id_or_name, session=None):
     return result
 
 
+@require_context
 @oslo_db_api.wrap_db_retry(max_retries=5, retry_on_deadlock=True)
 def availability_zone_create_if_not_exist(context, name, session=None):
     if session is None:
@@ -3441,6 +3457,7 @@ def availability_zone_create_if_not_exist(context, name, session=None):
     return az
 
 
+@require_context
 def availability_zone_get_all(context):
     session = get_session()
 
@@ -3633,7 +3650,6 @@ def count_cgsnapshot_members_in_share(context, share_id, session=None):
         count()
 
 
-@require_context
 def _cgsnapshot_get(context, cgsnapshot_id, session=None):
     session = session or get_session()
     result = model_query(context, models.CGSnapshot, session=session,

@@ -757,12 +757,6 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
         return interfaces
 
     @na_utils.trace
-    def delete_network_interface(self, interface_name):
-        """Deletes LIF."""
-        api_args = {'vserver': None, 'interface-name': interface_name}
-        self.send_request('net-interface-delete', api_args)
-
-    @na_utils.trace
     def get_ipspaces(self, ipspace_name=None):
         """Gets one or more IPSpaces."""
 
@@ -1579,6 +1573,7 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
                         'name': None,
                         'type': None,
                         'style': None,
+                        'owning-vserver-name': None,
                     },
                     'volume-space-attributes': {
                         'size': None,
@@ -1607,6 +1602,8 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             'name': volume_id_attributes.get_child_content('name'),
             'type': volume_id_attributes.get_child_content('type'),
             'style': volume_id_attributes.get_child_content('style'),
+            'owning-vserver-name': volume_id_attributes.get_child_content(
+                'owning-vserver-name'),
             'size': volume_space_attributes.get_child_content('size'),
         }
         return volume
@@ -2914,3 +2911,27 @@ class NetAppCmodeClient(client_base.NetAppBaseClient):
             snapmirrors.append(snapmirror)
 
         return snapmirrors
+
+    def volume_has_snapmirror_relationships(self, volume):
+        """Return True if snapmirror relationships exist for a given volume.
+
+        If we have snapmirror control plane license, we can verify whether
+        the given volume is part of any snapmirror relationships.
+        """
+        try:
+            # Check if volume is a source snapmirror volume
+            snapmirrors = self.get_snapmirrors(
+                volume['owning-vserver-name'], volume['name'], None, None)
+            # Check if volume is a destination snapmirror volume
+            if not snapmirrors:
+                snapmirrors = self.get_snapmirrors(
+                    None, None, volume['owning-vserver-name'], volume['name'])
+
+            has_snapmirrors = len(snapmirrors) > 0
+        except netapp_api.NaApiError:
+            msg = _LE("Could not determine if volume %s is part of "
+                      "existing snapmirror relationships.")
+            LOG.exception(msg, volume['name'])
+            has_snapmirrors = False
+
+        return has_snapmirrors

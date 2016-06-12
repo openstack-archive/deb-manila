@@ -79,7 +79,11 @@ class ManageNFSShareTest(base.BaseSharesAdminTest):
 
         # Data for creating shares in parallel
         data = [creation_data, creation_data]
+        if utils.is_microversion_ge(CONF.share.max_api_microversion, "2.5"):
+            data.append(creation_data)
         if utils.is_microversion_ge(CONF.share.max_api_microversion, "2.8"):
+            data.append(creation_data)
+        if utils.is_microversion_ge(CONF.share.max_api_microversion, "2.16"):
             data.append(creation_data)
         shares_created = cls.create_shares(data)
 
@@ -87,19 +91,25 @@ class ManageNFSShareTest(base.BaseSharesAdminTest):
         # Load all share data (host, etc.)
         for share in shares_created:
             # Unmanage shares from manila
-            cls.shares.append(cls.shares_client.get_share(share['id']))
+            get_share = cls.shares_v2_client.get_share(share['id'])
+            if utils.is_microversion_ge(
+                    CONF.share.max_api_microversion, "2.9"):
+                get_share["export_locations"] = (
+                    cls.shares_v2_client.list_share_export_locations(
+                        share["id"])
+                    )
+            cls.shares.append(get_share)
             cls.shares_client.unmanage_share(share['id'])
             cls.shares_client.wait_for_resource_deletion(
                 share_id=share['id'])
 
     def _test_manage(self, share, is_public=False,
                      version=CONF.share.max_api_microversion):
-        name = "Name for 'managed' share that had ID %s" % \
-               share['id']
+        name = "Name for 'managed' share that had ID %s" % share['id']
         description = "Description for 'managed' share"
 
         # Manage share
-        share = self.shares_v2_client.manage_share(
+        managed_share = self.shares_v2_client.manage_share(
             service_host=share['host'],
             export_path=share['export_locations'][0],
             protocol=share['share_proto'],
@@ -107,43 +117,63 @@ class ManageNFSShareTest(base.BaseSharesAdminTest):
             name=name,
             description=description,
             is_public=is_public,
+            version=version,
         )
 
         # Add managed share to cleanup queue
         self.method_resources.insert(
-            0, {'type': 'share', 'id': share['id'],
+            0, {'type': 'share', 'id': managed_share['id'],
                 'client': self.shares_client})
 
         # Wait for success
-        self.shares_v2_client.wait_for_share_status(share['id'], 'available')
+        self.shares_v2_client.wait_for_share_status(managed_share['id'],
+                                                    'available')
 
         # Verify data of managed share
-        get = self.shares_v2_client.get_share(share['id'], version="2.5")
-        self.assertEqual(name, get['name'])
-        self.assertEqual(description, get['description'])
-        self.assertEqual(share['host'], get['host'])
-        self.assertEqual(share['share_proto'], get['share_proto'])
-        self.assertEqual(self.st['share_type']['name'], get['share_type'])
+        self.assertEqual(name, managed_share['name'])
+        self.assertEqual(description, managed_share['description'])
+        self.assertEqual(share['host'], managed_share['host'])
+        self.assertEqual(share['share_proto'], managed_share['share_proto'])
 
-        share = self.shares_v2_client.get_share(share['id'], version="2.6")
-        self.assertEqual(self.st['share_type']['id'], share['share_type'])
+        if utils.is_microversion_ge(version, "2.6"):
+            self.assertEqual(self.st['share_type']['id'],
+                             managed_share['share_type'])
+        else:
+            self.assertEqual(self.st['share_type']['name'],
+                             managed_share['share_type'])
 
         if utils.is_microversion_ge(version, "2.8"):
-            self.assertEqual(is_public, share['is_public'])
+            self.assertEqual(is_public, managed_share['is_public'])
         else:
-            self.assertFalse(share['is_public'])
+            self.assertFalse(managed_share['is_public'])
+
+        if utils.is_microversion_ge(version, "2.16"):
+            self.assertEqual(share['user_id'], managed_share['user_id'])
+        else:
+            self.assertNotIn('user_id', managed_share)
 
         # Delete share
-        self.shares_v2_client.delete_share(share['id'])
-        self.shares_v2_client.wait_for_resource_deletion(share_id=share['id'])
+        self.shares_v2_client.delete_share(managed_share['id'])
+        self.shares_v2_client.wait_for_resource_deletion(
+            share_id=managed_share['id'])
         self.assertRaises(lib_exc.NotFound,
                           self.shares_v2_client.get_share,
-                          share['id'])
+                          managed_share['id'])
 
-    @base.skip_if_microversion_not_supported("2.8")
     @test.attr(type=["gate", "smoke"])
+    @base.skip_if_microversion_not_supported("2.5")
+    def test_manage_with_os_share_manage_url(self):
+        self._test_manage(share=self.shares[2], version="2.5")
+
+    @test.attr(type=["gate", "smoke"])
+    @base.skip_if_microversion_not_supported("2.8")
     def test_manage_with_is_public_True(self):
-        self._test_manage(share=self.shares[2], is_public=True)
+        self._test_manage(share=self.shares[3], is_public=True, version="2.8")
+
+    @test.attr(type=["gate", "smoke"])
+    @base.skip_if_microversion_not_supported("2.16")
+    def test_manage_show_user_id(self):
+        self._test_manage(share=self.shares[4], version="2.16")
 
     @test.attr(type=["gate", "smoke"])
     def test_manage(self):
@@ -156,32 +186,44 @@ class ManageNFSShareTest(base.BaseSharesAdminTest):
 
         self._test_manage(share=self.shares[0])
 
-    @test.attr(type=["gate", "smoke"])
-    def test_manage_retry(self):
-        # Manage share with invalid parameters
+    @test.attr(type=["gate", "smoke", "negative", ])
+    def test_manage_invalid(self):
+        # Try to manage share with invalid parameters, it should not succeed
+        # because the scheduler will reject it. If it succeeds, then this test
+        # case failed. Then, in order to remove the resource from backend, we
+        # need to manage it again, properly, so we can delete it. Consequently
+        # the second part of this test also tests that manage operation with a
+        # proper share type works.
 
-        self.assertRaises(
-            lib_exc.Conflict,
-            self.shares_v2_client.manage_share,
-            service_host=self.shares[1]['host'],
-            export_path=self.shares[1]['export_locations'][0],
-            protocol=self.shares[1]['share_proto'],
-            share_type_id=self.st_invalid['share_type']['id'])
+        def _delete_share(share_id):
+            self.shares_v2_client.reset_state(share_id)
+            self.shares_v2_client.delete_share(share_id)
+            self.shares_v2_client.wait_for_resource_deletion(share_id=share_id)
+            self.assertRaises(lib_exc.NotFound,
+                              self.shares_v2_client.get_share,
+                              share_id)
 
         share = self.shares_v2_client.manage_share(
             service_host=self.shares[1]['host'],
             export_path=self.shares[1]['export_locations'][0],
             protocol=self.shares[1]['share_proto'],
+            share_type_id=self.st_invalid['share_type']['id'])
+        self.addCleanup(_delete_share, share['id'])
+
+        self.shares_v2_client.wait_for_share_status(
+            share['id'], 'manage_error')
+
+        # Delete resource from backend. We need to manage the share properly
+        # so it can be removed.
+        share = self.shares_v2_client.manage_share(
+            service_host=self.shares[1]['host'],
+            export_path=self.shares[1]['export_locations'][0],
+            protocol=self.shares[1]['share_proto'],
             share_type_id=self.st['share_type']['id'])
+        self.addCleanup(_delete_share, share['id'])
 
-        self.shares_v2_client.wait_for_share_status(share['id'], 'available')
-
-        # Delete share
-        self.shares_v2_client.delete_share(share['id'])
-        self.shares_v2_client.wait_for_resource_deletion(share_id=share['id'])
-        self.assertRaises(lib_exc.NotFound,
-                          self.shares_v2_client.get_share,
-                          share['id'])
+        self.shares_v2_client.wait_for_share_status(
+            share['id'], 'available')
 
 
 class ManageCIFSShareTest(ManageNFSShareTest):

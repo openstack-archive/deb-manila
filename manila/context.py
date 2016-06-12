@@ -56,18 +56,25 @@ class RequestContext(context.RequestContext):
 
         user = kwargs.pop('user', None)
         tenant = kwargs.pop('tenant', None)
+        super(RequestContext, self).__init__(
+            auth_token=auth_token,
+            user=user_id or user,
+            tenant=project_id or tenant,
+            domain=kwargs.pop('domain', None),
+            user_domain=kwargs.pop('user_domain', None),
+            project_domain=kwargs.pop('project_domain', None),
+            is_admin=is_admin,
+            read_only=kwargs.pop('read_only', False),
+            show_deleted=kwargs.pop('show_deleted', False),
+            request_id=request_id,
+            resource_uuid=kwargs.pop('resource_uuid', None),
+            overwrite=overwrite,
+            roles=roles)
+
+        kwargs.pop('user_identity', None)
         if kwargs:
             LOG.warning(_LW('Arguments dropped when creating context: %s.'),
                         str(kwargs))
-
-        super(RequestContext, self).__init__(auth_token=auth_token,
-                                             user=user_id or user,
-                                             tenant=project_id or tenant,
-                                             is_admin=is_admin,
-                                             request_id=request_id,
-                                             overwrite=overwrite,
-                                             roles=roles)
-
         self.user_id = self.user
         self.project_id = self.tenant
 
@@ -108,13 +115,14 @@ class RequestContext(context.RequestContext):
     def to_dict(self):
         values = super(RequestContext, self).to_dict()
         values.update({
-            'user_id': self.user_id,
-            'project_id': self.project_id,
-            'read_deleted': self.read_deleted,
-            'remote_address': self.remote_address,
-            'timestamp': self.timestamp.isoformat(),
-            'quota_class': self.quota_class,
-            'service_catalog': self.service_catalog})
+            'user_id': getattr(self, 'user_id', None),
+            'project_id': getattr(self, 'project_id', None),
+            'read_deleted': getattr(self, 'read_deleted', None),
+            'remote_address': getattr(self, 'remote_address', None),
+            'timestamp': self.timestamp.isoformat() if hasattr(
+                self, 'timestamp') else None,
+            'quota_class': getattr(self, 'quota_class', None),
+            'service_catalog': getattr(self, 'service_catalog', None)})
         return values
 
     @classmethod

@@ -95,7 +95,7 @@ user documentation.
   Add 'cephx' authentication type for the CephFS Native driver.
 
 2.14
-____
+----
   Added attribute 'preferred' to export locations.  Drivers may use this
   field to identify which export locations are most efficient and should be
   used preferentially by clients.  Also, change 'uuid' field to 'id', move
@@ -106,3 +106,7 @@ ____
   Added Share migration 'migration_cancel', 'migration_get_progress',
   'migration_complete' APIs, renamed 'migrate_share' to 'migration_start' and
   added notify parameter to 'migration_start'.
+
+2.16
+----
+  Add user_id in share show/create/manage API.
