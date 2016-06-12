@@ -1,3 +1,2 @@
 skipped-tests.patch
 install-missing-files.patch
-fix-tempest.conf-generation.patch
