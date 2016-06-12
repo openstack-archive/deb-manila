@@ -66,5 +66,9 @@ endif
 override_dh_sphinxdoc:
 ifeq (,$(findstring nodocs, $(DEB_BUILD_OPTIONS)))
 	sphinx-build -b html doc/source $(CURDIR)/debian/manila-doc/usr/share/doc/manila-doc/html
+	# We've got to do this, otherwise we get:
+	# "search.html doesn't look like a Sphinx search page"
+	# and the package FTBFS
+	rm -f $(CURDIR)/debian/manila-doc/usr/share/doc/manila-doc/html/search.html
 	dh_sphinxdoc -O--buildsystem=python_distutils
 endif
