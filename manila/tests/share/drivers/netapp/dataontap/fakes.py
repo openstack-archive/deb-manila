@@ -247,6 +247,7 @@ NETWORK_INFO = {
     'network_allocations': USER_NETWORK_ALLOCATIONS,
     'admin_network_allocations': ADMIN_NETWORK_ALLOCATIONS,
     'neutron_subnet_id': '62bf1c2c-18eb-421b-8983-48a6d39aafe0',
+    'segmentation_id': '1000',
 }
 NETWORK_INFO_NETMASK = '255.255.255.0'
 
@@ -265,6 +266,14 @@ SNAPSHOT = {
     'share_id': PARENT_SHARE_ID,
     'status': constants.STATUS_CREATING,
     'provider_location': None,
+}
+
+SNAPSHOT_TO_MANAGE = {
+    'id': SNAPSHOT_ID,
+    'project_id': TENANT_ID,
+    'share_id': PARENT_SHARE_ID,
+    'status': constants.STATUS_CREATING,
+    'provider_location': SNAPSHOT_NAME,
 }
 
 CDOT_SNAPSHOT = {

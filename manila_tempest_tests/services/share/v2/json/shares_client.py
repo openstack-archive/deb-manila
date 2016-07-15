@@ -187,7 +187,7 @@ class SharesV2Client(shares_client.SharesClient):
 
 ###############
 
-    def create_share(self, share_protocol=None, size=1,
+    def create_share(self, share_protocol=None, size=None,
                      name=None, snapshot_id=None, description=None,
                      metadata=None, share_network_id=None,
                      share_type_id=None, is_public=False,
@@ -198,6 +198,8 @@ class SharesV2Client(shares_client.SharesClient):
             name = data_utils.rand_name("tempest-created-share")
         if description is None:
             description = data_utils.rand_name("tempest-created-share-desc")
+        if size is None:
+            size = self.share_size
         if share_protocol is None:
             share_protocol = self.share_protocol
         if share_protocol is None:
@@ -1207,4 +1209,25 @@ class SharesV2Client(shares_client.SharesClient):
                                extra_headers=True,
                                version=version)
         self.expected_success(202, resp.status)
+        return self._parse_resp(body)
+
+    def list_share_networks(self, detailed=False, params=None,
+                            version=LATEST_MICROVERSION):
+        """Get list of share networks w/o filters."""
+        uri = 'share-networks/detail' if detailed else 'share-networks'
+        uri += '?%s' % urlparse.urlencode(params) if params else ''
+        resp, body = self.get(uri, version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def list_share_networks_with_detail(self, params=None,
+                                        version=LATEST_MICROVERSION):
+        """Get detailed list of share networks w/o filters."""
+        return self.list_share_networks(
+            detailed=True, params=params, version=version)
+
+    def get_share_network(self, share_network_id, version=LATEST_MICROVERSION):
+        resp, body = self.get("share-networks/%s" % share_network_id,
+                              version=version)
+        self.expected_success(200, resp.status)
         return self._parse_resp(body)

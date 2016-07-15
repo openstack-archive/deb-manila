@@ -13,14 +13,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from tempest import test  # noqa
+from tempest import test
 
 from manila_tempest_tests.tests.api import base
 
 
 class ExtensionsTest(base.BaseSharesTest):
 
-    @test.attr(type=["smoke", "gate"])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API])
     def test_extensions(self):
 
         # get extensions

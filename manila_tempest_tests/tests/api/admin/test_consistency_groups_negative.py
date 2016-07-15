@@ -44,11 +44,9 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
         # Create share inside consistency group
         cls.share_name = data_utils.rand_name("tempest-share-name")
         cls.share_desc = data_utils.rand_name("tempest-share-description")
-        cls.share_size = 1
         cls.share = cls.create_share(
             name=cls.share_name,
             description=cls.share_desc,
-            size=cls.share_size,
             consistency_group_id=cls.consistency_group['id'],
             share_type_id=cls.share_type['id'],
         )
@@ -61,14 +59,14 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
             name=cls.cgsnap_name,
             description=cls.cgsnap_desc)
 
-    @test.attr(type=["negative", "gate", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     def test_delete_share_type_in_use_by_cg(self):
         # Attempt delete of share type
         self.assertRaises(exceptions.BadRequest,
                           self.shares_client.delete_share_type,
                           self.share_type['id'])
 
-    @test.attr(type=["negative", "gate", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     def test_create_share_of_unsupported_type_in_cg_v2_4(self):
         # Attempt to create share of default type in the cg
         self.assertRaises(exceptions.BadRequest,
@@ -77,7 +75,7 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
                           consistency_group_id=self.consistency_group['id'],
                           version='2.4')
 
-    @test.attr(type=["negative", "gate", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     def test_create_share_in_cg_that_is_not_available_v2_4(self):
         consistency_group = self.create_consistency_group(
             cleanup_in_class=False, version='2.4')
@@ -93,7 +91,6 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
         self.assertRaises(exceptions.BadRequest, self.create_share,
                           name=self.share_name,
                           description=self.share_desc,
-                          size=self.share_size,
                           consistency_group_id=consistency_group['id'],
                           cleanup_in_class=False,
                           version='2.4')
@@ -105,7 +102,6 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
         self.assertRaises(exceptions.BadRequest, self.create_share,
                           name=self.share_name,
                           description=self.share_desc,
-                          size=self.share_size,
                           consistency_group_id=consistency_group['id'],
                           cleanup_in_class=False,
                           version='2.4')
@@ -117,12 +113,11 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
         self.assertRaises(exceptions.BadRequest, self.create_share,
                           name=self.share_name,
                           description=self.share_desc,
-                          size=self.share_size,
                           consistency_group_id=consistency_group['id'],
                           cleanup_in_class=False,
                           version='2.4')
 
-    @test.attr(type=["negative", "gate", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     def test_create_cgsnapshot_of_cg_that_is_not_available_v2_4(self):
         consistency_group = self.create_consistency_group(
             cleanup_in_class=False, version='2.4')
@@ -161,16 +156,14 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
                           cleanup_in_class=False,
                           version='2.4')
 
-    @test.attr(type=["negative", "gate", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     def test_create_cgsnapshot_of_cg_with_share_in_error_state_v2_4(self):
         consistency_group = self.create_consistency_group(version='2.4')
         share_name = data_utils.rand_name("tempest-share-name")
         share_desc = data_utils.rand_name("tempest-share-description")
-        share_size = 1
         share = self.create_share(
             name=share_name,
             description=share_desc,
-            size=share_size,
             consistency_group_id=consistency_group['id'],
             cleanup_in_class=False,
             version='2.4',
@@ -183,7 +176,7 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
                           cleanup_in_class=False,
                           version='2.4')
 
-    @test.attr(type=["negative", "gate", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     def test_delete_cgsnapshot_not_in_available_or_error_v2_4(self):
         cgsnapshot = self.create_cgsnapshot_wait_for_active(
             self.consistency_group['id'],
@@ -216,7 +209,7 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
                           cgsnapshot['id'],
                           version='2.4')
 
-    @test.attr(type=["negative", "gate", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     def test_delete_cg_not_in_available_or_error_v2_4(self):
         consistency_group = self.create_consistency_group(
             cleanup_in_class=False, version='2.4')
@@ -243,7 +236,7 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
                           consistency_group['id'],
                           version='2.4')
 
-    @test.attr(type=["negative", "gate", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     def test_create_cg_with_conflicting_share_types_v2_4(self):
         # Create conflicting share types
         name = data_utils.rand_name("tempest-manila")
@@ -263,7 +256,7 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
                           cleanup_in_class=False,
                           version='2.4')
 
-    @test.attr(type=["negative", "gate", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     def test_create_cg_with_multi_tenant_share_type_and_no_share_network_v2_4(
             self):
         # Create multi tenant share type
@@ -287,7 +280,7 @@ class ConsistencyGroupsNegativeTest(base.BaseSharesAdminTest):
 
         self.assertRaises(exceptions.BadRequest, create_cg)
 
-    @test.attr(type=["negative", "gate", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     def test_update_cg_share_types(self):
         consistency_group = self.create_consistency_group(
             cleanup_in_class=False, version='2.4')

@@ -12,9 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from tempest import config  # noqa
-from tempest.lib import exceptions as lib_exc  # noqa
-from tempest import test  # noqa
+from tempest import config
+from tempest import test
 
 from manila_tempest_tests.tests.api import base
 
@@ -23,7 +22,7 @@ CONF = config.CONF
 
 class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
 
-    @test.attr(type=["gate", "smoke", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API])
     def test_pool_list(self):
 
         # List pools
@@ -36,7 +35,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
         actual_keys = set(pool.keys())
         self.assertTrue(actual_keys.issuperset(required_keys))
 
-    @test.attr(type=["gate", "smoke", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API])
     def test_pool_list_with_filters(self):
 
         # List pools
@@ -65,7 +64,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
         for k, v in search_opts.items():
             self.assertEqual(v[1:-1], filtered_pool_list[0][k])
 
-    @test.attr(type=["gate", "smoke", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API])
     def test_pool_list_with_filters_negative(self):
 
         # Build search opts for a non-existent pool
@@ -81,7 +80,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
         # Ensure we got no pools
         self.assertEmpty(pool_list)
 
-    @test.attr(type=["gate", "smoke", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API])
     def test_pool_list_detail(self):
 
         # List pools
@@ -94,7 +93,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
         actual_keys = set(pool.keys())
         self.assertTrue(actual_keys.issuperset(required_keys))
 
-    @test.attr(type=["gate", "smoke", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API])
     def test_pool_list_detail_with_filters(self):
 
         # List pools
@@ -123,7 +122,7 @@ class SchedulerStatsAdminTest(base.BaseSharesAdminTest):
         for k, v in search_opts.items():
             self.assertEqual(v[1:-1], filtered_pool_list[0][k])
 
-    @test.attr(type=["gate", "smoke", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API])
     def test_pool_list_detail_with_filters_negative(self):
 
         # Build search opts for a non-existent pool

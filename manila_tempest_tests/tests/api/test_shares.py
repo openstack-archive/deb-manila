@@ -36,7 +36,7 @@ class SharesNFSTest(base.BaseSharesTest):
             raise cls.skipException(message)
         cls.share = cls.create_share(cls.protocol)
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_BACKEND])
     def test_create_get_delete_share(self):
 
         share = self.create_share(self.protocol)
@@ -97,21 +97,33 @@ class SharesNFSTest(base.BaseSharesTest):
                           self.shares_v2_client.get_share,
                           share['id'])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_BACKEND])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
                           "Snapshot tests are disabled.")
     def test_create_delete_snapshot(self):
 
         # create snapshot
         snap = self.create_snapshot_wait_for_active(self.share["id"])
+
         detailed_elements = {'name', 'id', 'description',
                              'created_at', 'share_proto', 'size', 'share_size',
                              'share_id', 'status', 'links'}
-        self.assertTrue(detailed_elements.issubset(snap.keys()),
-                        'At least one expected element missing from snapshot '
-                        'response. Expected %(expected)s, got %(actual)s.' % {
-                            "expected": detailed_elements,
-                            "actual": snap.keys()})
+        msg = (
+            "At least one expected element missing from share "
+            "response. Expected %(expected)s, got %(actual)s." % {
+                "expected": detailed_elements,
+                "actual": snap.keys(),
+            }
+        )
+        self.assertTrue(detailed_elements.issubset(snap.keys()), msg)
+
+        # In v2.17 and beyond, we expect user_id and project_id keys
+        if utils.is_microversion_supported('2.17'):
+            detailed_elements.update({'user_id', 'project_id'})
+            self.assertTrue(detailed_elements.issubset(snap.keys()), msg)
+        else:
+            self.assertNotIn('user_id', detailed_elements)
+            self.assertNotIn('project_id', detailed_elements)
 
         # delete snapshot
         self.shares_client.delete_snapshot(snap["id"])
@@ -119,7 +131,7 @@ class SharesNFSTest(base.BaseSharesTest):
         self.assertRaises(lib_exc.NotFound,
                           self.shares_client.get_snapshot, snap['id'])
 
-    @test.attr(type=["gate", "smoke", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_BACKEND])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
                           "Snapshot tests are disabled.")
     def test_create_share_from_snapshot(self):
@@ -143,7 +155,7 @@ class SharesNFSTest(base.BaseSharesTest):
               "source of share %s" % (snap["id"], get["snapshot_id"])
         self.assertEqual(get["snapshot_id"], snap["id"], msg)
 
-    @test.attr(type=["gate", "smoke", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_BACKEND])
     @testtools.skipIf(not CONF.share.multitenancy_enabled,
                       "Only for multitenancy.")
     @testtools.skipUnless(CONF.share.run_snapshot_tests,

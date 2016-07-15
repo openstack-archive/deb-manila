@@ -82,6 +82,15 @@ SM_SOURCE_VOLUME = 'fake_source_volume'
 SM_DEST_VSERVER = 'fake_destination_vserver'
 SM_DEST_VOLUME = 'fake_destination_volume'
 
+NETWORK_INTERFACES = [{
+    'interface_name': 'fake_interface',
+    'address': IP_ADDRESS,
+    'vserver': VSERVER_NAME,
+    'netmask': NETMASK,
+    'role': 'data',
+    'home-node': NODE_NAME,
+    'home-port': VLAN_PORT
+}]
 
 IPSPACES = [{
     'uuid': 'fake_uuid',
@@ -1681,6 +1690,27 @@ LUN_GET_ITER_RESPONSE = etree.XML("""
 """ % {
     'vserver': VSERVER_NAME,
     'volume': SHARE_NAME,
+})
+
+VOLUME_GET_ITER_NOT_UNIQUE_RESPONSE = etree.XML("""
+  <results status="passed">
+    <attributes-list>
+      <volume-attributes>
+        <volume-id-attributes>
+          <name>%(volume1)s</name>
+        </volume-id-attributes>
+      </volume-attributes>
+      <volume-attributes>
+        <volume-id-attributes>
+          <name>%(volume2)s</name>
+        </volume-id-attributes>
+      </volume-attributes>
+    </attributes-list>
+    <num-records>2</num-records>
+  </results>
+""" % {
+    'volume1': SHARE_NAME,
+    'volume2': SHARE_NAME_2,
 })
 
 VOLUME_GET_ITER_JUNCTIONED_VOLUMES_RESPONSE = etree.XML("""

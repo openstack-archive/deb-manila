@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import ddt
 import six
 from tempest import config
 from tempest.lib.common.utils import data_utils
@@ -23,8 +24,10 @@ from manila_tempest_tests.tests.api import base
 from manila_tempest_tests import utils
 
 CONF = config.CONF
+LATEST_MICROVERSION = CONF.share.max_api_microversion
 
 
+@ddt.ddt
 class SharesActionsTest(base.BaseSharesTest):
     """Covers share functionality, that doesn't related to share type."""
 
@@ -41,11 +44,9 @@ class SharesActionsTest(base.BaseSharesTest):
             'foo_key_share_1': 'foo_value_share_1',
             'bar_key_share_1': 'foo_value_share_1',
         }
-        cls.share_size = 1
         cls.shares.append(cls.create_share(
             name=cls.share_name,
             description=cls.share_desc,
-            size=cls.share_size,
             metadata=cls.metadata,
         ))
 
@@ -68,7 +69,6 @@ class SharesActionsTest(base.BaseSharesTest):
             cls.shares.append(cls.create_share(
                 name=cls.share_name2,
                 description=cls.share_desc2,
-                size=cls.share_size,
                 metadata=cls.metadata2,
                 snapshot_id=cls.snap['id'],
             ))
@@ -115,49 +115,49 @@ class SharesActionsTest(base.BaseSharesTest):
         self.assertEqual(
             self.share_desc, six.text_type(share["description"]), msg)
 
-        msg = "Expected size: '%s', actual size: '%s'" % (self.share_size,
-                                                          share["size"])
-        self.assertEqual(self.share_size, int(share["size"]), msg)
+        msg = "Expected size: '%s', actual size: '%s'" % (
+            CONF.share.share_size, share["size"])
+        self.assertEqual(CONF.share.share_size, int(share["size"]), msg)
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_get_share_v2_1(self):
         self._get_share('2.1')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_get_share_with_snapshot_support_key(self):
         self._get_share('2.2')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.4')
     def test_get_share_with_consistency_groups_keys(self):
         self._get_share('2.4')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.6')
     def test_get_share_with_share_type_name_key(self):
         self._get_share('2.6')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.9')
     def test_get_share_export_locations_removed(self):
         self._get_share('2.9')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.10')
     def test_get_share_with_access_rules_status(self):
         self._get_share('2.10')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.11')
     def test_get_share_with_replication_type_key(self):
         self._get_share('2.11')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.16')
     def test_get_share_with_user_id(self):
         self._get_share('2.16')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares(self):
 
         # list shares
@@ -209,45 +209,45 @@ class SharesActionsTest(base.BaseSharesTest):
             msg = "expected id lists %s times in share list" % (len(gen))
             self.assertEqual(1, len(gen), msg)
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_with_detail_v2_1(self):
         self._list_shares_with_detail('2.1')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_with_detail_and_snapshot_support_key(self):
         self._list_shares_with_detail('2.2')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.4')
     def test_list_shares_with_detail_consistency_groups_keys(self):
         self._list_shares_with_detail('2.4')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.6')
     def test_list_shares_with_detail_share_type_name_key(self):
         self._list_shares_with_detail('2.6')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.9')
     def test_list_shares_with_detail_export_locations_removed(self):
         self._list_shares_with_detail('2.9')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.10')
     def test_list_shares_with_detail_with_access_rules_status(self):
         self._list_shares_with_detail('2.10')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.11')
     def test_list_shares_with_detail_replication_type_key(self):
         self._list_shares_with_detail('2.11')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @utils.skip_if_microversion_not_supported('2.16')
     def test_list_shares_with_user_id(self):
         self._list_shares_with_detail('2.16')
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_with_detail_filter_by_metadata(self):
         filters = {'metadata': self.metadata}
 
@@ -262,7 +262,7 @@ class SharesActionsTest(base.BaseSharesTest):
         if CONF.share.run_snapshot_tests:
             self.assertFalse(self.shares[1]['id'] in [s['id'] for s in shares])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_with_detail_filter_by_host(self):
         base_share = self.shares_client.get_share(self.shares[0]['id'])
         filters = {'host': base_share['host']}
@@ -275,7 +275,7 @@ class SharesActionsTest(base.BaseSharesTest):
         for share in shares:
             self.assertEqual(filters['host'], share['host'])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipIf(
         not CONF.share.multitenancy_enabled, "Only for multitenancy.")
     def test_list_shares_with_detail_filter_by_share_network_id(self):
@@ -291,7 +291,7 @@ class SharesActionsTest(base.BaseSharesTest):
             self.assertEqual(
                 filters['share_network_id'], share['share_network_id'])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
                           "Snapshot tests are disabled.")
     def test_list_shares_with_detail_filter_by_snapshot_id(self):
@@ -306,7 +306,7 @@ class SharesActionsTest(base.BaseSharesTest):
             self.assertEqual(filters['snapshot_id'], share['snapshot_id'])
         self.assertFalse(self.shares[0]['id'] in [s['id'] for s in shares])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_with_detail_with_asc_sorting(self):
         filters = {'sort_key': 'created_at', 'sort_dir': 'asc'}
 
@@ -318,21 +318,21 @@ class SharesActionsTest(base.BaseSharesTest):
         sorted_list = [share['created_at'] for share in shares]
         self.assertEqual(sorted(sorted_list), sorted_list)
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_with_detail_filter_by_existed_name(self):
         # list shares by name, at least one share is expected
         params = {"name": self.share_name}
         shares = self.shares_client.list_shares_with_detail(params)
         self.assertEqual(self.share_name, shares[0]["name"])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_with_detail_filter_by_fake_name(self):
         # list shares by fake name, no shares are expected
         params = {"name": data_utils.rand_name("fake-nonexistent-name")}
         shares = self.shares_client.list_shares_with_detail(params)
         self.assertEqual(0, len(shares))
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_with_detail_filter_by_active_status(self):
         # list shares by active status, at least one share is expected
         params = {"status": "available"}
@@ -341,14 +341,14 @@ class SharesActionsTest(base.BaseSharesTest):
         for share in shares:
             self.assertEqual(params["status"], share["status"])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_with_detail_filter_by_fake_status(self):
         # list shares by fake status, no shares are expected
         params = {"status": 'fake'}
         shares = self.shares_client.list_shares_with_detail(params)
         self.assertEqual(0, len(shares))
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_with_detail_filter_by_all_tenants(self):
         # non-admin user can get shares only from his project
         params = {"all_tenants": 1}
@@ -361,19 +361,17 @@ class SharesActionsTest(base.BaseSharesTest):
         for share in shares:
             self.assertEqual(project_id, share["project_id"])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_list_shares_public_with_detail(self):
         public_share = self.create_share(
             name='public_share',
             description='public_share_desc',
-            size=1,
             is_public=True,
             cleanup_in_class=False
         )
         private_share = self.create_share(
             name='private_share',
             description='private_share_desc',
-            size=1,
             is_public=False,
             cleanup_in_class=False
         )
@@ -396,35 +394,63 @@ class SharesActionsTest(base.BaseSharesTest):
 
         self.assertFalse(any([s["id"] == private_share["id"] for s in shares]))
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
                           "Snapshot tests are disabled.")
-    def test_get_snapshot(self):
+    @ddt.data(None, '2.16', LATEST_MICROVERSION)
+    def test_get_snapshot(self, version):
 
         # get snapshot
-        get = self.shares_client.get_snapshot(self.snap["id"])
+        if version is None:
+            snapshot = self.shares_client.get_snapshot(self.snap["id"])
+        else:
+            utils.skip_if_microversion_not_supported(version)
+            snapshot = self.shares_v2_client.get_snapshot(
+                self.snap["id"], version=version)
 
         # verify keys
         expected_keys = ["status", "links", "share_id", "name",
                          "share_proto", "created_at",
-                         "description", "id", "share_size"]
-        actual_keys = get.keys()
-        [self.assertIn(key, actual_keys) for key in expected_keys]
+                         "description", "id", "share_size", "size"]
+        if version and utils.is_microversion_ge(version, '2.17'):
+            expected_keys.extend(["user_id", "project_id"])
+        actual_keys = snapshot.keys()
+
+        # strict key check
+        self.assertEqual(set(expected_keys), set(actual_keys))
 
         # verify data
         msg = "Expected name: '%s', actual name: '%s'" % (self.snap_name,
-                                                          get["name"])
-        self.assertEqual(self.snap_name, get["name"], msg)
+                                                          snapshot["name"])
+        self.assertEqual(self.snap_name, snapshot["name"], msg)
 
-        msg = "Expected description: '%s', "\
-              "actual description: '%s'" % (self.snap_desc, get["description"])
-        self.assertEqual(self.snap_desc, get["description"], msg)
+        msg = ("Expected description: '%s' actual description: '%s'" %
+               (self.snap_desc, snapshot["description"]))
+        self.assertEqual(self.snap_desc, snapshot["description"], msg)
 
-        msg = "Expected share_id: '%s', "\
-              "actual share_id: '%s'" % (self.shares[0]["id"], get["share_id"])
-        self.assertEqual(self.shares[0]["id"], get["share_id"], msg)
+        msg = ("Expected share_id: '%s', actual share_id: '%s'" %
+               (self.shares[0]["id"], snapshot["share_id"]))
+        self.assertEqual(self.shares[0]["id"], snapshot["share_id"], msg)
 
-    @test.attr(type=["gate", ])
+        # Verify that the user_id and project_id are same as the one for
+        # the base share
+        if version and utils.is_microversion_ge(version, '2.17'):
+            msg = ("Expected %(key)s in snapshot: '%(expected)s', "
+                   "actual %(key)s in snapshot: '%(actual)s'")
+            self.assertEqual(self.shares[0]['user_id'],
+                             snapshot['user_id'],
+                             msg % {
+                                 'expected': self.shares[0]['user_id'],
+                                 'actual': snapshot['user_id'],
+                                 'key': 'user_id'})
+            self.assertEqual(self.shares[0]['project_id'],
+                             snapshot['project_id'],
+                             msg % {
+                                 'expected': self.shares[0]['project_id'],
+                                 'actual': snapshot['project_id'],
+                                 'key': 'project_id'})
+
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
                           "Snapshot tests are disabled.")
     def test_list_snapshots(self):
@@ -441,26 +467,36 @@ class SharesActionsTest(base.BaseSharesTest):
         msg = "expected id lists %s times in share list" % (len(gen))
         self.assertEqual(1, len(gen), msg)
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
                           "Snapshot tests are disabled.")
-    def test_list_snapshots_with_detail(self):
+    @ddt.data(None, '2.16', LATEST_MICROVERSION)
+    def test_list_snapshots_with_detail(self, version):
 
         # list share snapshots
-        snaps = self.shares_client.list_snapshots_with_detail()
+        if version is None:
+            snaps = self.shares_client.list_snapshots_with_detail()
+        else:
+            utils.skip_if_microversion_not_supported(version)
+            snaps = self.shares_v2_client.list_snapshots_with_detail(
+                version=version)
 
         # verify keys
-        keys = ["status", "links", "share_id", "name",
-                "share_proto", "created_at",
-                "description", "id", "share_size"]
-        [self.assertIn(key, sn.keys()) for sn in snaps for key in keys]
+        expected_keys = ["status", "links", "share_id", "name",
+                         "share_proto", "created_at", "description", "id",
+                         "share_size", "size"]
+        if version and utils.is_microversion_ge(version, '2.17'):
+            expected_keys.extend(["user_id", "project_id"])
+
+        # strict key check
+        [self.assertEqual(set(expected_keys), set(s.keys())) for s in snaps]
 
         # our share id in list and have no duplicates
         gen = [sid["id"] for sid in snaps if sid["id"] in self.snap["id"]]
         msg = "expected id lists %s times in share list" % (len(gen))
         self.assertEqual(1, len(gen), msg)
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
                           "Snapshot tests are disabled.")
     def test_list_snapshots_with_detail_use_limit(self):
@@ -486,7 +522,7 @@ class SharesActionsTest(base.BaseSharesTest):
         self.assertEqual(1, len(snaps['snapshots']))
         self.assertEqual(self.snap['id'], snaps['snapshots'][0]['id'])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
                           "Snapshot tests are disabled.")
     def test_list_snapshots_with_detail_filter_by_status_and_name(self):
@@ -502,7 +538,7 @@ class SharesActionsTest(base.BaseSharesTest):
             self.assertEqual(filters['status'], snap['status'])
             self.assertEqual(filters['name'], snap['name'])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
                           "Snapshot tests are disabled.")
     def test_list_snapshots_with_detail_and_asc_sorting(self):
@@ -517,13 +553,13 @@ class SharesActionsTest(base.BaseSharesTest):
         sorted_list = [snap['share_id'] for snap in snaps]
         self.assertEqual(sorted(sorted_list), sorted_list)
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_BACKEND])
     @testtools.skipUnless(
         CONF.share.run_extend_tests,
         "Share extend tests are disabled.")
     def test_extend_share(self):
-        share = self.create_share(size=1, cleanup_in_class=False)
-        new_size = 2
+        share = self.create_share(cleanup_in_class=False)
+        new_size = int(share['size']) + 1
 
         # extend share and wait for active status
         self.shares_v2_client.extend_share(share['id'], new_size)
@@ -540,13 +576,14 @@ class SharesActionsTest(base.BaseSharesTest):
         )
         self.assertEqual(new_size, share_get['size'], msg)
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_BACKEND])
     @testtools.skipUnless(
         CONF.share.run_shrink_tests,
         "Share shrink tests are disabled.")
     def test_shrink_share(self):
-        share = self.create_share(size=2, cleanup_in_class=False)
-        new_size = 1
+        size = CONF.share.share_size + 1
+        share = self.create_share(size=size, cleanup_in_class=False)
+        new_size = int(share['size']) - 1
 
         # shrink share and wait for active status
         self.shares_v2_client.shrink_share(share['id'], new_size)
@@ -573,10 +610,8 @@ class SharesRenameTest(base.BaseSharesTest):
         # create share
         cls.share_name = data_utils.rand_name("tempest-share-name")
         cls.share_desc = data_utils.rand_name("tempest-share-description")
-        cls.share_size = 1
         cls.share = cls.create_share(
-            name=cls.share_name, description=cls.share_desc,
-            size=cls.share_size)
+            name=cls.share_name, description=cls.share_desc)
 
         if CONF.share.run_snapshot_tests:
             # create snapshot
@@ -586,7 +621,7 @@ class SharesRenameTest(base.BaseSharesTest):
             cls.snap = cls.create_snapshot_wait_for_active(
                 cls.share["id"], cls.snap_name, cls.snap_desc)
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     def test_update_share(self):
 
         # get share
@@ -610,7 +645,7 @@ class SharesRenameTest(base.BaseSharesTest):
         self.assertEqual(new_desc, share["description"])
         self.assertTrue(share["is_public"])
 
-    @test.attr(type=["gate", ])
+    @test.attr(type=[base.TAG_POSITIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(CONF.share.run_snapshot_tests,
                           "Snapshot tests are disabled.")
     def test_rename_snapshot(self):

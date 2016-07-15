@@ -17,8 +17,6 @@ from __future__ import print_function
 
 from oslo_config import cfg
 
-from tempest import config  # noqa
-
 service_available_group = cfg.OptGroup(name="service_available",
                                        title="Available OpenStack Services")
 
@@ -36,7 +34,7 @@ ShareGroup = [
                help="The minimum api microversion is configured to be the "
                     "value of the minimum microversion supported by Manila."),
     cfg.StrOpt("max_api_microversion",
-               default="2.16",
+               default="2.18",
                help="The maximum api microversion is configured to be the "
                     "value of the latest microversion supported by Manila."),
     cfg.StrOpt("region",
@@ -197,4 +195,7 @@ ShareGroup = [
                default='none',
                choices=['none', 'writable', 'readable', 'dr'],
                help="Specify the replication type supported by the backend."),
+    cfg.IntOpt("share_size",
+               default=1,
+               help="Default size in GB for shares created by share tests."),
 ]

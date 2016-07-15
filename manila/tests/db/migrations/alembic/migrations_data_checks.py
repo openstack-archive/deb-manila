@@ -606,3 +606,159 @@ class ShareSnapshotInstanceNewProviderLocationColumnChecks(
             self.test_case.assertFalse(hasattr(ss, 'provider_location'))
             self.test_case.assertEqual('new_snapshot_instance_id', ss.id)
             self.test_case.assertEqual('new_snapshot_id', ss.snapshot_id)
+
+
+@map_to_migration('221a83cfd85b')
+class ShareNetwoksFieldLengthChecks(BaseMigrationChecks):
+    def setup_upgrade_data(self, engine):
+        user_id = '123456789123456789'
+        project_id = 'project_id'
+
+        # Create share network data
+        share_network_data = {
+            'id': 'foo_share_network_id_2',
+            'user_id': user_id,
+            'project_id': project_id,
+        }
+        sn_table = utils.load_table('share_networks', engine)
+        engine.execute(sn_table.insert(share_network_data))
+
+        # Create security_service data
+        security_services_data = {
+            'id': 'foo_security_services_id',
+            'type': 'foo_type',
+            'project_id': project_id
+        }
+        ss_table = utils.load_table('security_services', engine)
+        engine.execute(ss_table.insert(security_services_data))
+
+    def _check_length_for_table_columns(self, table_name, engine,
+                                        cols, length):
+        table = utils.load_table(table_name, engine)
+        db_result = engine.execute(table.select())
+        self.test_case.assertTrue(db_result.rowcount > 0)
+
+        for col in cols:
+            self.test_case.assertEqual(table.columns.get(col).type.length,
+                                       length)
+
+    def check_upgrade(self, engine, data):
+        self._check_length_for_table_columns('share_networks', engine,
+                                             ('user_id', 'project_id'), 255)
+
+        self._check_length_for_table_columns('security_services', engine,
+                                             ('project_id',), 255)
+
+    def check_downgrade(self, engine):
+        self._check_length_for_table_columns('share_networks', engine,
+                                             ('user_id', 'project_id'), 36)
+
+        self._check_length_for_table_columns('security_services', engine,
+                                             ('project_id',), 36)
+
+
+@map_to_migration('fdfb668d19e1')
+class NewGatewayColumnChecks(BaseMigrationChecks):
+    na_table_name = 'network_allocations'
+    sn_table_name = 'share_networks'
+    na_ids = ['network_allocation_id_fake_%d' % i for i in (1, 2, 3)]
+    sn_ids = ['share_network_id_fake_%d' % i for i in (1, 2)]
+
+    def setup_upgrade_data(self, engine):
+        user_id = 'user_id'
+        project_id = 'project_id'
+        share_server_id = 'share_server_id_foo'
+
+        # Create share network
+        share_network_data = {
+            'id': self.sn_ids[0],
+            'user_id': user_id,
+            'project_id': project_id,
+        }
+        sn_table = utils.load_table(self.sn_table_name, engine)
+        engine.execute(sn_table.insert(share_network_data))
+
+        # Create share server
+        share_server_data = {
+            'id': share_server_id,
+            'share_network_id': share_network_data['id'],
+            'host': 'fake_host',
+            'status': 'active',
+        }
+        ss_table = utils.load_table('share_servers', engine)
+        engine.execute(ss_table.insert(share_server_data))
+
+        # Create network allocations
+        network_allocations = [
+            {
+                'id': self.na_ids[0],
+                'share_server_id': share_server_id,
+                'ip_address': '1.1.1.1',
+            },
+            {
+                'id': self.na_ids[1],
+                'share_server_id': share_server_id,
+                'ip_address': '2.2.2.2',
+            },
+        ]
+        na_table = utils.load_table(self.na_table_name, engine)
+        engine.execute(na_table.insert(network_allocations))
+
+    def check_upgrade(self, engine, data):
+        na_table = utils.load_table(self.na_table_name, engine)
+        for na in engine.execute(na_table.select()):
+            self.test_case.assertTrue(hasattr(na, 'gateway'))
+
+        # Create network allocation
+        network_allocations = [
+            {
+                'id': self.na_ids[2],
+                'share_server_id': na.share_server_id,
+                'ip_address': '3.3.3.3',
+                'gateway': '3.3.3.1',
+                'network_type': 'vlan',
+                'segmentation_id': 1005,
+                'ip_version': 4,
+                'cidr': '240.0.0.0/16',
+            },
+        ]
+        engine.execute(na_table.insert(network_allocations))
+
+        # Select network allocations with gateway info
+        for na in engine.execute(
+                na_table.select().where(na_table.c.gateway == '3.3.3.1')):
+            self.test_case.assertTrue(hasattr(na, 'gateway'))
+            self.test_case.assertEqual(network_allocations[0]['gateway'],
+                                       getattr(na, 'gateway'))
+
+        sn_table = utils.load_table(self.sn_table_name, engine)
+        for sn in engine.execute(sn_table.select()):
+            self.test_case.assertTrue(hasattr(sn, 'gateway'))
+
+        # Create share network
+        share_networks = [
+            {
+                'id': self.sn_ids[1],
+                'user_id': sn.user_id,
+                'project_id': sn.project_id,
+                'gateway': '1.1.1.1',
+                'name': 'name_foo',
+            },
+        ]
+        engine.execute(sn_table.insert(share_networks))
+
+        # Select share network
+        for sn in engine.execute(
+                sn_table.select().where(sn_table.c.name == 'name_foo')):
+            self.test_case.assertTrue(hasattr(sn, 'gateway'))
+            self.test_case.assertEqual(share_networks[0]['gateway'],
+                                       getattr(sn, 'gateway'))
+
+    def check_downgrade(self, engine):
+        for table_name, ids in ((self.na_table_name, self.na_ids),
+                                (self.sn_table_name, self.sn_ids)):
+            table = utils.load_table(table_name, engine)
+            db_result = engine.execute(table.select())
+            self.test_case.assertTrue(db_result.rowcount >= len(ids))
+            for record in db_result:
+                self.test_case.assertFalse(hasattr(record, 'gateway'))

@@ -13,26 +13,24 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from tempest import config  # noqa
-from tempest.lib import exceptions as lib_exc  # noqa
-from tempest import test  # noqa
-import testtools  # noqa
+from tempest import config
+from tempest.lib import exceptions as lib_exc
+from tempest import test
+import testtools
 
-from manila_tempest_tests import clients_share as clients
 from manila_tempest_tests.tests.api import base
 
 CONF = config.CONF
 
 
-class SharesActionsNegativeTest(base.BaseSharesTest):
+class SharesActionsNegativeTest(base.BaseSharesMixedTest):
     @classmethod
     def resource_setup(cls):
         super(SharesActionsNegativeTest, cls).resource_setup()
-        cls.share = cls.create_share(
-            size=1,
-        )
+        cls.admin_client = cls.admin_shares_v2_client
+        cls.share = cls.create_share()
 
-    @test.attr(type=["negative", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(
         CONF.share.run_extend_tests,
         "Share extend tests are disabled.")
@@ -50,7 +48,7 @@ class SharesActionsNegativeTest(base.BaseSharesTest):
                           self.share['id'],
                           new_size)
 
-    @test.attr(type=["negative", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(
         CONF.share.run_extend_tests,
         "Share extend tests are disabled.")
@@ -63,7 +61,7 @@ class SharesActionsNegativeTest(base.BaseSharesTest):
                           self.share['id'],
                           new_size)
 
-    @test.attr(type=["negative", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(
         CONF.share.run_extend_tests,
         "Share extend tests are disabled.")
@@ -76,17 +74,16 @@ class SharesActionsNegativeTest(base.BaseSharesTest):
                           self.share['id'],
                           new_size)
 
-    @test.attr(type=["negative", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(
         CONF.share.run_extend_tests,
         "Share extend tests are disabled.")
     def test_share_extend_with_invalid_share_state(self):
-        share = self.create_share(size=1, cleanup_in_class=False)
+        share = self.create_share(cleanup_in_class=False)
         new_size = int(share['size']) + 1
 
         # set "error" state
-        admin_client = clients.AdminManager().shares_client
-        admin_client.reset_state(share['id'])
+        self.admin_client.reset_state(share['id'])
 
         # run extend operation on same share and check result
         self.assertRaises(lib_exc.BadRequest,
@@ -94,7 +91,7 @@ class SharesActionsNegativeTest(base.BaseSharesTest):
                           share['id'],
                           new_size)
 
-    @test.attr(type=["negative", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(
         CONF.share.run_shrink_tests,
         "Share shrink tests are disabled.")
@@ -107,7 +104,7 @@ class SharesActionsNegativeTest(base.BaseSharesTest):
                           self.share['id'],
                           new_size)
 
-    @test.attr(type=["negative", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(
         CONF.share.run_shrink_tests,
         "Share shrink tests are disabled.")
@@ -120,17 +117,17 @@ class SharesActionsNegativeTest(base.BaseSharesTest):
                           self.share['id'],
                           new_size)
 
-    @test.attr(type=["negative", ])
+    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
     @testtools.skipUnless(
         CONF.share.run_shrink_tests,
         "Share shrink tests are disabled.")
     def test_share_shrink_with_invalid_share_state(self):
-        share = self.create_share(size=2, cleanup_in_class=False)
+        size = CONF.share.share_size + 1
+        share = self.create_share(size=size, cleanup_in_class=False)
         new_size = int(share['size']) - 1
 
         # set "error" state
-        admin_client = clients.AdminManager().shares_client
-        admin_client.reset_state(share['id'])
+        self.admin_client.reset_state(share['id'])
 
         # run shrink operation on same share and check result
         self.assertRaises(lib_exc.BadRequest,

@@ -61,8 +61,9 @@ class NetAppClientCmodeTestCase(test.TestCase):
         self.vserver_client.set_vserver(fake.VSERVER_NAME)
         self.vserver_client.connection = mock.MagicMock()
 
-    def _mock_api_error(self, code='fake'):
-        return mock.Mock(side_effect=netapp_api.NaApiError(code=code))
+    def _mock_api_error(self, code='fake', message='fake'):
+        return mock.Mock(side_effect=netapp_api.NaApiError(code=code,
+                                                           message=message))
 
     def test_init_features_ontapi_1_21(self):
 
@@ -928,6 +929,53 @@ class NetAppClientCmodeTestCase(test.TestCase):
 
         self.assertRaises(exception.NetAppException,
                           self.client._create_vlan,
+                          fake.NODE_NAME,
+                          fake.PORT,
+                          fake.VLAN)
+
+    def test_delete_vlan(self):
+
+        self.mock_object(self.client, 'send_request')
+
+        vlan_delete_args = {
+            'vlan-info': {
+                'parent-interface': fake.PORT,
+                'node': fake.NODE_NAME,
+                'vlanid': fake.VLAN
+            }
+        }
+        self.client.delete_vlan(fake.NODE_NAME, fake.PORT, fake.VLAN)
+
+        self.client.send_request.assert_has_calls([
+            mock.call('net-vlan-delete', vlan_delete_args)])
+
+    def test_delete_vlan_still_used(self):
+
+        self.mock_object(self.client,
+                         'send_request',
+                         self._mock_api_error(code=netapp_api.EAPIERROR,
+                                              message='Port already has a '
+                                              'lif bound. '))
+
+        vlan_delete_args = {
+            'vlan-info': {
+                'parent-interface': fake.PORT,
+                'node': fake.NODE_NAME,
+                'vlanid': fake.VLAN
+            }
+        }
+        self.client.delete_vlan(fake.NODE_NAME, fake.PORT, fake.VLAN)
+
+        self.client.send_request.assert_has_calls([
+            mock.call('net-vlan-delete', vlan_delete_args)])
+        self.assertEqual(1, client_cmode.LOG.debug.call_count)
+
+    def test_delete_vlan_api_error(self):
+
+        self.mock_object(self.client, 'send_request', self._mock_api_error())
+
+        self.assertRaises(exception.NetAppException,
+                          self.client.delete_vlan,
                           fake.NODE_NAME,
                           fake.PORT,
                           fake.VLAN)
@@ -2733,6 +2781,77 @@ class NetAppClientCmodeTestCase(test.TestCase):
         result = self.client.volume_has_junctioned_volumes(fake.SHARE_NAME)
 
         self.assertFalse(result)
+
+    def test_get_volume(self):
+
+        api_response = netapp_api.NaElement(
+            fake.VOLUME_GET_ITER_VOLUME_TO_MANAGE_RESPONSE)
+        self.mock_object(self.client,
+                         'send_request',
+                         mock.Mock(return_value=api_response))
+
+        result = self.client.get_volume(fake.SHARE_NAME)
+
+        volume_get_iter_args = {
+            'query': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'name': fake.SHARE_NAME,
+                    },
+                },
+            },
+            'desired-attributes': {
+                'volume-attributes': {
+                    'volume-id-attributes': {
+                        'containing-aggregate-name': None,
+                        'junction-path': None,
+                        'name': None,
+                        'owning-vserver-name': None,
+                        'type': None,
+                        'style': None,
+                    },
+                    'volume-space-attributes': {
+                        'size': None,
+                    }
+                },
+            },
+        }
+
+        expected = {
+            'aggregate': fake.SHARE_AGGREGATE_NAME,
+            'junction-path': '/%s' % fake.SHARE_NAME,
+            'name': fake.SHARE_NAME,
+            'type': 'rw',
+            'style': 'flex',
+            'size': fake.SHARE_SIZE,
+            'owning-vserver-name': fake.VSERVER_NAME,
+        }
+        self.client.send_request.assert_has_calls([
+            mock.call('volume-get-iter', volume_get_iter_args)])
+        self.assertDictEqual(expected, result)
+
+    def test_get_volume_not_found(self):
+
+        api_response = netapp_api.NaElement(fake.NO_RECORDS_RESPONSE)
+        self.mock_object(self.client,
+                         'send_request',
+                         mock.Mock(return_value=api_response))
+
+        self.assertRaises(exception.StorageResourceNotFound,
+                          self.client.get_volume,
+                          fake.SHARE_NAME)
+
+    def test_get_volume_not_unique(self):
+
+        api_response = netapp_api.NaElement(
+            fake.VOLUME_GET_ITER_NOT_UNIQUE_RESPONSE)
+        self.mock_object(self.client,
+                         'send_request',
+                         mock.Mock(return_value=api_response))
+
+        self.assertRaises(exception.NetAppException,
+                          self.client.get_volume,
+                          fake.SHARE_NAME)
 
     def test_get_volume_at_junction_path(self):
 
