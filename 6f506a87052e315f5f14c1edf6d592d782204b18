@@ -1,0 +1,10 @@
+Code-Review+1: Tom Barron <tpb@dyncloud.net>
+Code-Review+2: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Code-Review+2: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Workflow+1: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 21 Jul 2016 23:16:21 +0000
+Reviewed-on: https://review.openstack.org/336315
+Project: openstack/deb-manila
+Branch: refs/heads/master
