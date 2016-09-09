@@ -1,0 +1,14 @@
+Code-Review+1: Goutham Pacha Ravi <gouthampravi@gmail.com>
+Code-Review+2: Ben Swartzlander <ben@swartzlander.org>
+Code-Review+1: Thomas Bechtold <tbechtold@suse.com>
+Code-Review+1: Ramana Raja <rraja@redhat.com>
+Code-Review+1: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Code-Review+1: Telles Mota Vidal Nóbrega <tenobreg@redhat.com>
+Code-Review+1: Clinton Knight <cknight@netapp.com>
+Workflow+1: Ben Swartzlander <ben@swartzlander.org>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 14 Jun 2016 05:13:09 +0000
+Reviewed-on: https://review.openstack.org/327951
+Project: openstack/deb-manila
+Branch: refs/heads/stable/mitaka

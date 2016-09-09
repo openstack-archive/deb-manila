@@ -1,0 +1,13 @@
+Code-Review+1: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Code-Review+1: Goutham Pacha Ravi <gouthampravi@gmail.com>
+Code-Review+1: Clinton Knight <cknight@netapp.com>
+Code-Review+1: xing-yang <xing.yang@emc.com>
+Code-Review+1: Marc Koderer <marc@koderer.com>
+Code-Review+2: Ben Swartzlander <ben@swartzlander.org>
+Workflow+1: Ben Swartzlander <ben@swartzlander.org>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 13 May 2016 18:47:04 +0000
+Reviewed-on: https://review.openstack.org/315535
+Project: openstack/deb-manila
+Branch: refs/heads/stable/mitaka
