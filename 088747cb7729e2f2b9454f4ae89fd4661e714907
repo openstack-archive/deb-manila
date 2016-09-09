@@ -1,0 +1,10 @@
+Code-Review+2: Ben Swartzlander <ben@swartzlander.org>
+Code-Review+1: Yingzhe Zeng <zengyingzhe@huawei.com>
+Code-Review+2: Tom Barron <tpb@dyncloud.net>
+Workflow+1: Tom Barron <tpb@dyncloud.net>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Sat, 27 Aug 2016 19:54:50 +0000
+Reviewed-on: https://review.openstack.org/359166
+Project: openstack/deb-manila
+Branch: refs/heads/master

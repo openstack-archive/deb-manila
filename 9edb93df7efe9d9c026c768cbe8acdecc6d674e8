@@ -1,0 +1,10 @@
+Code-Review+1: zhongjun <jun.zhongjun2@gmail.com>
+Code-Review+2: xing-yang <xing.yang@emc.com>
+Code-Review+2: Tom Barron <tpb@dyncloud.net>
+Workflow+1: Tom Barron <tpb@dyncloud.net>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 01 Sep 2016 15:50:28 +0000
+Reviewed-on: https://review.openstack.org/359567
+Project: openstack/deb-manila
+Branch: refs/heads/master
