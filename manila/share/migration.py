@@ -84,11 +84,12 @@ class ShareMigrationHelper(object):
             else:
                 time.sleep(tries ** 2)
 
-    def create_instance_and_wait(self, share, share_instance, host):
+    def create_instance_and_wait(self, share, dest_host, new_share_network_id,
+                                 new_az_id, new_share_type_id):
 
         new_share_instance = self.api.create_instance(
-            self.context, share, share_instance['share_network_id'],
-            host['host'])
+            self.context, share, new_share_network_id, dest_host,
+            new_az_id, share_type_id=new_share_type_id)
 
         # Wait for new_share_instance to become ready
         starttime = time.time()
@@ -103,14 +104,14 @@ class ShareMigrationHelper(object):
                 msg = _("Failed to create new share instance"
                         " (from %(share_id)s) on "
                         "destination host %(host_name)s") % {
-                    'share_id': share['id'], 'host_name': host['host']}
+                    'share_id': share['id'], 'host_name': dest_host}
                 self.cleanup_new_instance(new_share_instance)
                 raise exception.ShareMigrationFailed(reason=msg)
             elif now > deadline:
                 msg = _("Timeout creating new share instance "
                         "(from %(share_id)s) on "
                         "destination host %(host_name)s") % {
-                    'share_id': share['id'], 'host_name': host['host']}
+                    'share_id': share['id'], 'host_name': dest_host}
                 self.cleanup_new_instance(new_share_instance)
                 raise exception.ShareMigrationFailed(reason=msg)
             else:
@@ -155,7 +156,7 @@ class ShareMigrationHelper(object):
                           "to read-only.", self.share['id'])
 
                 for rule in rules:
-                    rule['access_level'] = 'ro'
+                    rule['access_level'] = constants.ACCESS_LEVEL_RO
 
                 driver.update_access(self.context, share_instance, rules,
                                      add_rules=[], delete_rules=[],
@@ -199,3 +200,16 @@ class ShareMigrationHelper(object):
             utils.wait_for_access_update(
                 self.context, self.db, new_share_instance,
                 self.migration_wait_access_rules_timeout)
+
+    @utils.retry(exception.ShareServerNotReady, retries=8)
+    def wait_for_share_server(self, share_server_id):
+        share_server = self.db.share_server_get(self.context, share_server_id)
+        if share_server['status'] == constants.STATUS_ERROR:
+            raise exception.ShareServerNotCreated(
+                share_server_id=share_server_id)
+        elif share_server['status'] == constants.STATUS_ACTIVE:
+            return share_server
+        else:
+            raise exception.ShareServerNotReady(
+                share_server_id=share_server_id, time=511,
+                state=constants.STATUS_AVAILABLE)

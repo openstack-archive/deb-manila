@@ -76,9 +76,12 @@ class QuobyteShareDriver(driver.ExecuteMixin, driver.ShareDriver,):
         1.0.1   - Adds ensure_share() implementation.
         1.1     - Adds extend_share() and shrink_share() implementation.
         1.2     - Adds update_access() implementation and related methods
+        1.2.1   - Improved capacity calculation
+        1.2.2   - Minor optimizations
+        1.2.3   - Updated RPC layer for improved stability
     """
 
-    DRIVER_VERSION = '1.2'
+    DRIVER_VERSION = '1.2.3'
 
     def __init__(self, *args, **kwargs):
         super(QuobyteShareDriver, self).__init__(False, *args, **kwargs)
@@ -141,17 +144,27 @@ class QuobyteShareDriver(driver.ExecuteMixin, driver.ShareDriver,):
     def _get_capacities(self):
         result = self.rpc.call('getSystemStatistics', {})
 
-        total = float(result['total_logical_capacity'])
-        used = float(result['total_logical_usage'])
+        total = float(result['total_physical_capacity'])
+        used = float(result['total_physical_usage'])
         LOG.info(_LI('Read capacity of %(cap)s bytes and '
                      'usage of %(use)s bytes from backend. '),
                  {'cap': total, 'use': used})
         free = total - used
+        if free < 0:
+            free = 0  # no space available
+        free_replicated = free / self._get_qb_replication_factor()
         # floor numbers to nine digits (bytes)
         total = math.floor((total / units.Gi) * units.G) / units.G
-        free = math.floor((free / units.Gi) * units.G) / units.G
+        free = math.floor((free_replicated / units.Gi) * units.G) / units.G
 
         return total, free
+
+    def _get_qb_replication_factor(self):
+        result = self.rpc.call('getEffectiveVolumeConfiguration',
+                               {'configuration_name': self.
+                                configuration.quobyte_volume_configuration})
+        return int(result['configuration']['volume_metadata_configuration']
+                   ['replication_factor'])
 
     def check_for_setup_error(self):
         pass
@@ -239,10 +252,10 @@ class QuobyteShareDriver(driver.ExecuteMixin, driver.ShareDriver,):
 
         if self.configuration.quobyte_delete_shares:
             self.rpc.call('deleteVolume', {'volume_uuid': volume_uuid})
-
-        self.rpc.call('exportVolume', dict(
-            volume_uuid=volume_uuid,
-            remove_export=True))
+        else:
+            self.rpc.call('exportVolume', {"volume_uuid": volume_uuid,
+                                           "remove_export": True,
+                                           })
 
     def ensure_share(self, context, share, share_server=None):
         """Invoked to ensure that share is exported.

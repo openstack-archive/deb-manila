@@ -14,6 +14,7 @@
 #    under the License.
 
 
+import ddt
 import mock
 from oslo_utils import units
 
@@ -47,6 +48,7 @@ class MockVolumeClientModule(object):
 
     class CephFSVolumeClient(mock.Mock):
         mock_used_bytes = 0
+        version = 1
 
         def __init__(self, *args, **kwargs):
             mock.Mock.__init__(self, spec=[
@@ -56,12 +58,14 @@ class MockVolumeClientModule(object):
                 "delete_volume", "purge_volume",
                 "deauthorize", "evict", "set_max_bytes",
                 "destroy_snapshot_group", "create_snapshot_group",
-                "disconnect"
+                "get_authorized_ids"
             ])
             self.create_volume = mock.Mock(return_value={
                 "mount_path": "/foo/bar"
             })
             self.get_mon_addrs = mock.Mock(return_value=["1.2.3.4", "5.6.7.8"])
+            self.get_authorized_ids = mock.Mock(
+                return_value=[('eve', 'rw')])
             self.authorize = mock.Mock(return_value={"auth_key": "abc123"})
             self.get_used_bytes = mock.Mock(return_value=self.mock_used_bytes)
             self.rados = mock.Mock()
@@ -71,6 +75,7 @@ class MockVolumeClientModule(object):
             })
 
 
+@ddt.ddt
 class CephFSNativeDriverTestCase(test.TestCase):
     """Test the CephFS native driver.
 
@@ -87,6 +92,7 @@ class CephFSNativeDriverTestCase(test.TestCase):
         self._share = fake_share.fake_share(share_proto='CEPHFS')
 
         self.fake_conf.set_default('driver_handles_share_servers', False)
+        self.fake_conf.set_default('cephfs_auth_id', 'manila')
 
         self.mock_object(cephfs_native, "ceph_volume_client",
                          MockVolumeClientModule)
@@ -159,18 +165,55 @@ class CephFSNativeDriverTestCase(test.TestCase):
             self._driver._share_path(self._share),
             data_isolated=True)
 
-    def test_allow_access(self):
-        access_rule = {
+    @ddt.data(None, 1)
+    def test_allow_access_rw(self, volume_client_version):
+        rule = {
             'access_level': constants.ACCESS_LEVEL_RW,
+            'access_to': 'alice',
             'access_type': 'cephx',
-            'access_to': 'alice'
         }
+        self._driver.volume_client.version = volume_client_version
 
-        self._driver._allow_access(self._context, self._share, access_rule)
+        auth_key = self._driver._allow_access(
+            self._context, self._share, rule)
 
-        self._driver._volume_client.authorize.assert_called_once_with(
-            self._driver._share_path(self._share),
-            "alice")
+        self.assertEqual("abc123", auth_key)
+
+        if not volume_client_version:
+            self._driver._volume_client.authorize.assert_called_once_with(
+                self._driver._share_path(self._share),
+                "alice")
+        else:
+            self._driver._volume_client.authorize.assert_called_once_with(
+                self._driver._share_path(self._share),
+                "alice",
+                readonly=False,
+                tenant_id=self._share['project_id'])
+
+    @ddt.data(None, 1)
+    def test_allow_access_ro(self, volume_client_version):
+        rule = {
+            'access_level': constants.ACCESS_LEVEL_RO,
+            'access_to': 'alice',
+            'access_type': 'cephx',
+        }
+        self._driver.volume_client.version = volume_client_version
+
+        if not volume_client_version:
+            self.assertRaises(exception.InvalidShareAccessLevel,
+                              self._driver._allow_access,
+                              self._context, self._share, rule)
+        else:
+            auth_key = self._driver._allow_access(self._context, self._share,
+                                                  rule)
+
+            self.assertEqual("abc123", auth_key)
+            self._driver._volume_client.authorize.assert_called_once_with(
+                self._driver._share_path(self._share),
+                "alice",
+                readonly=True,
+                tenant_id=self._share['project_id'],
+            )
 
     def test_allow_access_wrong_type(self):
         self.assertRaises(exception.InvalidShareAccess,
@@ -181,13 +224,13 @@ class CephFSNativeDriverTestCase(test.TestCase):
                               'access_to': 'alice'
                           })
 
-    def test_allow_access_ro(self):
-        self.assertRaises(exception.InvalidShareAccessLevel,
+    def test_allow_access_same_cephx_id_as_manila_service(self):
+        self.assertRaises(exception.InvalidInput,
                           self._driver._allow_access,
                           self._context, self._share, {
-                              'access_level': constants.ACCESS_LEVEL_RO,
+                              'access_level': constants.ACCESS_LEVEL_RW,
                               'access_type': 'cephx',
-                              'access_to': 'alice'
+                              'access_to': 'manila',
                           })
 
     def test_deny_access(self):
@@ -206,41 +249,69 @@ class CephFSNativeDriverTestCase(test.TestCase):
 
     def test_update_access_add_rm(self):
         alice = {
+            'id': 'accessid1',
             'access_level': 'rw',
             'access_type': 'cephx',
             'access_to': 'alice'
         }
         bob = {
+            'id': 'accessid2',
             'access_level': 'rw',
             'access_type': 'cephx',
             'access_to': 'bob'
         }
-        self._driver.update_access(self._context, self._share,
-                                   access_rules=[alice],
-                                   add_rules=[alice],
-                                   delete_rules=[bob])
 
+        access_keys = self._driver.update_access(self._context, self._share,
+                                                 access_rules=[alice],
+                                                 add_rules=[alice],
+                                                 delete_rules=[bob])
+
+        self.assertEqual({'accessid1': 'abc123'}, access_keys)
         self._driver._volume_client.authorize.assert_called_once_with(
             self._driver._share_path(self._share),
-            "alice")
+            "alice",
+            readonly=False,
+            tenant_id=self._share['project_id'])
         self._driver._volume_client.deauthorize.assert_called_once_with(
             self._driver._share_path(self._share),
             "bob")
 
-    def test_update_access_all(self):
+    @ddt.data(None, 1)
+    def test_update_access_all(self, volume_client_version):
         alice = {
+            'id': 'accessid1',
             'access_level': 'rw',
             'access_type': 'cephx',
             'access_to': 'alice'
         }
+        self._driver.volume_client.version = volume_client_version
 
-        self._driver.update_access(self._context, self._share,
-                                   access_rules=[alice], add_rules=[],
-                                   delete_rules=[])
+        access_keys = self._driver.update_access(self._context, self._share,
+                                                 access_rules=[alice],
+                                                 add_rules=[],
+                                                 delete_rules=[])
 
-        self._driver._volume_client.authorize.assert_called_once_with(
-            self._driver._share_path(self._share),
-            "alice")
+        self.assertEqual({'accessid1': 'abc123'}, access_keys)
+        if volume_client_version:
+            (self._driver._volume_client.get_authorized_ids.
+             assert_called_once_with(self._driver._share_path(self._share)))
+            self._driver._volume_client.authorize.assert_called_once_with(
+                self._driver._share_path(self._share),
+                "alice",
+                readonly=False,
+                tenant_id=self._share['project_id']
+            )
+            self._driver._volume_client.deauthorize.assert_called_once_with(
+                self._driver._share_path(self._share),
+                "eve",
+            )
+        else:
+            self.assertFalse(
+                self._driver._volume_client.get_authorized_ids.called)
+            self._driver._volume_client.authorize.assert_called_once_with(
+                self._driver._share_path(self._share),
+                "alice",
+            )
 
     def test_extend_share(self):
         new_size_gb = self._share['size'] * 2

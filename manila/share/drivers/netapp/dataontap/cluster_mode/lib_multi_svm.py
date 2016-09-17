@@ -36,6 +36,7 @@ from manila import utils
 LOG = log.getLogger(__name__)
 SUPPORTED_NETWORK_TYPES = (None, 'flat', 'vlan')
 SEGMENTED_NETWORK_TYPES = ('vlan',)
+DEFAULT_MTU = 1500
 
 
 class NetAppCmodeMultiSVMFileStorageLibrary(
@@ -172,7 +173,8 @@ class NetAppCmodeMultiSVMFileStorageLibrary(
                                            network_info,
                                            ipspace_name)
 
-            vserver_client.enable_nfs()
+            vserver_client.enable_nfs(
+                self.configuration.netapp_enabled_share_protocols)
 
             security_services = network_info.get('security_services')
             if security_services:
@@ -273,13 +275,15 @@ class NetAppCmodeMultiSVMFileStorageLibrary(
         ip_address = network_allocation['ip_address']
         netmask = utils.cidr_to_netmask(network_allocation['cidr'])
         vlan = network_allocation['segmentation_id']
+        network_mtu = network_allocation.get('mtu')
+        mtu = network_mtu or DEFAULT_MTU
 
         if not vserver_client.network_interface_exists(
                 vserver_name, node_name, port, ip_address, netmask, vlan):
 
             self._client.create_network_interface(
                 ip_address, netmask, vlan, node_name, port, vserver_name,
-                lif_name, ipspace_name)
+                lif_name, ipspace_name, mtu)
 
     @na_utils.trace
     def get_network_allocations_number(self):
@@ -320,8 +324,10 @@ class NetAppCmodeMultiSVMFileStorageLibrary(
         vserver_client = self._get_api_client(vserver=vserver)
         network_interfaces = vserver_client.get_network_interfaces()
 
-        home_port = network_interfaces[0]['home-port']
-        vlan = home_port.split('-')[1]
+        vlan = None
+        if network_interfaces:
+            home_port = network_interfaces[0]['home-port']
+            vlan = home_port.split('-')[1]
 
         @utils.synchronized('netapp-VLAN-%s' % vlan, external=True)
         def _delete_vserver_with_lock():

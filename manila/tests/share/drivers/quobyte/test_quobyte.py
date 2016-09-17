@@ -159,13 +159,11 @@ class QuobyteShareDriverTestCase(test.TestCase):
 
         self._driver.delete_share(self._context, self.share)
 
+        resolv_params = {'volume_name': 'fakename',
+                         'tenant_domain': 'fake_project_uuid'}
         self._driver.rpc.call.assert_has_calls([
-            mock.call('resolveVolumeName',
-                      {'volume_name': 'fakename',
-                       'tenant_domain': 'fake_project_uuid'}),
-            mock.call('deleteVolume', {'volume_uuid': 'voluuid'}),
-            mock.call('exportVolume', {'volume_uuid': 'voluuid',
-                                       'remove_export': True})])
+            mock.call('resolveVolumeName', resolv_params),
+            mock.call('deleteVolume', {'volume_uuid': 'voluuid'})])
 
     def test_delete_share_existing_volume_disabled(self):
         def rpc_handler(name, *args):
@@ -208,10 +206,10 @@ class QuobyteShareDriverTestCase(test.TestCase):
 
         self._driver._allow_access(self._context, self.share, self.access)
 
-        self._driver.rpc.call.assert_called_with(
-            'exportVolume', {'volume_uuid': 'voluuid',
-                             'read_only': False,
-                             'add_allow_ip': '10.0.0.1'})
+        exp_params = {'volume_uuid': 'voluuid',
+                      'read_only': False,
+                      'add_allow_ip': '10.0.0.1'}
+        self._driver.rpc.call.assert_called_with('exportVolume', exp_params)
 
     def test_allow_ro_access(self):
         def rpc_handler(name, *args):
@@ -226,10 +224,10 @@ class QuobyteShareDriverTestCase(test.TestCase):
 
         self._driver._allow_access(self._context, self.share, ro_access)
 
-        self._driver.rpc.call.assert_called_with(
-            'exportVolume', {'volume_uuid': 'voluuid',
-                             'read_only': True,
-                             'add_allow_ip': '10.0.0.1'})
+        exp_params = {'volume_uuid': 'voluuid',
+                      'read_only': True,
+                      'add_allow_ip': '10.0.0.1'}
+        self._driver.rpc.call.assert_called_with('exportVolume', exp_params)
 
     def test_allow_access_nonip(self):
         self._driver.rpc.call = mock.Mock(wraps=fake_rpc_handler)
@@ -276,10 +274,10 @@ class QuobyteShareDriverTestCase(test.TestCase):
 
         self._driver._resolve_volume_name('fake_vol_name', 'fake_domain_name')
 
-        self._driver.rpc.call.assert_called_with(
-            'resolveVolumeName',
-            {'volume_name': 'fake_vol_name',
-             'tenant_domain': 'fake_domain_name'})
+        exp_params = {'volume_name': 'fake_vol_name',
+                      'tenant_domain': 'fake_domain_name'}
+        self._driver.rpc.call.assert_called_with('resolveVolumeName',
+                                                 exp_params)
 
     def test_resolve_volume_name_NOENT(self):
         self._driver.rpc.call = mock.Mock(
@@ -318,12 +316,38 @@ class QuobyteShareDriverTestCase(test.TestCase):
     def test_get_capacities_gb(self):
         capval = 42115548133
         useval = 19695128917
+        replfact = 3
+        self._driver._get_qb_replication_factor = mock.Mock(
+            return_value=replfact)
         self._driver.rpc.call = mock.Mock(
-            return_value={'total_logical_capacity': six.text_type(capval),
-                          'total_logical_usage': six.text_type(useval)})
+            return_value={'total_physical_capacity': six.text_type(capval),
+                          'total_physical_usage': six.text_type(useval)})
 
-        self.assertEqual((39.223160718, 20.880642548),
+        self.assertEqual((39.223160718, 6.960214182),
                          self._driver._get_capacities())
+
+    def test_get_capacities_gb_full(self):
+        capval = 1024 * 1024 * 1024 * 3
+        useval = 1024 * 1024 * 1024 * 3 + 1
+        replfact = 1
+        self._driver._get_qb_replication_factor = mock.Mock(
+            return_value=replfact)
+        self._driver.rpc.call = mock.Mock(
+            return_value={'total_physical_capacity': six.text_type(capval),
+                          'total_physical_usage': six.text_type(useval)})
+
+        self.assertEqual((3.0, 0), self._driver._get_capacities())
+
+    def test_get_replication(self):
+        fakerepl = 42
+        self._driver.configuration.quobyte_volume_configuration = 'fakeVolConf'
+        self._driver.rpc.call = mock.Mock(
+            return_value={'configuration':
+                          {'volume_metadata_configuration':
+                           {'replication_factor':
+                            six.text_type(fakerepl)}}})
+
+        self.assertEqual(fakerepl, self._driver._get_qb_replication_factor())
 
     @mock.patch.object(quobyte.QuobyteShareDriver,
                        "_resolve_volume_name",
@@ -369,11 +393,18 @@ class QuobyteShareDriverTestCase(test.TestCase):
 
         self._driver._resize_share(share=self.share, new_size=7)
 
+        exp_params = {
+            "consumer": {
+                "type": 3,
+                "identifier": self.share["name"],
+            },
+            "limits": {
+                "type": 5,
+                "value": 7,
+            },
+        }
         self._driver.rpc.call.assert_has_calls([
-            mock.call('setQuota',
-                      {"consumer": {"type": 3,
-                                    "identifier": self.share["name"]},
-                       "limits": {"type": 5, "value": 7}})])
+            mock.call('setQuota', exp_params)])
 
     @mock.patch.object(quobyte.QuobyteShareDriver,
                        "_resolve_volume_name",

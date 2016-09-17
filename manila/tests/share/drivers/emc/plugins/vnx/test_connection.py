@@ -84,16 +84,19 @@ class StorageConnectionTestCase(test.TestCase):
     @ddt.data({'pool_conf': None,
                'real_pools': ['fake_pool', 'nas_pool'],
                'matched_pool': set()},
-              {'pool_conf': '*',
+              {'pool_conf': [],
+               'real_pools': ['fake_pool', 'nas_pool'],
+               'matched_pool': set()},
+              {'pool_conf': ['*'],
                'real_pools': ['fake_pool', 'nas_pool'],
                'matched_pool': {'fake_pool', 'nas_pool'}},
-              {'pool_conf': 'fake_*',
+              {'pool_conf': ['fake_*'],
                'real_pools': ['fake_pool', 'nas_pool', 'Perf_Pool'],
                'matched_pool': {'fake_pool'}},
-              {'pool_conf': '*pool',
+              {'pool_conf': ['*pool'],
                'real_pools': ['fake_pool', 'NAS_Pool', 'Perf_POOL'],
                'matched_pool': {'fake_pool'}},
-              {'pool_conf': 'nas_pool',
+              {'pool_conf': ['nas_pool'],
                'real_pools': ['fake_pool', 'nas_pool', 'perf_pool'],
                'matched_pool': {'nas_pool'}})
     @ddt.unpack
@@ -120,11 +123,11 @@ class StorageConnectionTestCase(test.TestCase):
         xml_req_mock.assert_has_calls(expected_calls)
 
     @ddt.data(
-        {'pool_conf': 'fake_*',
+        {'pool_conf': ['fake_*'],
          'real_pools': ['nas_pool', 'Perf_Pool']},
-        {'pool_conf': '*pool',
+        {'pool_conf': ['*pool'],
          'real_pools': ['NAS_Pool', 'Perf_POOL']},
-        {'pool_conf': 'nas_pool',
+        {'pool_conf': ['nas_pool'],
          'real_pools': ['fake_pool', 'perf_pool']},
     )
     @ddt.unpack
@@ -606,6 +609,7 @@ class StorageConnectionTestCase(test.TestCase):
         ]
         xml_req_mock.assert_has_calls(expected_calls)
 
+    @utils.patch_get_managed_ports(return_value=['cge-1-0'])
     def test_setup_server(self):
         hook = utils.RequestSideEffect()
         hook.append(self.vdm.resp_get_but_not_found())
@@ -620,7 +624,6 @@ class StorageConnectionTestCase(test.TestCase):
         self.connection.manager.connectors['XML'].request = xml_req_mock
 
         ssh_hook = utils.SSHSideEffect()
-        ssh_hook.append(self.mover.output_get_physical_devices())
         ssh_hook.append()
         ssh_cmd_mock = mock.Mock(side_effect=ssh_hook)
         self.connection.manager.connectors['SSH'].run_ssh = ssh_cmd_mock
@@ -647,11 +650,11 @@ class StorageConnectionTestCase(test.TestCase):
         xml_req_mock.assert_has_calls(expected_calls)
 
         ssh_calls = [
-            mock.call(self.mover.cmd_get_physical_devices(), False),
             mock.call(self.vdm.cmd_attach_nfs_interface(), False),
         ]
         ssh_cmd_mock.assert_has_calls(ssh_calls)
 
+    @utils.patch_get_managed_ports(return_value=['cge-1-0'])
     def test_setup_server_with_existing_vdm(self):
         hook = utils.RequestSideEffect()
         hook.append(self.vdm.resp_get_succeed())
@@ -664,11 +667,9 @@ class StorageConnectionTestCase(test.TestCase):
         self.connection.manager.connectors['XML'].request = xml_req_mock
 
         ssh_hook = utils.SSHSideEffect()
-        ssh_hook.append(self.mover.output_get_physical_devices())
         ssh_hook.append()
         ssh_cmd_mock = mock.Mock(side_effect=ssh_hook)
         self.connection.manager.connectors['SSH'].run_ssh = ssh_cmd_mock
-
         self.connection.setup_server(fakes.NETWORK_INFO, None)
 
         if_name_1 = fakes.FakeData.network_allocations_id1[-12:]
@@ -689,7 +690,6 @@ class StorageConnectionTestCase(test.TestCase):
         xml_req_mock.assert_has_calls(expected_calls)
 
         ssh_calls = [
-            mock.call(self.mover.cmd_get_physical_devices(), False),
             mock.call(self.vdm.cmd_attach_nfs_interface(), False),
         ]
         ssh_cmd_mock.assert_has_calls(ssh_calls)
@@ -702,6 +702,9 @@ class StorageConnectionTestCase(test.TestCase):
                           self.connection.setup_server,
                           network_info, None)
 
+    @utils.patch_get_managed_ports(
+        side_effect=exception.EMCVnxXMLAPIError(
+            err="Get managed ports fail."))
     def test_setup_server_without_valid_physical_device(self):
         hook = utils.RequestSideEffect()
         hook.append(self.vdm.resp_get_but_not_found())
@@ -712,9 +715,7 @@ class StorageConnectionTestCase(test.TestCase):
         hook.append(self.vdm.resp_task_succeed())
         xml_req_mock = utils.EMCMock(side_effect=hook)
         self.connection.manager.connectors['XML'].request = xml_req_mock
-
         ssh_hook = utils.SSHSideEffect()
-        ssh_hook.append(self.mover.fake_output)
         ssh_hook.append(self.vdm.output_get_interfaces(nfs_interface=''))
         ssh_cmd_mock = mock.Mock(side_effect=ssh_hook)
         self.connection.manager.connectors['SSH'].run_ssh = ssh_cmd_mock
@@ -734,11 +735,11 @@ class StorageConnectionTestCase(test.TestCase):
         xml_req_mock.assert_has_calls(expected_calls)
 
         ssh_calls = [
-            mock.call(self.mover.cmd_get_physical_devices(), False),
             mock.call(self.vdm.cmd_get_interfaces(), False),
         ]
         ssh_cmd_mock.assert_has_calls(ssh_calls)
 
+    @utils.patch_get_managed_ports(return_value=['cge-1-0'])
     def test_setup_server_with_exception(self):
         hook = utils.RequestSideEffect()
         hook.append(self.vdm.resp_get_but_not_found())
@@ -754,7 +755,6 @@ class StorageConnectionTestCase(test.TestCase):
         self.connection.manager.connectors['XML'].request = xml_req_mock
 
         ssh_hook = utils.SSHSideEffect()
-        ssh_hook.append(self.mover.output_get_physical_devices())
         ssh_hook.append(self.vdm.output_get_interfaces(nfs_interface=''))
         ssh_cmd_mock = mock.Mock(side_effect=ssh_hook)
         self.connection.manager.connectors['SSH'].run_ssh = ssh_cmd_mock
@@ -785,7 +785,6 @@ class StorageConnectionTestCase(test.TestCase):
         xml_req_mock.assert_has_calls(expected_calls)
 
         ssh_calls = [
-            mock.call(self.mover.cmd_get_physical_devices(), False),
             mock.call(self.vdm.cmd_get_interfaces(), False),
         ]
         ssh_cmd_mock.assert_has_calls(ssh_calls)
@@ -1407,3 +1406,48 @@ class StorageConnectionTestCase(test.TestCase):
             mock.call(self.pool.req_get()),
         ]
         xml_req_mock.assert_has_calls(expected_calls)
+
+    @ddt.data({'port_conf': None,
+               'managed_ports': ['cge-1-0', 'cge-1-3']},
+              {'port_conf': '*',
+               'managed_ports': ['cge-1-0', 'cge-1-3']},
+              {'port_conf': ['cge-1-*'],
+               'managed_ports': ['cge-1-0', 'cge-1-3']},
+              {'port_conf': ['cge-1-3'],
+               'managed_ports': ['cge-1-3']})
+    @ddt.unpack
+    def test_get_managed_ports_one_port(self, port_conf, managed_ports):
+        hook = utils.SSHSideEffect()
+        hook.append(self.mover.output_get_physical_devices())
+
+        ssh_cmd_mock = mock.Mock(side_effect=hook)
+        expected_calls = [
+            mock.call(self.mover.cmd_get_physical_devices(), False),
+        ]
+        self.connection.manager.connectors['SSH'].run_ssh = ssh_cmd_mock
+        self.connection.port_conf = port_conf
+        ports = self.connection.get_managed_ports()
+        self.assertIsInstance(ports, list)
+        self.assertEqual(sorted(managed_ports), sorted(ports))
+        ssh_cmd_mock.assert_has_calls(expected_calls)
+
+    def test_get_managed_ports_no_valid_port(self):
+        hook = utils.SSHSideEffect()
+        hook.append(self.mover.output_get_physical_devices())
+
+        ssh_cmd_mock = mock.Mock(side_effect=hook)
+        self.connection.manager.connectors['SSH'].run_ssh = ssh_cmd_mock
+        self.connection.port_conf = ['cge-2-0']
+
+        self.assertRaises(exception.BadConfigurationException,
+                          self.connection.get_managed_ports)
+
+    def test_get_managed_ports_query_devices_failed(self):
+        hook = utils.SSHSideEffect()
+        hook.append(self.mover.fake_output)
+        ssh_cmd_mock = mock.Mock(side_effect=hook)
+        self.connection.manager.connectors['SSH'].run_ssh = ssh_cmd_mock
+        self.connection.port_conf = ['cge-2-0']
+
+        self.assertRaises(exception.EMCVnxXMLAPIError,
+                          self.connection.get_managed_ports)

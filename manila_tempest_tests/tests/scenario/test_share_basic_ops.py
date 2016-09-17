@@ -14,12 +14,15 @@
 #    under the License.
 
 from oslo_log import log as logging
+from tempest.common import waiters
 from tempest import config
 from tempest.lib.common.utils import data_utils
 from tempest.lib.common.utils import test_utils
 from tempest.lib import exceptions
 from tempest import test
+import testtools
 
+from manila_tempest_tests.common import constants
 from manila_tempest_tests.tests.api import base
 from manila_tempest_tests.tests.scenario import manager_share as manager
 from manila_tempest_tests import utils
@@ -65,14 +68,17 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
                   'user: {ssh_user}'.format(
                       image=self.image_ref, flavor=self.flavor_ref,
                       ssh_user=self.ssh_user))
+        self.security_group = self._create_security_group()
+        if CONF.share.multitenancy_enabled:
+            self.create_share_network()
 
-    def boot_instance(self):
+    def boot_instance(self, wait_until="ACTIVE"):
         self.keypair = self.create_keypair()
         security_groups = [{'name': self.security_group['name']}]
         create_kwargs = {
             'key_name': self.keypair['name'],
             'security_groups': security_groups,
-            'wait_until': 'ACTIVE',
+            'wait_until': wait_until,
         }
         if CONF.share.multitenancy_enabled:
             create_kwargs['networks'] = [{'uuid': self.net['id']}, ]
@@ -119,9 +125,10 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
         data = ssh_client.exec_command("sudo cat /mnt/t1")
         return data.rstrip()
 
-    def migrate_share(self, share_id, dest_host):
-        share = self._migrate_share(share_id, dest_host,
+    def migrate_share(self, share_id, dest_host, status):
+        share = self._migrate_share(share_id, dest_host, status,
                                     self.shares_admin_v2_client)
+        share = self._migration_complete(share['id'], dest_host)
         return share
 
     def create_share_network(self):
@@ -152,7 +159,6 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
             'share_type_id': self._get_share_type()['id'],
         }
         if CONF.share.multitenancy_enabled:
-            self.create_share_network()
             kwargs.update({'share_network_id': self.share_net['id']})
         self.share = self._create_share(**kwargs)
 
@@ -163,6 +169,7 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
                 first_address = net_addresses.values()[0][0]
                 ip = first_address['addr']
             except Exception:
+                LOG.debug("Instance: %s" % instance)
                 # In case on an error ip will be still none
                 LOG.exception("Instance does not have a valid IP address."
                               "Falling back to default")
@@ -171,12 +178,17 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
         self._allow_access(share_id, access_type='ip', access_to=ip,
                            cleanup=cleanup)
 
+    def wait_for_active_instance(self, instance_id):
+        waiters.wait_for_server_status(
+            self.manager.servers_client, instance_id, "ACTIVE")
+        return self.manager.servers_client.show_server(instance_id)["server"]
+
     @test.services('compute', 'network')
     @test.attr(type=[base.TAG_POSITIVE, base.TAG_BACKEND])
     def test_mount_share_one_vm(self):
-        self.security_group = self._create_security_group()
+        instance = self.boot_instance(wait_until="BUILD")
         self.create_share()
-        instance = self.boot_instance()
+        instance = self.wait_for_active_instance(instance["id"])
         self.allow_access_ip(self.share['id'], instance=instance,
                              cleanup=False)
         ssh_client = self.init_ssh(instance)
@@ -198,11 +210,15 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
     def test_read_write_two_vms(self):
         """Boots two vms and writes/reads data on it."""
         test_data = "Some test data to write"
-        self.security_group = self._create_security_group()
-        self.create_share()
 
-        # boot first VM and write data
-        instance1 = self.boot_instance()
+        # Boot two VMs and create share
+        instance1 = self.boot_instance(wait_until="BUILD")
+        instance2 = self.boot_instance(wait_until="BUILD")
+        self.create_share()
+        instance1 = self.wait_for_active_instance(instance1["id"])
+        instance2 = self.wait_for_active_instance(instance2["id"])
+
+        # Write data to first VM
         self.allow_access_ip(self.share['id'], instance=instance1,
                              cleanup=False)
         ssh_client_inst1 = self.init_ssh(instance1)
@@ -219,9 +235,9 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
                         ssh_client_inst1)
         self.write_data(test_data, ssh_client_inst1)
 
-        # boot second VM and read
-        instance2 = self.boot_instance()
-        self.allow_access_ip(self.share['id'], instance=instance2)
+        # Read from second VM
+        self.allow_access_ip(
+            self.share['id'], instance=instance2, cleanup=False)
         ssh_client_inst2 = self.init_ssh(instance2)
         self.mount_share(locations[0], ssh_client_inst2)
         self.addCleanup(self.umount_share,
@@ -231,47 +247,51 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
 
     @test.services('compute', 'network')
     @test.attr(type=[base.TAG_POSITIVE, base.TAG_BACKEND])
+    @testtools.skipUnless(CONF.share.run_host_assisted_migration_tests or
+                          CONF.share.run_driver_assisted_migration_tests,
+                          "Share migration tests are disabled.")
     def test_migration_files(self):
 
-        if self.protocol == "CIFS":
-            raise self.skipException("Test for CIFS protocol not supported "
-                                     "at this moment. Skipping.")
+        if self.protocol != "NFS":
+            raise self.skipException("Only NFS protocol supported "
+                                     "at this moment.")
 
-        if not CONF.share.run_migration_tests:
-            raise self.skipException("Migration tests disabled. Skipping.")
-
-        pools = self.shares_admin_client.list_pools()['pools']
+        pools = self.shares_admin_v2_client.list_pools(detail=True)['pools']
 
         if len(pools) < 2:
-            raise self.skipException("At least two different pool entries "
-                                     "are needed to run migration tests. "
-                                     "Skipping.")
+            raise self.skipException("At least two different pool entries are "
+                                     "needed to run share migration tests.")
 
-        self.security_group = self._create_security_group()
+        instance = self.boot_instance(wait_until="BUILD")
         self.create_share()
-        share = self.shares_client.get_share(self.share['id'])
+        instance = self.wait_for_active_instance(instance["id"])
+        self.share = self.shares_client.get_share(self.share['id'])
 
-        dest_pool = next((x for x in pools if x['name'] != share['host']),
-                         None)
+        default_type = self.shares_v2_client.list_share_types(
+            default=True)['share_type']
+
+        dest_pool = utils.choose_matching_backend(
+            self.share, pools, default_type)
 
         self.assertIsNotNone(dest_pool)
         self.assertIsNotNone(dest_pool.get('name'))
 
         dest_pool = dest_pool['name']
 
-        instance1 = self.boot_instance()
-        self.allow_access_ip(self.share['id'], instance=instance1,
-                             cleanup=False)
-        ssh_client = self.init_ssh(instance1)
+        self.allow_access_ip(
+            self.share['id'], instance=instance, cleanup=False)
+        ssh_client = self.init_ssh(instance)
 
         if utils.is_microversion_lt(CONF.share.max_api_microversion, "2.9"):
-            locations = self.share['export_locations']
+            exports = self.share['export_locations']
         else:
             exports = self.shares_v2_client.list_share_export_locations(
                 self.share['id'])
-            locations = [x['path'] for x in exports]
+            self.assertNotEmpty(exports)
+            exports = [x['path'] for x in exports]
+            self.assertNotEmpty(exports)
 
-        self.mount_share(locations[0], ssh_client)
+        self.mount_share(exports[0], ssh_client)
 
         ssh_client.exec_command("mkdir -p /mnt/f1")
         ssh_client.exec_command("mkdir -p /mnt/f2")
@@ -294,21 +314,27 @@ class ShareBasicOpsBase(manager.ShareScenarioTest):
 
         self.umount_share(ssh_client)
 
-        share = self.migrate_share(share['id'], dest_pool)
+        task_state = (constants.TASK_STATE_DATA_COPYING_COMPLETED,
+                      constants.TASK_STATE_MIGRATION_DRIVER_PHASE1_DONE)
+
+        self.share = self.migrate_share(
+            self.share['id'], dest_pool, task_state)
+
         if utils.is_microversion_lt(CONF.share.max_api_microversion, "2.9"):
-            new_locations = self.share['export_locations']
+            new_exports = self.share['export_locations']
+            self.assertNotEmpty(new_exports)
         else:
             new_exports = self.shares_v2_client.list_share_export_locations(
                 self.share['id'])
-            new_locations = [x['path'] for x in new_exports]
+            self.assertNotEmpty(new_exports)
+            new_exports = [x['path'] for x in new_exports]
+            self.assertNotEmpty(new_exports)
 
-        self.assertEqual(dest_pool, share['host'])
-        locations.sort()
-        new_locations.sort()
-        self.assertNotEqual(locations, new_locations)
-        self.assertEqual('migration_success', share['task_state'])
+        self.assertEqual(dest_pool, self.share['host'])
+        self.assertEqual(constants.TASK_STATE_MIGRATION_SUCCESS,
+                         self.share['task_state'])
 
-        self.mount_share(new_locations[0], ssh_client)
+        self.mount_share(new_exports[0], ssh_client)
 
         output = ssh_client.exec_command("ls -lRA --ignore=lost+found /mnt")
 

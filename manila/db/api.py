@@ -391,6 +391,12 @@ def share_access_create(context, values):
     return IMPL.share_access_create(context, values)
 
 
+def share_instance_access_create(context, values, share_instance_id):
+    """Allow access to share instance."""
+    return IMPL.share_instance_access_create(
+        context, values, share_instance_id)
+
+
 def share_instance_access_copy(context, share_id, instance_id):
     """Maps the existing access rules for the share to the instance in the DB.
 
@@ -413,6 +419,11 @@ def share_instance_access_get(context, access_id, instance_id):
 def share_access_get_all_for_share(context, share_id):
     """Get all access rules for given share."""
     return IMPL.share_access_get_all_for_share(context, share_id)
+
+
+def share_access_update_access_key(context, access_id, access_key):
+    """Update the access_key field of a share access mapping."""
+    return IMPL.share_access_update_access_key(context, access_id, access_key)
 
 
 def share_access_get_all_for_instance(context, instance_id, session=None):
@@ -852,21 +863,21 @@ def share_type_extra_specs_update_or_create(context, share_type_id,
                                                         extra_specs)
 
 
-def driver_private_data_get(context, host, entity_id, key=None, default=None):
-    """Get one, list or all key-value pairs for given host and entity_id."""
-    return IMPL.driver_private_data_get(context, host, entity_id, key, default)
+def driver_private_data_get(context, entity_id, key=None, default=None):
+    """Get one, list or all key-value pairs for given entity_id."""
+    return IMPL.driver_private_data_get(context, entity_id, key, default)
 
 
-def driver_private_data_update(context, host, entity_id, details,
+def driver_private_data_update(context, entity_id, details,
                                delete_existing=False):
-    """Update key-value pairs for given host and entity_id."""
-    return IMPL.driver_private_data_update(context, host, entity_id, details,
+    """Update key-value pairs for given entity_id."""
+    return IMPL.driver_private_data_update(context, entity_id, details,
                                            delete_existing)
 
 
-def driver_private_data_delete(context, host, entity_id, key=None):
-    """Remove one, list or all key-value pairs for given host and entity_id."""
-    return IMPL.driver_private_data_delete(context, host, entity_id, key)
+def driver_private_data_delete(context, entity_id, key=None):
+    """Remove one, list or all key-value pairs for given entity_id."""
+    return IMPL.driver_private_data_delete(context, entity_id, key)
 
 
 ####################

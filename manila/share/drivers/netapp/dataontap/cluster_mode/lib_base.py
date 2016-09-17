@@ -62,6 +62,7 @@ class NetAppCmodeFileStorageLibrary(object):
         'netapp:thin_provisioned': 'thin_provisioned',
         'netapp:dedup': 'dedup_enabled',
         'netapp:compression': 'compression_enabled',
+        'netapp:split_clone_on_create': 'split',
     }
     STRING_QUALIFIED_EXTRA_SPECS_MAP = {
         'netapp:snapshot_policy': 'snapshot_policy',
@@ -278,6 +279,7 @@ class NetAppCmodeFileStorageLibrary(object):
                 'dedupe': [True, False],
                 'compression': [True, False],
                 'thin_provisioning': [True, False],
+                'netapp_aggregate': aggr_name,
             }
 
             # Add storage service catalog data.
@@ -389,10 +391,8 @@ class NetAppCmodeFileStorageLibrary(object):
             msg = _("Pool is not available in the share host field.")
             raise exception.InvalidHost(reason=msg)
 
-        extra_specs = share_types.get_extra_specs_from_share(share)
-        extra_specs = self._remap_standard_boolean_extra_specs(extra_specs)
-        self._check_extra_specs_validity(share, extra_specs)
-        provisioning_options = self._get_provisioning_options(extra_specs)
+        provisioning_options = self._get_provisioning_options_for_share(share)
+
         if replica:
             # If this volume is intended to be a replication destination,
             # create it as the 'data-protection' type
@@ -527,6 +527,20 @@ class NetAppCmodeFileStorageLibrary(object):
         return dict(zip(provisioning_args, provisioning_values))
 
     @na_utils.trace
+    def _get_provisioning_options_for_share(self, share):
+        """Return provisioning options from a share.
+
+        Starting with a share, this method gets the extra specs, rationalizes
+        NetApp vs. standard extra spec values, ensures their validity, and
+        returns them in a form suitable for passing to various API client
+        methods.
+        """
+        extra_specs = share_types.get_extra_specs_from_share(share)
+        extra_specs = self._remap_standard_boolean_extra_specs(extra_specs)
+        self._check_extra_specs_validity(share, extra_specs)
+        return self._get_provisioning_options(extra_specs)
+
+    @na_utils.trace
     def _get_provisioning_options(self, specs):
         """Return a merged result of string and binary provisioning options."""
         boolean_args = self._get_boolean_provisioning_options(
@@ -566,9 +580,13 @@ class NetAppCmodeFileStorageLibrary(object):
             parent_snapshot_name = snapshot_name_func(self, snapshot['id'])
         else:
             parent_snapshot_name = snapshot['provider_location']
+
+        provisioning_options = self._get_provisioning_options_for_share(share)
+
         LOG.debug('Creating share from snapshot %s', snapshot['id'])
         vserver_client.create_volume_clone(share_name, parent_share_name,
-                                           parent_snapshot_name)
+                                           parent_snapshot_name,
+                                           **provisioning_options)
 
     @na_utils.trace
     def _share_exists(self, share_name, vserver_client):
@@ -1160,13 +1178,18 @@ class NetAppCmodeFileStorageLibrary(object):
         if not self._have_cluster_creds:
             return
 
-        raid_types = self._client.get_aggregate_raid_types(aggregate_names)
-        for aggregate_name, raid_type in raid_types.items():
-            ssc_stats[aggregate_name]['netapp_raid_type'] = raid_type
+        for aggregate_name in aggregate_names:
 
-        disk_types = self._client.get_aggregate_disk_types(aggregate_names)
-        for aggregate_name, disk_type in disk_types.items():
-            ssc_stats[aggregate_name]['netapp_disk_type'] = disk_type
+            aggregate = self._client.get_aggregate(aggregate_name)
+            hybrid = (six.text_type(aggregate.get('is-hybrid')).lower()
+                      if 'is-hybrid' in aggregate else None)
+            disk_types = self._client.get_aggregate_disk_types(aggregate_name)
+
+            ssc_stats[aggregate_name].update({
+                'netapp_raid_type': aggregate.get('raid-type'),
+                'netapp_hybrid_aggregate': hybrid,
+                'netapp_disk_type': disk_types,
+            })
 
     def _find_active_replica(self, replica_list):
         # NOTE(ameade): Find current active replica. There can only be one

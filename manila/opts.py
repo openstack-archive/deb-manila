@@ -51,6 +51,8 @@ import manila.service
 import manila.share.api
 import manila.share.driver
 import manila.share.drivers.cephfs.cephfs_native
+import manila.share.drivers.container.driver
+import manila.share.drivers.container.storage_helper
 import manila.share.drivers.emc.driver
 import manila.share.drivers.emc.plugins.isilon.isilon
 import manila.share.drivers.generic
@@ -60,12 +62,14 @@ import manila.share.drivers.glusterfs.layout
 import manila.share.drivers.glusterfs.layout_directory
 import manila.share.drivers.glusterfs.layout_volume
 import manila.share.drivers.hdfs.hdfs_native
-import manila.share.drivers.hitachi.hds_hnas
+import manila.share.drivers.hitachi.hnas.driver
+import manila.share.drivers.hitachi.hsp.driver
 import manila.share.drivers.hpe.hpe_3par_driver
 import manila.share.drivers.huawei.huawei_nas
 import manila.share.drivers.ibm.gpfs
 import manila.share.drivers.lvm
 import manila.share.drivers.netapp.options
+import manila.share.drivers.nexenta.options
 import manila.share.drivers.quobyte.quobyte
 import manila.share.drivers.service_instance
 import manila.share.drivers.tegile.tegile
@@ -91,13 +95,13 @@ _global_opt_lists = [
     manila.common.config.debug_opts,
     manila.common.config.global_opts,
     manila.compute._compute_opts,
-    manila.compute.nova.nova_opts,
     manila.db.api.db_opts,
     [manila.db.base.db_driver_opt],
     manila.exception.exc_log_opts,
     manila.network.linux.interface.OPTS,
     manila.network.network_opts,
-    manila.network.neutron.api.neutron_opts,
+    manila.network.neutron.neutron_network_plugin.
+    neutron_bind_network_plugin_opts,
     manila.network.neutron.neutron_network_plugin.
     neutron_single_network_plugin_opts,
     manila.network.nova_network_plugin.nova_single_network_plugin_opts,
@@ -117,6 +121,8 @@ _global_opt_lists = [
     manila.share.driver.ssh_opts,
     manila.share.drivers_private_data.private_data_opts,
     manila.share.drivers.cephfs.cephfs_native.cephfs_native_opts,
+    manila.share.drivers.container.driver.container_opts,
+    manila.share.drivers.container.storage_helper.lv_opts,
     manila.share.drivers.emc.driver.EMC_NAS_OPTS,
     manila.share.drivers.generic.share_opts,
     manila.share.drivers.glusterfs.common.glusterfs_common_opts,
@@ -126,7 +132,8 @@ _global_opt_lists = [
     glusterfs_directory_mapped_opts,
     manila.share.drivers.glusterfs.layout_volume.glusterfs_volume_mapped_opts,
     manila.share.drivers.hdfs.hdfs_native.hdfs_native_share_opts,
-    manila.share.drivers.hitachi.hds_hnas.hds_hnas_opts,
+    manila.share.drivers.hitachi.hnas.driver.hitachi_hnas_opts,
+    manila.share.drivers.hitachi.hsp.driver.hitachi_hsp_opts,
     manila.share.drivers.hpe.hpe_3par_driver.HPE3PAR_OPTS,
     manila.share.drivers.huawei.huawei_nas.huawei_opts,
     manila.share.drivers.ibm.gpfs.gpfs_share_opts,
@@ -137,6 +144,9 @@ _global_opt_lists = [
     manila.share.drivers.netapp.options.netapp_basicauth_opts,
     manila.share.drivers.netapp.options.netapp_provisioning_opts,
     manila.share.drivers.netapp.options.netapp_replication_opts,
+    manila.share.drivers.nexenta.options.nexenta_connection_opts,
+    manila.share.drivers.nexenta.options.nexenta_dataset_opts,
+    manila.share.drivers.nexenta.options.nexenta_nfs_opts,
     manila.share.drivers.quobyte.quobyte.quobyte_manila_share_opts,
     manila.share.drivers.service_instance.common_opts,
     manila.share.drivers.service_instance.no_share_servers_handling_mode_opts,
@@ -149,13 +159,18 @@ _global_opt_lists = [
     manila.share.hook.hook_options,
     manila.share.manager.share_manager_opts,
     manila.volume._volume_opts,
-    manila.volume.cinder.cinder_opts,
     manila.wsgi.eventlet_opts,
     manila.wsgi.socket_opts,
 ]
 
 _opts = [
     (None, list(itertools.chain(*_global_opt_lists))),
+    (manila.volume.cinder.CINDER_GROUP,
+     list(itertools.chain(manila.volume.cinder.cinder_opts))),
+    (manila.compute.nova.NOVA_GROUP,
+     list(itertools.chain(manila.compute.nova.nova_opts))),
+    (manila.network.neutron.api.NEUTRON_GROUP,
+     list(itertools.chain(manila.network.neutron.api.neutron_opts))),
 ]
 
 _opts.extend(oslo_concurrency.opts.list_opts())
