@@ -17,7 +17,10 @@ from oslo_log import log
 import six
 
 from manila.common import constants
+from manila import exception
+from manila.i18n import _
 from manila.i18n import _LI
+from manila import utils
 
 LOG = log.getLogger(__name__)
 
@@ -41,14 +44,35 @@ class ShareInstanceAccess(object):
         be deleted.
         :param share_server: Share server model or None
         """
-        self.db.share_instance_update_access_status(
-            context,
-            share_instance_id,
-            constants.STATUS_UPDATING
-        )
-
         share_instance = self.db.share_instance_get(
             context, share_instance_id, with_share_data=True)
+        share_id = share_instance["share_id"]
+
+        @utils.synchronized(
+            "update_access_rules_for_share_%s" % share_id, external=True)
+        def _update_access_rules_locked(*args, **kwargs):
+            return self._update_access_rules(*args, **kwargs)
+
+        _update_access_rules_locked(
+            context=context,
+            share_instance_id=share_instance_id,
+            add_rules=add_rules,
+            delete_rules=delete_rules,
+            share_server=share_server,
+        )
+
+    def _update_access_rules(self, context, share_instance_id, add_rules=None,
+                             delete_rules=None, share_server=None):
+        # Reget share instance
+        share_instance = self.db.share_instance_get(
+            context, share_instance_id, with_share_data=True)
+
+        # NOTE (rraja): preserve error state to trigger maintenance mode
+        if share_instance['access_rules_status'] != constants.STATUS_ERROR:
+            self.db.share_instance_update_access_status(
+                context,
+                share_instance_id,
+                constants.STATUS_UPDATING)
 
         add_rules = add_rules or []
         delete_rules = delete_rules or []
@@ -62,8 +86,9 @@ class ShareInstanceAccess(object):
                 context, share_instance['id'])
             rules = []
         else:
-            rules = self.db.share_access_get_all_for_instance(
+            _rules = self.db.share_access_get_all_for_instance(
                 context, share_instance['id'])
+            rules = _rules
             if delete_rules:
                 delete_ids = [rule['id'] for rule in delete_rules]
                 rules = list(filter(lambda r: r['id'] not in delete_ids,
@@ -71,12 +96,15 @@ class ShareInstanceAccess(object):
                 # NOTE(ganso): trigger maintenance mode
                 if share_instance['access_rules_status'] == (
                         constants.STATUS_ERROR):
-                    remove_rules = delete_rules
+                    remove_rules = [
+                        rule for rule in _rules
+                        if rule["id"] in delete_ids]
                     delete_rules = []
 
         try:
+            access_keys = None
             try:
-                self.driver.update_access(
+                access_keys = self.driver.update_access(
                     context,
                     share_instance,
                     rules,
@@ -91,6 +119,15 @@ class ShareInstanceAccess(object):
                 self._update_access_fallback(add_rules, context, delete_rules,
                                              remove_rules, share_instance,
                                              share_server)
+
+            if access_keys:
+                self._validate_access_keys(rules, add_rules, delete_rules,
+                                           access_keys)
+
+                for access_id, access_key in access_keys.items():
+                    self.db.share_access_update_access_key(
+                        context, access_id, access_key)
+
         except Exception:
             self.db.share_instance_update_access_status(
                 context,
@@ -108,8 +145,8 @@ class ShareInstanceAccess(object):
                                                     with_share_data=True)
 
         if self._check_needs_refresh(context, rules, share_instance):
-            self.update_access_rules(context, share_instance_id,
-                                     share_server=share_server)
+            self._update_access_rules(context, share_instance_id,
+                                      share_server=share_server)
         else:
             self.db.share_instance_update_access_status(
                 context,
@@ -120,6 +157,32 @@ class ShareInstanceAccess(object):
             LOG.info(_LI("Access rules were successfully applied for "
                          "share instance: %s"),
                      share_instance['id'])
+
+    @staticmethod
+    def _validate_access_keys(access_rules, add_rules, delete_rules,
+                              access_keys):
+        if not isinstance(access_keys, dict):
+            msg = _("The access keys must be supplied as a dictionary that "
+                    "maps rule IDs to access keys.")
+            raise exception.Invalid(message=msg)
+
+        actual_rule_ids = sorted(access_keys)
+        expected_rule_ids = []
+        if not (add_rules or delete_rules):
+            expected_rule_ids = [rule['id'] for rule in access_rules]
+        else:
+            expected_rule_ids = [rule['id'] for rule in add_rules]
+        if actual_rule_ids != sorted(expected_rule_ids):
+            msg = (_("The rule IDs supplied: %(actual)s do not match the "
+                     "rule IDs that are expected: %(expected)s.")
+                   % {'actual': actual_rule_ids,
+                      'expected': expected_rule_ids})
+            raise exception.Invalid(message=msg)
+
+        for access_key in access_keys.values():
+            if not isinstance(access_key, six.string_types):
+                msg = (_("Access key %s is not string type.") % access_key)
+                raise exception.Invalid(message=msg)
 
     def _check_needs_refresh(self, context, rules, share_instance):
         rule_ids = set([rule['id'] for rule in rules])

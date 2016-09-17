@@ -19,7 +19,6 @@ from tempest.lib import exceptions as lib_exc
 from tempest import test
 import testtools
 
-from manila_tempest_tests import share_exceptions
 from manila_tempest_tests.tests.api import base
 from manila_tempest_tests import utils
 
@@ -348,16 +347,6 @@ class ShareCephxRulesForCephFSNegativeTest(base.BaseSharesTest):
                           self.share["id"], self.access_type, self.access_to,
                           access_level="su")
 
-    @test.attr(type=[base.TAG_NEGATIVE, base.TAG_API_WITH_BACKEND])
-    def test_create_access_rule_cephx_with_unsupported_access_level_ro(self):
-        rule = self.shares_v2_client.create_access_rule(
-            self.share["id"], self.access_type, self.access_to,
-            access_level="ro")
-        self.assertRaises(
-            share_exceptions.AccessRuleBuildErrorException,
-            self.shares_client.wait_for_access_rule_status,
-            self.share['id'], rule['id'], "active")
-
 
 def skip_if_cephx_access_type_not_supported_by_client(self, client):
     if client == 'shares_client':
@@ -366,8 +355,8 @@ def skip_if_cephx_access_type_not_supported_by_client(self, client):
         version = LATEST_MICROVERSION
     if (CONF.share.enable_cephx_rules_for_protocols and
             utils.is_microversion_lt(version, '2.13')):
-        msg = ("API version %s does not support cephx access type, "
-               "need version greater than 2.13." % version)
+        msg = ("API version %s does not support cephx access type, need "
+               "version >= 2.13." % version)
         raise self.skipException(msg)
 
 

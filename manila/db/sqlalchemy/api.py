@@ -38,6 +38,7 @@ from oslo_log import log
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
 import six
+from sqlalchemy import and_
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 from sqlalchemy.sql.expression import true
@@ -1099,7 +1100,7 @@ def _extract_share_instance_values(values):
     share_instance_model_fields = [
         'status', 'host', 'scheduled_at', 'launched_at', 'terminated_at',
         'share_server_id', 'share_network_id', 'availability_zone',
-        'replica_state',
+        'replica_state', 'share_type_id', 'share_type',
     ]
     share_instance_values, share_values = (
         _extract_instance_values(values, share_instance_model_fields)
@@ -1173,6 +1174,7 @@ def share_instance_get(context, share_instance_id, session=None,
         id=share_instance_id,
     ).options(
         joinedload('export_locations'),
+        joinedload('share_type'),
     ).first()
     if result is None:
         raise exception.NotFound()
@@ -1420,8 +1422,7 @@ def _share_get_query(context, session=None):
     if session is None:
         session = get_session()
     return model_query(context, models.Share, session=session).\
-        options(joinedload('share_metadata')).\
-        options(joinedload('share_type'))
+        options(joinedload('share_metadata'))
 
 
 def _metadata_refs(metadata_dict, meta_class):
@@ -1564,7 +1565,7 @@ def _share_get_all_with_filters(context, project_id=None, share_server_id=None,
         query = query.join(
             models.ShareTypeExtraSpecs,
             models.ShareTypeExtraSpecs.share_type_id ==
-            models.Share.share_type_id)
+            models.ShareInstance.share_type_id)
         for k, v in filters['extra_specs'].items():
             query = query.filter(or_(models.ShareTypeExtraSpecs.key == k,
                                      models.ShareTypeExtraSpecs.value == v))
@@ -1666,7 +1667,7 @@ def _share_access_get_query(context, session, values, read_deleted='no'):
 
 def _share_instance_access_query(context, session, access_id=None,
                                  instance_id=None):
-    filters = {}
+    filters = {'deleted': 'False'}
 
     if access_id is not None:
         filters.update({'access_id': access_id})
@@ -1696,6 +1697,34 @@ def share_access_create(context, values):
             }
 
             _share_instance_access_create(vals, session)
+
+    return share_access_get(context, access_ref['id'])
+
+
+@require_context
+def share_instance_access_create(context, values, share_instance_id):
+    values = ensure_model_dict_has_id(values)
+    session = get_session()
+    with session.begin():
+        access_list = _share_access_get_query(
+            context, session, {
+                'share_id': values['share_id'],
+                'access_type': values['access_type'],
+                'access_to': values['access_to'],
+            }).all()
+        if len(access_list) > 0:
+            access_ref = access_list[0]
+        else:
+            access_ref = models.ShareAccessMapping()
+        access_ref.update(values)
+        access_ref.save(session=session)
+
+        vals = {
+            'share_instance_id': share_instance_id,
+            'access_id': access_ref['id'],
+        }
+
+        _share_instance_access_create(vals, session)
 
     return share_access_get(context, access_ref['id'])
 
@@ -1765,9 +1794,10 @@ def share_access_get_all_for_instance(context, instance_id, session=None):
     return _share_access_get_query(context, session, {}).join(
         models.ShareInstanceAccessMapping,
         models.ShareInstanceAccessMapping.access_id ==
-        models.ShareAccessMapping.id).filter(
-        models.ShareInstanceAccessMapping.share_instance_id ==
-        instance_id).all()
+        models.ShareAccessMapping.id).filter(and_(
+            models.ShareInstanceAccessMapping.share_instance_id ==
+            instance_id, models.ShareInstanceAccessMapping.deleted ==
+            "False")).all()
 
 
 @require_context
@@ -1809,6 +1839,17 @@ def share_access_delete_all_by_share(context, share_id):
     with session.begin():
         session.query(models.ShareAccessMapping). \
             filter_by(share_id=share_id).soft_delete()
+
+
+@require_context
+def share_access_update_access_key(context, access_id, access_key):
+    session = get_session()
+    with session.begin():
+        mapping = (session.query(models.ShareAccessMapping).
+                   filter_by(id=access_id).first())
+        mapping.update({'access_key': access_key})
+        mapping.save(session=session)
+        return mapping
 
 
 @require_context
@@ -2839,7 +2880,7 @@ def share_server_backend_details_delete(context, share_server_id,
 
 ###################
 
-def _driver_private_data_query(session, context, host, entity_id, key=None,
+def _driver_private_data_query(session, context, entity_id, key=None,
                                read_deleted=False):
     query = model_query(
         context, models.DriverPrivateData, session=session,
@@ -2857,12 +2898,12 @@ def _driver_private_data_query(session, context, host, entity_id, key=None,
 
 
 @require_context
-def driver_private_data_get(context, host, entity_id, key=None,
+def driver_private_data_get(context, entity_id, key=None,
                             default=None, session=None):
     if not session:
         session = get_session()
 
-    query = _driver_private_data_query(session, context, host, entity_id, key)
+    query = _driver_private_data_query(session, context, entity_id, key)
 
     if key is None or isinstance(key, list):
         return {item.key: item.value for item in query.all()}
@@ -2872,7 +2913,7 @@ def driver_private_data_get(context, host, entity_id, key=None,
 
 
 @require_context
-def driver_private_data_update(context, host, entity_id, details,
+def driver_private_data_update(context, entity_id, details,
                                delete_existing=False, session=None):
     # NOTE(u_glide): following code modifies details dict, that's why we should
     # copy it
@@ -2885,7 +2926,7 @@ def driver_private_data_update(context, host, entity_id, details,
         # Process existing data
         # NOTE(u_glide): read_deleted=None means here 'read all'
         original_data = _driver_private_data_query(
-            session, context, host, entity_id, read_deleted=None).all()
+            session, context, entity_id, read_deleted=None).all()
 
         for data_ref in original_data:
             in_new_details = data_ref['key'] in new_details
@@ -2908,7 +2949,6 @@ def driver_private_data_update(context, host, entity_id, details,
         for key, value in new_details.items():
             data_ref = models.DriverPrivateData()
             data_ref.update({
-                "host": host,
                 "entity_uuid": entity_id,
                 "key": key,
                 "value": six.text_type(value)
@@ -2919,13 +2959,13 @@ def driver_private_data_update(context, host, entity_id, details,
 
 
 @require_context
-def driver_private_data_delete(context, host, entity_id, key=None,
+def driver_private_data_delete(context, entity_id, key=None,
                                session=None):
     if not session:
         session = get_session()
 
     with session.begin():
-        query = _driver_private_data_query(session, context, host,
+        query = _driver_private_data_query(session, context,
                                            entity_id, key)
         query.update({"deleted": 1, "deleted_at": timeutils.utcnow()})
 
@@ -3182,7 +3222,7 @@ def share_type_destroy(context, id):
     session = get_session()
     with session.begin():
         _share_type_get(context, id, session)
-        results = model_query(context, models.Share, session=session,
+        results = model_query(context, models.ShareInstance, session=session,
                               read_deleted="no").\
             filter_by(share_type_id=id).count()
         cg_count = model_query(context,

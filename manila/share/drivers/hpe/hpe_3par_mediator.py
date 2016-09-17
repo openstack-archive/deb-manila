@@ -23,9 +23,10 @@ from oslo_utils import importutils
 from oslo_utils import units
 import six
 
+from manila.data import utils as data_utils
 from manila import exception
 from manila import utils
-from manila.i18n import _, _LI, _LW
+from manila.i18n import _, _LI, _LW, _LE
 
 hpe3parclient = importutils.try_import("hpe3parclient")
 if hpe3parclient:
@@ -56,6 +57,7 @@ DOES_NOT_EXIST = 'does not exist, cannot'
 LOCAL_IP = '127.0.0.1'
 LOCAL_IP_RO = '127.0.0.2'
 SUPER_SHARE = 'OPENSTACK_SUPER_SHARE'
+TMP_RO_SNAP_EXPORT = "Temp RO snapshot export as source for creating RW share."
 
 
 class HPE3ParMediator(object):
@@ -73,10 +75,13 @@ class HPE3ParMediator(object):
         2.0.4 - Remove file tree on delete when using nested shares #1538800
         2.0.5 - Reduce the fsquota by share size
                 when a share is deleted #1582931
+        2.0.6 - Read-write share from snapshot (using driver mount and copy)
+        2.0.7 - Add update_access support
+        2.0.8 - Multi pools support per backend
 
     """
 
-    VERSION = "2.0.5"
+    VERSION = "2.0.8"
 
     def __init__(self, **kwargs):
 
@@ -91,7 +96,6 @@ class HPE3ParMediator(object):
         self.hpe3par_san_private_key = kwargs.get('hpe3par_san_private_key')
         self.hpe3par_fstore_per_share = kwargs.get('hpe3par_fstore_per_share')
         self.hpe3par_require_cifs_ip = kwargs.get('hpe3par_require_cifs_ip')
-        self.hpe3par_share_ip_address = kwargs.get('hpe3par_share_ip_address')
         self.hpe3par_cifs_admin_access_username = (
             kwargs.get('hpe3par_cifs_admin_access_username'))
         self.hpe3par_cifs_admin_access_password = (
@@ -199,6 +203,23 @@ class HPE3ParMediator(object):
                               'err': six.text_type(e)})
             # don't raise exception on logout()
 
+    @staticmethod
+    def build_export_locations(protocol, ips, path):
+
+        if not ips:
+            message = _('Failed to build export location due to missing IP.')
+            raise exception.InvalidInput(reason=message)
+
+        if not path:
+            message = _('Failed to build export location due to missing path.')
+            raise exception.InvalidInput(reason=message)
+
+        share_proto = HPE3ParMediator.ensure_supported_protocol(protocol)
+        if share_proto == 'nfs':
+            return ['%s:%s' % (ip, path) for ip in ips]
+        else:
+            return [r'\\%s\%s' % (ip, path) for ip in ips]
+
     def get_provisioned_gb(self, fpg):
         total_mb = 0
         try:
@@ -265,6 +286,7 @@ class HPE3ParMediator(object):
         hpe3par_flash_cache = flash_cache_policy == ENABLED
 
         status = {
+            'pool_name': fpg,
             'total_capacity_gb': total_capacity_gb,
             'free_capacity_gb': free_capacity_gb,
             'thin_provisioning': thin_provisioning,
@@ -287,7 +309,7 @@ class HPE3ParMediator(object):
             message = (_('Invalid protocol. Expected nfs or smb. Got %s.') %
                        protocol)
             LOG.error(message)
-            raise exception.InvalidInput(message)
+            raise exception.InvalidShareAccess(reason=message)
         return protocol
 
     @staticmethod
@@ -359,7 +381,8 @@ class HPE3ParMediator(object):
         return ','.join(options)
 
     def _build_createfshare_kwargs(self, protocol, fpg, fstore, readonly,
-                                   sharedir, extra_specs, comment):
+                                   sharedir, extra_specs, comment,
+                                   client_ip=None):
         createfshare_kwargs = dict(fpg=fpg,
                                    fstore=fstore,
                                    sharedir=sharedir,
@@ -371,21 +394,27 @@ class HPE3ParMediator(object):
             LOG.warning(msg)
 
         if protocol == 'nfs':
-            # New NFS shares needs seed IP to prevent "all" access.
-            # Readonly and readwrite NFS shares client IPs cannot overlap.
-            if readonly:
-                createfshare_kwargs['clientip'] = LOCAL_IP_RO
+            if client_ip:
+                createfshare_kwargs['clientip'] = client_ip
             else:
-                createfshare_kwargs['clientip'] = LOCAL_IP
+                # New NFS shares needs seed IP to prevent "all" access.
+                # Readonly and readwrite NFS shares client IPs cannot overlap.
+                if readonly:
+                    createfshare_kwargs['clientip'] = LOCAL_IP_RO
+                else:
+                    createfshare_kwargs['clientip'] = LOCAL_IP
             options = self._get_nfs_options(extra_specs, readonly)
             createfshare_kwargs['options'] = options
         else:
 
             # To keep the original (Kilo, Liberty) behavior where CIFS IP
             # access rules were required in addition to user rules enable
-            # this to use a local seed IP instead of the default (all allowed).
+            # this to use a seed IP instead of the default (all allowed).
             if self.hpe3par_require_cifs_ip:
-                createfshare_kwargs['allowip'] = LOCAL_IP
+                if client_ip:
+                    createfshare_kwargs['allowip'] = client_ip
+                else:
+                    createfshare_kwargs['allowip'] = LOCAL_IP
 
             smb_opts = (ACCESS_BASED_ENUM, CONTINUOUS_AVAIL, CACHE)
 
@@ -455,7 +484,8 @@ class HPE3ParMediator(object):
             raise exception.ShareBackendException(msg=msg)
 
     def _create_share(self, project_id, share_id, protocol, extra_specs,
-                      fpg, vfs, fstore, sharedir, readonly, size, comment):
+                      fpg, vfs, fstore, sharedir, readonly, size, comment,
+                      client_ip=None):
         share_name = self.ensure_prefix(share_id, readonly=readonly)
 
         if not (sharedir or self.hpe3par_fstore_per_share):
@@ -471,13 +501,15 @@ class HPE3ParMediator(object):
             else:
                 fstore = self.ensure_prefix(project_id, protocol)
 
-        createfshare_kwargs = self._build_createfshare_kwargs(protocol,
-                                                              fpg,
-                                                              fstore,
-                                                              readonly,
-                                                              sharedir,
-                                                              extra_specs,
-                                                              comment)
+        createfshare_kwargs = self._build_createfshare_kwargs(
+            protocol,
+            fpg,
+            fstore,
+            readonly,
+            sharedir,
+            extra_specs,
+            comment,
+            client_ip=client_ip)
 
         if not use_existing_fstore:
 
@@ -490,7 +522,7 @@ class HPE3ParMediator(object):
                 msg = (_('Failed to create fstore %(fstore)s: %(e)s') %
                        {'fstore': fstore, 'e': six.text_type(e)})
                 LOG.exception(msg)
-                raise exception.ShareBackendException(msg)
+                raise exception.ShareBackendException(msg=msg)
 
             if size:
                 self._update_capacity_quotas(fstore, size, 0, fpg, vfs)
@@ -512,7 +544,7 @@ class HPE3ParMediator(object):
             msg = (_('Failed to create share %(share_name)s: %(e)s') %
                    {'share_name': share_name, 'e': six.text_type(e)})
             LOG.exception(msg)
-            raise exception.ShareBackendException(msg)
+            raise exception.ShareBackendException(msg=msg)
 
         try:
             result = self._client.getfshare(
@@ -525,20 +557,21 @@ class HPE3ParMediator(object):
                      '%(e)s') % {'share_name': share_name,
                                  'e': six.text_type(e)})
             LOG.exception(msg)
-            raise exception.ShareBackendException(msg)
+            raise exception.ShareBackendException(msg=msg)
 
         if result['total'] != 1:
             msg = (_('Failed to get fshare %(share_name)s after creating it. '
                      'Expected to get 1 fshare.  Got %(total)s.') %
                    {'share_name': share_name, 'total': result['total']})
             LOG.error(msg)
-            raise exception.ShareBackendException(msg)
+            raise exception.ShareBackendException(msg=msg)
         return result['members'][0]
 
     def create_share(self, project_id, share_id, share_proto, extra_specs,
                      fpg, vfs,
                      fstore=None, sharedir=None, readonly=False, size=None,
-                     comment=OPEN_STACK_MANILA):
+                     comment=OPEN_STACK_MANILA,
+                     client_ip=None):
         """Create the share and return its path.
 
         This method can create a share when called by the driver or when
@@ -556,6 +589,8 @@ class HPE3ParMediator(object):
         :param sharedir: (optional) Share directory.
         :param readonly: (optional) Create share as read-only.
         :param size: (optional) Size limit for file store if creating one.
+        :param comment: (optional) Comment to set on the share.
+        :param client_ip: (optional) IP address to give access to.
         :return: share path string
         """
 
@@ -570,7 +605,8 @@ class HPE3ParMediator(object):
                                    sharedir,
                                    readonly,
                                    size,
-                                   comment)
+                                   comment,
+                                   client_ip=client_ip)
 
         if protocol == 'nfs':
             return share['sharePath']
@@ -579,7 +615,8 @@ class HPE3ParMediator(object):
 
     def create_share_from_snapshot(self, share_id, share_proto, extra_specs,
                                    orig_project_id, orig_share_id,
-                                   snapshot_id, fpg, vfs,
+                                   snapshot_id, fpg, vfs, ips,
+                                   size=None,
                                    comment=OPEN_STACK_MANILA):
 
         protocol = self.ensure_supported_protocol(share_proto)
@@ -612,7 +649,28 @@ class HPE3ParMediator(object):
             sharedir = '.snapshot/%s/%s' % (snapshot['snapName'],
                                             orig_share_name)
 
-        return self.create_share(
+        if protocol == "smb" and (not self.hpe3par_cifs_admin_access_username
+           or not self.hpe3par_cifs_admin_access_password):
+            LOG.warning(_LW("hpe3par_cifs_admin_access_username and "
+                            "hpe3par_cifs_admin_access_password must be "
+                            "provided in order for CIFS shares created from "
+                            "snapshots to be writable."))
+            return self.create_share(
+                orig_project_id,
+                share_id,
+                protocol,
+                extra_specs,
+                fpg,
+                vfs,
+                fstore=fstore,
+                sharedir=sharedir,
+                readonly=True,
+                comment=comment,
+            )
+
+        # Export the snapshot as read-only to copy from.
+        temp = ' '.join((comment, TMP_RO_SNAP_EXPORT))
+        source_path = self.create_share(
             orig_project_id,
             share_id,
             protocol,
@@ -622,8 +680,118 @@ class HPE3ParMediator(object):
             fstore=fstore,
             sharedir=sharedir,
             readonly=True,
-            comment=comment,
+            comment=temp,
+            client_ip=self.my_ip
         )
+
+        try:
+            share_name = self.ensure_prefix(share_id)
+            dest_path = self.create_share(
+                orig_project_id,
+                share_id,
+                protocol,
+                extra_specs,
+                fpg,
+                vfs,
+                fstore=fstore,
+                readonly=False,
+                size=size,
+                comment=comment,
+                client_ip=','.join((self.my_ip, LOCAL_IP))
+            )
+
+            try:
+                if protocol == 'smb':
+                    self._grant_admin_smb_access(
+                        protocol, fpg, vfs, fstore, comment, share=share_name)
+
+                    ro_share_name = self.ensure_prefix(share_id, readonly=True)
+                    self._grant_admin_smb_access(
+                        protocol, fpg, vfs, fstore, temp, share=ro_share_name)
+
+                source_locations = self.build_export_locations(
+                    protocol, ips, source_path)
+                dest_locations = self.build_export_locations(
+                    protocol, ips, dest_path)
+
+                self._copy_share_data(
+                    share_id, source_locations[0], dest_locations[0], protocol)
+
+                # Revoke the admin access that was needed to copy to the dest.
+                if protocol == 'nfs':
+                    self._change_access(DENY,
+                                        orig_project_id,
+                                        share_id,
+                                        protocol,
+                                        'ip',
+                                        self.my_ip,
+                                        'rw',
+                                        fpg,
+                                        vfs)
+                else:
+                    self._revoke_admin_smb_access(
+                        protocol, fpg, vfs, fstore, comment)
+
+            except Exception as e:
+                msg = _LE('Exception during mount and copy from RO snapshot '
+                          'to RW share: %s')
+                LOG.error(msg, e)
+                self._delete_share(share_name, protocol, fpg, vfs, fstore)
+                raise
+
+        finally:
+            self._delete_ro_share(
+                orig_project_id, share_id, protocol, fpg, vfs, fstore)
+
+        return dest_path
+
+    def _copy_share_data(self, dest_id, source_location, dest_location,
+                         protocol):
+
+        mount_location = "%s%s" % (self.hpe3par_share_mount_path, dest_id)
+        source_share_dir = '/'.join((mount_location, "source_snap"))
+        dest_share_dir = '/'.join((mount_location, "dest_share"))
+
+        dirs_to_remove = []
+        dirs_to_unmount = []
+        try:
+            utils.execute('mkdir', '-p', source_share_dir, run_as_root=True)
+            dirs_to_remove.append(source_share_dir)
+            self._mount_share(protocol, source_location, source_share_dir)
+            dirs_to_unmount.append(source_share_dir)
+
+            utils.execute('mkdir', dest_share_dir, run_as_root=True)
+            dirs_to_remove.append(dest_share_dir)
+            self._mount_share(protocol, dest_location, dest_share_dir)
+            dirs_to_unmount.append(dest_share_dir)
+
+            self._copy_data(source_share_dir, dest_share_dir)
+        finally:
+            for d in dirs_to_unmount:
+                self._unmount_share(d)
+
+            if dirs_to_remove:
+                dirs_to_remove.append(mount_location)
+                utils.execute('rmdir', *dirs_to_remove, run_as_root=True)
+
+    def _copy_data(self, source_share_dir, dest_share_dir):
+
+        err_msg = None
+        err_data = None
+        try:
+            copy = data_utils.Copy(source_share_dir, dest_share_dir, '')
+            copy.run()
+            progress = copy.get_progress()['total_progress']
+            if progress != 100:
+                err_msg = _("Failed to copy data, reason: "
+                            "Total progress %d != 100.")
+                err_data = progress
+        except Exception as err:
+            err_msg = _("Failed to copy data, reason: %s.")
+            err_data = six.text_type(err)
+
+        if err_msg:
+            raise exception.ShareBackendException(msg=err_msg % err_data)
 
     def _delete_share(self, share_name, protocol, fpg, vfs, fstore):
         try:
@@ -636,21 +804,8 @@ class HPE3ParMediator(object):
             LOG.exception(msg)
             raise exception.ShareBackendException(msg=msg)
 
-    def delete_share(self, project_id, share_id, share_size, share_proto,
-                     fpg, vfs):
-
-        protocol = self.ensure_supported_protocol(share_proto)
-        share_name = self.ensure_prefix(share_id)
-        fstore = self._find_fstore(project_id,
-                                   share_name,
-                                   protocol,
-                                   fpg,
-                                   vfs,
-                                   allow_cross_protocol=True)
-
-        if fstore:
-            self._delete_share(share_name, protocol, fpg, vfs, fstore)
-
+    def _delete_ro_share(self, project_id, share_id, protocol,
+                         fpg, vfs, fstore):
         share_name_ro = self.ensure_prefix(share_id, readonly=True)
         if not fstore:
             fstore = self._find_fstore(project_id,
@@ -661,16 +816,28 @@ class HPE3ParMediator(object):
                                        allow_cross_protocol=True)
         if fstore:
             self._delete_share(share_name_ro, protocol, fpg, vfs, fstore)
+        return fstore
 
-        if not self.hpe3par_fstore_per_share:
-            # Attempt to remove file tree on delete when using nested shares.
-            # If the file tree cannot be removed for whatever reason, we will
-            # not treat this as an error_deleting issue. We will allow the
-            # delete to continue as requested.
-            self._delete_file_tree(share_name, protocol, fpg, vfs, fstore)
-            if fstore:
-                # reduce the fsquota by share size when a share is deleted.
-                self._update_capacity_quotas(fstore, 0, share_size, fpg, vfs)
+    def delete_share(self, project_id, share_id, share_size, share_proto,
+                     fpg, vfs, share_ip):
+
+        protocol = self.ensure_supported_protocol(share_proto)
+        share_name = self.ensure_prefix(share_id)
+        fstore = self._find_fstore(project_id,
+                                   share_name,
+                                   protocol,
+                                   fpg,
+                                   vfs,
+                                   allow_cross_protocol=True)
+
+        removed_writable = False
+        if fstore:
+            self._delete_share(share_name, protocol, fpg, vfs, fstore)
+            removed_writable = True
+
+        # Try to delete the read-only twin share, too.
+        fstore = self._delete_ro_share(
+            project_id, share_id, protocol, fpg, vfs, fstore)
 
         if fstore == share_name:
             try:
@@ -681,7 +848,29 @@ class HPE3ParMediator(object):
                 LOG.exception(msg)
                 raise exception.ShareBackendException(msg=msg)
 
-    def _delete_file_tree(self, share_name, protocol, fpg, vfs, fstore):
+        elif removed_writable:
+            try:
+                # Attempt to remove file tree on delete when using nested
+                # shares. If the file tree cannot be removed for whatever
+                # reason, we will not treat this as an error_deleting
+                # issue. We will allow the delete to continue as requested.
+                self._delete_file_tree(
+                    share_name, protocol, fpg, vfs, fstore, share_ip)
+                # reduce the fsquota by share size when a tree is deleted.
+                self._update_capacity_quotas(
+                    fstore, 0, share_size, fpg, vfs)
+            except Exception as e:
+                msg = _LW('Exception during cleanup of deleted '
+                          'share %(share)s in filestore %(fstore)s: %(e)s')
+                data = {
+                    'fstore': fstore,
+                    'share': share_name,
+                    'e': six.text_type(e),
+                }
+                LOG.warning(msg, data)
+
+    def _delete_file_tree(self, share_name, protocol, fpg, vfs, fstore,
+                          share_ip):
         # If the share protocol is CIFS, we need to make sure the admin
         # provided the proper config values. If they have not, we can simply
         # return out and log a warning.
@@ -703,16 +892,49 @@ class HPE3ParMediator(object):
         self._create_mount_directory(mount_location)
 
         # Mount the super share.
-        self._mount_super_share(protocol, mount_location, fpg, vfs, fstore)
+        self._mount_super_share(protocol, mount_location, fpg, vfs, fstore,
+                                share_ip)
 
         # Delete the share from the super share.
         self._delete_share_directory(share_dir)
 
         # Unmount the super share.
-        self._unmount_super_share(mount_location)
+        self._unmount_share(mount_location)
 
         # Delete the mount directory.
         self._delete_share_directory(mount_location)
+
+    def _grant_admin_smb_access(self, protocol, fpg, vfs, fstore, comment,
+                                share=SUPER_SHARE):
+        user = '+%s:fullcontrol' % self.hpe3par_cifs_admin_access_username
+        setfshare_kwargs = {
+            'fpg': fpg,
+            'fstore': fstore,
+            'comment': comment,
+            'allowperm': user,
+        }
+        try:
+            self._client.setfshare(
+                protocol, vfs, share, **setfshare_kwargs)
+        except Exception as err:
+            raise exception.ShareBackendException(
+                msg=_("There was an error adding permissions: %s") % err)
+
+    def _revoke_admin_smb_access(self, protocol, fpg, vfs, fstore, comment,
+                                 share=SUPER_SHARE):
+        user = '-%s:fullcontrol' % self.hpe3par_cifs_admin_access_username
+        setfshare_kwargs = {
+            'fpg': fpg,
+            'fstore': fstore,
+            'comment': comment,
+            'allowperm': user,
+        }
+        try:
+            self._client.setfshare(
+                protocol, vfs, share, **setfshare_kwargs)
+        except Exception as err:
+            raise exception.ShareBackendException(
+                msg=_("There was an error revoking permissions: %s") % err)
 
     def _create_super_share(self, protocol, fpg, vfs, fstore, readonly=False):
         sharedir = ''
@@ -748,20 +970,7 @@ class HPE3ParMediator(object):
 
         # If the share is CIFS, we need to grant access to the specified admin.
         if protocol == 'smb':
-            user = '+%s:fullcontrol' % self.hpe3par_cifs_admin_access_username
-            setfshare_kwargs = {
-                'fpg': fpg,
-                'fstore': fstore,
-                'comment': comment,
-                'allowperm': user,
-            }
-            try:
-                result = self._client.setfshare(
-                    protocol, vfs, SUPER_SHARE, **setfshare_kwargs)
-            except Exception as err:
-                message = (_("There was an error adding permissions: "
-                             "%s.") % six.text_type(err))
-                raise exception.ShareMountException(reason=message)
+            self._grant_admin_smb_access(protocol, fpg, vfs, fstore, comment)
 
     def _create_mount_directory(self, mount_location):
         try:
@@ -772,34 +981,43 @@ class HPE3ParMediator(object):
                        six.text_type(err))
             LOG.warning(message)
 
-    def _mount_super_share(self, protocol, mount_location, fpg, vfs, fstore):
+    def _mount_share(self, protocol, export_location, mount_dir):
+        if protocol == 'nfs':
+            cmd = ('mount', '-t', 'nfs', export_location, mount_dir)
+            utils.execute(*cmd, run_as_root=True)
+        else:
+            export_location = export_location.replace('\\', '/')
+            cred = ('username=' + self.hpe3par_cifs_admin_access_username +
+                    ',password=' +
+                    self.hpe3par_cifs_admin_access_password +
+                    ',domain=' + self.hpe3par_cifs_admin_access_domain)
+            cmd = ('mount', '-t', 'cifs', export_location, mount_dir,
+                   '-o', cred)
+            utils.execute(*cmd, run_as_root=True)
+
+    def _mount_super_share(self, protocol, mount_dir, fpg, vfs, fstore,
+                           share_ip):
         try:
-            mount_path = self._generate_mount_path(protocol, fpg, vfs, fstore)
-            if protocol == 'nfs':
-                utils.execute('mount', '-t', 'nfs', mount_path, mount_location,
-                              run_as_root=True)
-                LOG.debug("Execute mount. mount_location: %s", mount_location)
-            else:
-                user = ('username=' + self.hpe3par_cifs_admin_access_username +
-                        ',password=' +
-                        self.hpe3par_cifs_admin_access_password +
-                        ',domain=' + self.hpe3par_cifs_admin_access_domain)
-                utils.execute('mount', '-t', 'cifs', mount_path,
-                              mount_location, '-o', user, run_as_root=True)
+            mount_location = self._generate_mount_path(
+                protocol, fpg, vfs, fstore, share_ip)
+            self._mount_share(protocol, mount_location, mount_dir)
         except Exception as err:
             message = (_LW("There was an error mounting the super share: "
                            "%s. The nested file tree will not be deleted."),
                        six.text_type(err))
             LOG.warning(message)
 
-    def _unmount_super_share(self, mount_location):
+    def _unmount_share(self, mount_location):
         try:
             utils.execute('umount', mount_location, run_as_root=True)
         except Exception as err:
-            message = (_LW("There was an error unmounting the super share: "
-                           "%s. The nested file tree will not be deleted."),
-                       six.text_type(err))
-            LOG.warning(message)
+            message = _LW("There was an error unmounting the share at "
+                          "%(mount_location)s: %(error)s")
+            msg_data = {
+                'mount_location': mount_location,
+                'error': six.text_type(err),
+            }
+            LOG.warning(message, msg_data)
 
     def _delete_share_directory(self, directory):
         try:
@@ -810,17 +1028,17 @@ class HPE3ParMediator(object):
                        six.text_type(err))
             LOG.warning(message)
 
-    def _generate_mount_path(self, protocol, fpg, vfs, fstore):
+    def _generate_mount_path(self, protocol, fpg, vfs, fstore, share_ip):
         path = None
         if protocol == 'nfs':
             path = (("%(share_ip)s:/%(fpg)s/%(vfs)s/%(fstore)s/") %
-                    {'share_ip': self.hpe3par_share_ip_address,
+                    {'share_ip': share_ip,
                      'fpg': fpg,
                      'vfs': vfs,
                      'fstore': fstore})
         else:
             path = (("//%(share_ip)s/%(share_name)s/") %
-                    {'share_ip': self.hpe3par_share_ip_address,
+                    {'share_ip': share_ip,
                      'share_name': SUPER_SHARE})
         return path
 
@@ -836,7 +1054,7 @@ class HPE3ParMediator(object):
             msg = (_('Exception during getvfs %(vfs)s: %(e)s') %
                    {'vfs': vfs, 'e': six.text_type(e)})
             LOG.exception(msg)
-            raise exception.ShareBackendException(msg)
+            raise exception.ShareBackendException(msg=msg)
 
         if result['total'] != 1:
             error_msg = result.get('message')
@@ -845,7 +1063,7 @@ class HPE3ParMediator(object):
                              '(%(fpg)s/%(vfs)s): %(msg)s') %
                            {'fpg': fpg, 'vfs': vfs, 'msg': error_msg})
                 LOG.error(message)
-                raise exception.ShareBackendException(message)
+                raise exception.ShareBackendException(msg=message)
             else:
                 message = (_('Error while validating FPG/VFS '
                              '(%(fpg)s/%(vfs)s): Expected 1, '
@@ -854,7 +1072,7 @@ class HPE3ParMediator(object):
                             'total': result['total']})
 
                 LOG.error(message)
-                raise exception.ShareBackendException(message)
+                raise exception.ShareBackendException(msg=message)
 
         return result['members'][0]
 
@@ -934,7 +1152,7 @@ class HPE3ParMediator(object):
                          'Cannot delete snapshot without checking for '
                          'dependent shares first: %s') % six.text_type(e))
                 LOG.exception(msg)
-                raise exception.ShareBackendException(msg)
+                raise exception.ShareBackendException(msg=msg)
 
             for share in shares['members']:
                 if protocol == 'nfs':
@@ -972,7 +1190,7 @@ class HPE3ParMediator(object):
                        'snapname': snapname,
                        'e': six.text_type(e)})
             LOG.exception(msg)
-            raise exception.ShareBackendException(msg)
+            raise exception.ShareBackendException(msg=msg)
 
         # Try to reclaim the space
         try:
@@ -990,13 +1208,13 @@ class HPE3ParMediator(object):
             msg = (_("Invalid access type.  Expected 'ip' or 'user'.  "
                      "Actual '%s'.") % access_type)
             LOG.error(msg)
-            raise exception.InvalidInput(msg)
+            raise exception.InvalidInput(reason=msg)
 
         if protocol == 'nfs' and access_type != 'ip':
             msg = (_("Invalid NFS access type.  HPE 3PAR NFS supports 'ip'. "
                      "Actual '%s'.") % access_type)
             LOG.error(msg)
-            raise exception.HPE3ParInvalid(msg)
+            raise exception.HPE3ParInvalid(err=msg)
 
         return protocol
 
@@ -1279,37 +1497,121 @@ class HPE3ParMediator(object):
         except Exception as e:
             msg = (_('Unexpected exception while getting snapshots: %s') %
                    six.text_type(e))
-            raise exception.ShareBackendException(msg)
+            raise exception.ShareBackendException(msg=msg)
 
-    def allow_access(self, project_id, share_id, share_proto,
-                     extra_specs, access_type, access_to, access_level,
-                     fpg, vfs):
-        """Grant access to a share."""
+    def update_access(self, project_id, share_id, share_proto, extra_specs,
+                      access_rules, add_rules, delete_rules, fpg, vfs):
+        """Update access to a share."""
+        protocol = self.ensure_supported_protocol(share_proto)
 
-        self._change_access(ALLOW,
-                            project_id,
-                            share_id,
-                            share_proto,
-                            access_type,
-                            access_to,
-                            access_level,
-                            fpg,
-                            vfs,
-                            extra_specs=extra_specs)
+        if not (delete_rules or add_rules):
+            # We need to re add all the rules. Check with 3PAR on it's current
+            # list and only add the deltas.
+            share = self._find_fshare(project_id,
+                                      share_id,
+                                      share_proto,
+                                      fpg,
+                                      vfs)
 
-    def deny_access(self, project_id, share_id, share_proto,
-                    access_type, access_to, access_level, fpg, vfs):
-        """Deny access to a share."""
+            ref_users = []
+            ro_ref_rules = []
+            if protocol == 'nfs':
+                ref_rules = share['clients']
 
-        self._change_access(DENY,
-                            project_id,
-                            share_id,
-                            share_proto,
-                            access_type,
-                            access_to,
-                            access_level,
-                            fpg,
-                            vfs)
+                # Check for RO rules.
+                ro_share = self._find_fshare(project_id,
+                                             share_id,
+                                             share_proto,
+                                             fpg,
+                                             vfs,
+                                             readonly=True)
+                if ro_share:
+                    ro_ref_rules = ro_share['clients']
+            else:
+                ref_rules = [x[0] for x in share['allowPerm']]
+                ref_users = ref_rules[:]
+                # Get IP access as well
+                ips = share['allowIP']
+                if not isinstance(ips, list):
+                    # If there is only one IP, the API returns a string
+                    # rather than a list. We need to account for that.
+                    ips = [ips]
+                ref_rules += ips
+
+            # Retrieve base rules.
+            base_rules = []
+            for rule in access_rules:
+                base_rules.append(rule['access_to'])
+
+            # Check if we need to remove any rules from 3PAR.
+            for rule in ref_rules:
+                if rule in ref_users:
+                    rule_type = 'user'
+                else:
+                    rule_type = 'ip'
+
+                if rule not in base_rules + [LOCAL_IP, LOCAL_IP_RO]:
+                    self._change_access(DENY,
+                                        project_id,
+                                        share_id,
+                                        share_proto,
+                                        rule_type,
+                                        rule,
+                                        None,
+                                        fpg,
+                                        vfs)
+
+            # Check to see if there are any RO rules to remove.
+            for rule in ro_ref_rules:
+                if rule not in base_rules + [LOCAL_IP, LOCAL_IP_RO]:
+                    self._change_access(DENY,
+                                        project_id,
+                                        share_id,
+                                        share_proto,
+                                        rule_type,
+                                        rule,
+                                        'ro',
+                                        fpg,
+                                        vfs)
+
+            # Check the rules we need to add.
+            for rule in access_rules:
+                if rule['access_to'] not in ref_rules and (
+                   rule['access_to'] not in ro_ref_rules):
+                    # Rule does not exist, we need to add it
+                    self._change_access(ALLOW,
+                                        project_id,
+                                        share_id,
+                                        share_proto,
+                                        rule['access_type'],
+                                        rule['access_to'],
+                                        rule['access_level'],
+                                        fpg,
+                                        vfs,
+                                        extra_specs=extra_specs)
+        else:
+            # We have deltas of the rules that need to be added and deleted.
+            for rule in delete_rules:
+                self._change_access(DENY,
+                                    project_id,
+                                    share_id,
+                                    share_proto,
+                                    rule['access_type'],
+                                    rule['access_to'],
+                                    rule['access_level'],
+                                    fpg,
+                                    vfs)
+            for rule in add_rules:
+                self._change_access(ALLOW,
+                                    project_id,
+                                    share_id,
+                                    share_proto,
+                                    rule['access_type'],
+                                    rule['access_to'],
+                                    rule['access_level'],
+                                    fpg,
+                                    vfs,
+                                    extra_specs=extra_specs)
 
     def resize_share(self, project_id, share_id, share_proto,
                      new_size, old_size, fpg, vfs):

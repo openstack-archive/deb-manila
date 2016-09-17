@@ -762,3 +762,322 @@ class NewGatewayColumnChecks(BaseMigrationChecks):
             self.test_case.assertTrue(db_result.rowcount >= len(ids))
             for record in db_result:
                 self.test_case.assertFalse(hasattr(record, 'gateway'))
+
+
+@map_to_migration('e8ea58723178')
+class RemoveHostFromDriverPrivateDataChecks(BaseMigrationChecks):
+    table_name = 'drivers_private_data'
+    host_column_name = 'host'
+
+    def setup_upgrade_data(self, engine):
+        dpd_data = {
+            'created_at': datetime.datetime(2016, 7, 14, 22, 31, 22),
+            'deleted': 0,
+            'host': 'host1',
+            'entity_uuid': 'entity_uuid1',
+            'key': 'key1',
+            'value': 'value1'
+        }
+        dpd_table = utils.load_table(self.table_name, engine)
+        engine.execute(dpd_table.insert(dpd_data))
+
+    def check_upgrade(self, engine, data):
+        dpd_table = utils.load_table(self.table_name, engine)
+        rows = engine.execute(dpd_table.select())
+        for row in rows:
+            self.test_case.assertFalse(hasattr(row, self.host_column_name))
+
+    def check_downgrade(self, engine):
+        dpd_table = utils.load_table(self.table_name, engine)
+        rows = engine.execute(dpd_table.select())
+        for row in rows:
+            self.test_case.assertTrue(hasattr(row, self.host_column_name))
+            self.test_case.assertEqual('unknown', row[self.host_column_name])
+
+
+@map_to_migration('493eaffd79e1')
+class NewMTUColumnChecks(BaseMigrationChecks):
+    na_table_name = 'network_allocations'
+    sn_table_name = 'share_networks'
+    na_ids = ['network_allocation_id_fake_3_%d' % i for i in (1, 2, 3)]
+    sn_ids = ['share_network_id_fake_3_%d' % i for i in (1, 2)]
+
+    def setup_upgrade_data(self, engine):
+        user_id = 'user_id'
+        project_id = 'project_id'
+        share_server_id = 'share_server_id_foo_2'
+
+        # Create share network
+        share_network_data = {
+            'id': self.sn_ids[0],
+            'user_id': user_id,
+            'project_id': project_id,
+        }
+        sn_table = utils.load_table(self.sn_table_name, engine)
+        engine.execute(sn_table.insert(share_network_data))
+
+        # Create share server
+        share_server_data = {
+            'id': share_server_id,
+            'share_network_id': share_network_data['id'],
+            'host': 'fake_host',
+            'status': 'active',
+        }
+        ss_table = utils.load_table('share_servers', engine)
+        engine.execute(ss_table.insert(share_server_data))
+
+        # Create network allocations
+        network_allocations = [
+            {
+                'id': self.na_ids[0],
+                'share_server_id': share_server_id,
+                'ip_address': '1.1.1.1',
+            },
+            {
+                'id': self.na_ids[1],
+                'share_server_id': share_server_id,
+                'ip_address': '2.2.2.2',
+            },
+        ]
+        na_table = utils.load_table(self.na_table_name, engine)
+        engine.execute(na_table.insert(network_allocations))
+
+    def check_upgrade(self, engine, data):
+        na_table = utils.load_table(self.na_table_name, engine)
+        for na in engine.execute(na_table.select()):
+            self.test_case.assertTrue(hasattr(na, 'mtu'))
+
+        # Create network allocation
+        network_allocations = [
+            {
+                'id': self.na_ids[2],
+                'share_server_id': na.share_server_id,
+                'ip_address': '3.3.3.3',
+                'gateway': '3.3.3.1',
+                'network_type': 'vlan',
+                'segmentation_id': 1005,
+                'ip_version': 4,
+                'cidr': '240.0.0.0/16',
+                'mtu': 1509,
+            },
+        ]
+        engine.execute(na_table.insert(network_allocations))
+
+        # Select network allocations with mtu info
+        for na in engine.execute(
+                na_table.select().where(na_table.c.mtu == '1509')):
+            self.test_case.assertTrue(hasattr(na, 'mtu'))
+            self.test_case.assertEqual(network_allocations[0]['mtu'],
+                                       getattr(na, 'mtu'))
+
+        # Select all entries and check for the value
+        for na in engine.execute(na_table.select()):
+            self.test_case.assertTrue(hasattr(na, 'mtu'))
+            if na['id'] == self.na_ids[2]:
+                self.test_case.assertEqual(network_allocations[0]['mtu'],
+                                           getattr(na, 'mtu'))
+            else:
+                self.test_case.assertIsNone(na['mtu'])
+
+        sn_table = utils.load_table(self.sn_table_name, engine)
+        for sn in engine.execute(sn_table.select()):
+            self.test_case.assertTrue(hasattr(sn, 'mtu'))
+
+        # Create share network
+        share_networks = [
+            {
+                'id': self.sn_ids[1],
+                'user_id': sn.user_id,
+                'project_id': sn.project_id,
+                'gateway': '1.1.1.1',
+                'name': 'name_foo_2',
+                'mtu': 1509,
+            },
+        ]
+        engine.execute(sn_table.insert(share_networks))
+
+        # Select share network with MTU set
+        for sn in engine.execute(
+                sn_table.select().where(sn_table.c.name == 'name_foo_2')):
+            self.test_case.assertTrue(hasattr(sn, 'mtu'))
+            self.test_case.assertEqual(share_networks[0]['mtu'],
+                                       getattr(sn, 'mtu'))
+
+        # Select all entries and check for the value
+        for sn in engine.execute(sn_table.select()):
+            self.test_case.assertTrue(hasattr(sn, 'mtu'))
+            if sn['id'] == self.sn_ids[1]:
+                self.test_case.assertEqual(network_allocations[0]['mtu'],
+                                           getattr(sn, 'mtu'))
+            else:
+                self.test_case.assertIsNone(sn['mtu'])
+
+    def check_downgrade(self, engine):
+        for table_name, ids in ((self.na_table_name, self.na_ids),
+                                (self.sn_table_name, self.sn_ids)):
+            table = utils.load_table(table_name, engine)
+            db_result = engine.execute(table.select())
+            self.test_case.assertTrue(db_result.rowcount >= len(ids))
+            for record in db_result:
+                self.test_case.assertFalse(hasattr(record, 'mtu'))
+
+
+@map_to_migration('63809d875e32')
+class AddAccessKeyToShareAccessMapping(BaseMigrationChecks):
+    table_name = 'share_access_map'
+    access_key_column_name = 'access_key'
+
+    def setup_upgrade_data(self, engine):
+        share_data = {
+            'id': uuidutils.generate_uuid(),
+            'share_proto': "CEPHFS",
+            'size': 1,
+            'snapshot_id': None,
+            'user_id': 'fake',
+            'project_id': 'fake'
+        }
+        share_table = utils.load_table('shares', engine)
+        engine.execute(share_table.insert(share_data))
+
+        share_instance_data = {
+            'id': uuidutils.generate_uuid(),
+            'deleted': 'False',
+            'host': 'fake',
+            'share_id': share_data['id'],
+            'status': 'available',
+            'access_rules_status': 'active'
+        }
+        share_instance_table = utils.load_table('share_instances', engine)
+        engine.execute(share_instance_table.insert(share_instance_data))
+
+        share_access_data = {
+            'id': uuidutils.generate_uuid(),
+            'share_id': share_data['id'],
+            'access_type': 'cephx',
+            'access_to': 'alice',
+            'deleted': 'False'
+        }
+        share_access_table = utils.load_table(self.table_name, engine)
+        engine.execute(share_access_table.insert(share_access_data))
+
+        share_instance_access_data = {
+            'id': uuidutils.generate_uuid(),
+            'share_instance_id': share_instance_data['id'],
+            'access_id': share_access_data['id'],
+            'deleted': 'False'
+        }
+        share_instance_access_table = utils.load_table(
+            'share_instance_access_map', engine)
+        engine.execute(share_instance_access_table.insert(
+            share_instance_access_data))
+
+    def check_upgrade(self, engine, data):
+        share_access_table = utils.load_table(self.table_name, engine)
+        rows = engine.execute(share_access_table.select())
+        for row in rows:
+            self.test_case.assertTrue(hasattr(row,
+                                              self.access_key_column_name))
+
+    def check_downgrade(self, engine):
+        share_access_table = utils.load_table(self.table_name, engine)
+        rows = engine.execute(share_access_table.select())
+        for row in rows:
+            self.test_case.assertFalse(hasattr(row,
+                                               self.access_key_column_name))
+
+
+@map_to_migration('48a7beae3117')
+class MoveShareTypeIdToInstancesCheck(BaseMigrationChecks):
+
+    some_shares = [
+        {
+            'id': 's1',
+            'share_type_id': 't1',
+        },
+        {
+            'id': 's2',
+            'share_type_id': 't2',
+        },
+        {
+            'id': 's3',
+            'share_type_id': 't3',
+        },
+    ]
+
+    share_ids = [x['id'] for x in some_shares]
+
+    some_instances = [
+        {
+            'id': 'i1',
+            'share_id': 's3',
+        },
+        {
+            'id': 'i2',
+            'share_id': 's2',
+        },
+        {
+            'id': 'i3',
+            'share_id': 's2',
+        },
+        {
+            'id': 'i4',
+            'share_id': 's1',
+        },
+    ]
+
+    instance_ids = [x['id'] for x in some_instances]
+
+    some_share_types = [
+        {'id': 't1'},
+        {'id': 't2'},
+        {'id': 't3'},
+    ]
+
+    def setup_upgrade_data(self, engine):
+
+        shares_table = utils.load_table('shares', engine)
+        share_instances_table = utils.load_table('share_instances', engine)
+        share_types_table = utils.load_table('share_types', engine)
+
+        for stype in self.some_share_types:
+            engine.execute(share_types_table.insert(stype))
+
+        for share in self.some_shares:
+            engine.execute(shares_table.insert(share))
+
+        for instance in self.some_instances:
+            engine.execute(share_instances_table.insert(instance))
+
+    def check_upgrade(self, engine, data):
+
+        shares_table = utils.load_table('shares', engine)
+        share_instances_table = utils.load_table('share_instances', engine)
+
+        for instance in engine.execute(share_instances_table.select().where(
+                share_instances_table.c.id in self.instance_ids)):
+            share = engine.execute(shares_table.select().where(
+                instance['share_id'] == shares_table.c.id)).first()
+            self.test_case.assertEqual(
+                next((x for x in self.some_shares if share['id'] == x['id']),
+                     None)['share_type_id'],
+                instance['share_type_id'])
+
+        for share in engine.execute(share_instances_table.select().where(
+                shares_table.c.id in self.share_ids)):
+            self.test_case.assertNotIn('share_type_id', share)
+
+    def check_downgrade(self, engine):
+
+        shares_table = utils.load_table('shares', engine)
+        share_instances_table = utils.load_table('share_instances', engine)
+
+        for instance in engine.execute(share_instances_table.select().where(
+                share_instances_table.c.id in self.instance_ids)):
+            self.test_case.assertNotIn('share_type_id', instance)
+
+        for share in engine.execute(share_instances_table.select().where(
+                shares_table.c.id in self.share_ids)):
+            self.test_case.assertEqual(
+                next((x for x in self.some_shares if share['id'] == x['id']),
+                     None)['share_type_id'],
+                share['share_type_id'])
