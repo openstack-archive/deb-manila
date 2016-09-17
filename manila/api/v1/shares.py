@@ -28,6 +28,7 @@ from webob import exc
 
 from manila.api import common
 from manila.api.openstack import wsgi
+from manila.api.views import share_accesses as share_access_views
 from manila.api.views import shares as share_views
 from manila import db
 from manila import exception
@@ -98,82 +99,6 @@ class ShareMixin(object):
             raise exc.HTTPConflict(explanation=six.text_type(e))
 
         return webob.Response(status_int=202)
-
-    def _migration_start(self, req, id, body, check_notify=False):
-        """Migrate a share to the specified host."""
-        context = req.environ['manila.context']
-        try:
-            share = self.share_api.get(context, id)
-        except exception.NotFound:
-            msg = _("Share %s not found.") % id
-            raise exc.HTTPNotFound(explanation=msg)
-        params = body.get('migration_start',
-                          body.get('migrate_share',
-                                   body.get('os-migrate_share')))
-        try:
-            host = params['host']
-        except KeyError:
-            raise exc.HTTPBadRequest(explanation=_("Must specify 'host'."))
-        force_host_copy = params.get('force_host_copy', False)
-        try:
-            force_host_copy = strutils.bool_from_string(force_host_copy,
-                                                        strict=True)
-        except ValueError:
-            msg = _("Invalid value %s for 'force_host_copy'. "
-                    "Expecting a boolean.") % force_host_copy
-            raise exc.HTTPBadRequest(explanation=msg)
-        if check_notify:
-            notify = params.get('notify', True)
-            try:
-                notify = strutils.bool_from_string(notify, strict=True)
-            except ValueError:
-                msg = _("Invalid value %s for 'notify'. "
-                        "Expecting a boolean.") % notify
-                raise exc.HTTPBadRequest(explanation=msg)
-        else:
-            # NOTE(ganso): default notify value is True
-            notify = True
-
-        try:
-            self.share_api.migration_start(context, share, host,
-                                           force_host_copy, notify)
-        except exception.Conflict as e:
-            raise exc.HTTPConflict(explanation=six.text_type(e))
-
-        return webob.Response(status_int=202)
-
-    def _migration_complete(self, req, id, body):
-        """Invokes 2nd phase of share migration."""
-        context = req.environ['manila.context']
-        try:
-            share = self.share_api.get(context, id)
-        except exception.NotFound:
-            msg = _("Share %s not found.") % id
-            raise exc.HTTPNotFound(explanation=msg)
-        self.share_api.migration_complete(context, share)
-        return webob.Response(status_int=202)
-
-    def _migration_cancel(self, req, id, body):
-        """Attempts to cancel share migration."""
-        context = req.environ['manila.context']
-        try:
-            share = self.share_api.get(context, id)
-        except exception.NotFound:
-            msg = _("Share %s not found.") % id
-            raise exc.HTTPNotFound(explanation=msg)
-        self.share_api.migration_cancel(context, share)
-        return webob.Response(status_int=202)
-
-    def _migration_get_progress(self, req, id, body):
-        """Retrieve share migration progress for a given share."""
-        context = req.environ['manila.context']
-        try:
-            share = self.share_api.get(context, id)
-        except exception.NotFound:
-            msg = _("Share %s not found.") % id
-            raise exc.HTTPNotFound(explanation=msg)
-        result = self.share_api.migration_get_progress(context, share)
-        return self._view_builder.migration_get_progress(result)
 
     def index(self, req):
         """Returns a summary list of shares."""
@@ -497,7 +422,8 @@ class ShareMixin(object):
                 access_data.get('access_level'))
         except exception.ShareAccessExists as e:
             raise webob.exc.HTTPBadRequest(explanation=e.msg)
-        return {'access': access}
+
+        return self._access_view_builder.view(req, access)
 
     def _deny_access(self, req, id, body):
         """Remove share access rule."""
@@ -521,8 +447,9 @@ class ShareMixin(object):
         context = req.environ['manila.context']
 
         share = self.share_api.get(context, id)
-        access_list = self.share_api.access_get_all(context, share)
-        return {'access_list': access_list}
+        access_rules = self.share_api.access_get_all(context, share)
+
+        return self._access_view_builder.list_view(req, access_rules)
 
     def _extend(self, req, id, body):
         """Extend size of a share."""
@@ -576,6 +503,7 @@ class ShareController(wsgi.Controller, ShareMixin, wsgi.AdminActionsMixin):
     def __init__(self):
         super(self.__class__, self).__init__()
         self.share_api = share.API()
+        self._access_view_builder = share_access_views.ViewBuilder()
 
     @wsgi.action('os-reset_status')
     def share_reset_status(self, req, id, body):

@@ -19,6 +19,7 @@ import mock
 if 'hpe3parclient' not in sys.modules:
     sys.modules['hpe3parclient'] = mock.Mock()
 
+from manila.data import utils as data_utils
 from manila import exception
 from manila.share.drivers.hpe import hpe_3par_mediator as hpe3parmediator
 from manila import test
@@ -37,6 +38,21 @@ class HPE3ParMediatorTestCase(test.TestCase):
 
     def setUp(self):
         super(HPE3ParMediatorTestCase, self).setUp()
+
+        # Fake utils.execute
+        self.mock_object(utils, 'execute', mock.Mock(return_value={}))
+
+        # Fake data_utils.Copy
+        class FakeCopy(object):
+
+            def run(self):
+                pass
+
+            def get_progress(self):
+                return {'total_progress': 100}
+
+        self.mock_copy = self.mock_object(
+            data_utils, 'Copy', mock.Mock(return_value=FakeCopy()))
 
         # This is the fake client to use.
         self.mock_client = mock.Mock()
@@ -63,12 +79,12 @@ class HPE3ParMediatorTestCase(test.TestCase):
             hpe3par_san_login=constants.SAN_LOGIN,
             hpe3par_san_password=constants.SAN_PASSWORD,
             hpe3par_san_ssh_port=constants.PORT,
-            hpe3par_share_ip_address=constants.EXPECTED_IP_10203040,
             hpe3par_cifs_admin_access_username=constants.USERNAME,
             hpe3par_cifs_admin_access_password=constants.PASSWORD,
             hpe3par_cifs_admin_access_domain=constants.EXPECTED_CIFS_DOMAIN,
             hpe3par_share_mount_path=constants.EXPECTED_MOUNT_PATH,
-            ssh_conn_timeout=constants.TIMEOUT)
+            ssh_conn_timeout=constants.TIMEOUT,
+            my_ip=constants.EXPECTED_MY_IP)
 
     def test_mediator_no_client(self):
         """Test missing hpe3parclient error."""
@@ -489,19 +505,27 @@ class HPE3ParMediatorTestCase(test.TestCase):
             constants.EXPECTED_SHARE_ID,
             constants.EXPECTED_SNAP_ID,
             constants.EXPECTED_FPG,
-            constants.EXPECTED_VFS)
+            constants.EXPECTED_VFS,
+            [constants.EXPECTED_IP_10203040])
 
         self.assertEqual(constants.EXPECTED_SHARE_ID, location)
 
-        expected_kwargs = {
+        expected_kwargs_ro = {
             'comment': mock.ANY,
             'fpg': constants.EXPECTED_FPG,
             'fstore': constants.EXPECTED_FSTORE,
-            'sharedir': '.snapshot/%s/%s' % (constants.EXPECTED_SNAP_ID,
-                                             constants.EXPECTED_SHARE_ID),
         }
+        expected_kwargs_rw = expected_kwargs_ro.copy()
+
+        expected_kwargs_ro['sharedir'] = '.snapshot/%s/%s' % (
+            constants.EXPECTED_SNAP_ID, constants.EXPECTED_SHARE_ID)
+        expected_kwargs_rw['sharedir'] = constants.EXPECTED_SHARE_ID
+
         if require_cifs_ip:
-            expected_kwargs['allowip'] = constants.EXPECTED_IP_127
+            expected_kwargs_ro['allowip'] = constants.EXPECTED_MY_IP
+            expected_kwargs_rw['allowip'] = (
+                ','.join((constants.EXPECTED_MY_IP,
+                          constants.EXPECTED_IP_127)))
 
         expected_calls = [
             mock.call.getfsnap('*_%s' % constants.EXPECTED_SNAP_ID,
@@ -512,14 +536,94 @@ class HPE3ParMediatorTestCase(test.TestCase):
             mock.call.createfshare(constants.SMB_LOWER,
                                    constants.EXPECTED_VFS,
                                    constants.EXPECTED_SHARE_ID,
-                                   **expected_kwargs),
+                                   **expected_kwargs_ro),
             mock.call.getfshare(constants.SMB_LOWER,
                                 constants.EXPECTED_SHARE_ID,
                                 fpg=constants.EXPECTED_FPG,
                                 vfs=constants.EXPECTED_VFS,
-                                fstore=constants.EXPECTED_FSTORE)]
+                                fstore=constants.EXPECTED_FSTORE),
+            mock.call.createfshare(constants.SMB_LOWER,
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_SHARE_ID,
+                                   **expected_kwargs_rw),
+            mock.call.getfshare(constants.SMB_LOWER,
+                                constants.EXPECTED_SHARE_ID,
+                                fpg=constants.EXPECTED_FPG,
+                                vfs=constants.EXPECTED_VFS,
+                                fstore=constants.EXPECTED_FSTORE),
+            mock.call.setfshare(constants.SMB_LOWER,
+                                constants.EXPECTED_VFS,
+                                constants.EXPECTED_SHARE_ID,
+                                allowperm=constants.ADD_USERNAME,
+                                comment=mock.ANY,
+                                fpg=constants.EXPECTED_FPG,
+                                fstore=constants.EXPECTED_FSTORE),
+            mock.call.setfshare(constants.SMB_LOWER,
+                                constants.EXPECTED_VFS,
+                                constants.EXPECTED_SHARE_ID,
+                                allowperm=constants.ADD_USERNAME,
+                                comment=mock.ANY,
+                                fpg=constants.EXPECTED_FPG,
+                                fstore=constants.EXPECTED_FSTORE),
+            mock.call.setfshare(constants.SMB_LOWER,
+                                constants.EXPECTED_VFS,
+                                constants.EXPECTED_SUPER_SHARE,
+                                allowperm=constants.DROP_USERNAME,
+                                comment=mock.ANY,
+                                fpg=constants.EXPECTED_FPG,
+                                fstore=constants.EXPECTED_FSTORE),
+            mock.call.removefshare(constants.SMB_LOWER,
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_SHARE_ID,
+                                   fpg=constants.EXPECTED_FPG,
+                                   fstore=constants.EXPECTED_FSTORE),
+        ]
 
         self.mock_client.assert_has_calls(expected_calls)
+
+    def test_mediator_create_cifs_share_from_snapshot_ro(self):
+        self.init_mediator()
+
+        # RO because CIFS admin access username is not configured
+        self.mediator.hpe3par_cifs_admin_access_username = None
+
+        self.mock_client.getfsnap.return_value = {
+            'message': None,
+            'total': 1,
+            'members': [{'snapName': constants.EXPECTED_SNAP_ID,
+                         'fstoreName': constants.EXPECTED_FSTORE}]
+        }
+
+        location = self.mediator.create_share_from_snapshot(
+            constants.EXPECTED_SHARE_ID,
+            constants.CIFS,
+            constants.EXPECTED_EXTRA_SPECS,
+            constants.EXPECTED_PROJECT_ID,
+            constants.EXPECTED_SHARE_ID,
+            constants.EXPECTED_SNAP_ID,
+            constants.EXPECTED_FPG,
+            constants.EXPECTED_VFS,
+            [constants.EXPECTED_IP_10203040],
+            comment=constants.EXPECTED_COMMENT)
+
+        self.assertEqual(constants.EXPECTED_SHARE_ID, location)
+
+        share_dir = '.snapshot/%s/%s' % (
+            constants.EXPECTED_SNAP_ID, constants.EXPECTED_SHARE_ID)
+
+        expected_kwargs_ro = {
+            'comment': constants.EXPECTED_COMMENT,
+            'fpg': constants.EXPECTED_FPG,
+            'fstore': constants.EXPECTED_FSTORE,
+            'sharedir': share_dir,
+        }
+
+        self.mock_client.createfshare.assert_called_once_with(
+            constants.SMB_LOWER,
+            constants.EXPECTED_VFS,
+            constants.EXPECTED_SHARE_ID,
+            **expected_kwargs_ro
+        )
 
     def test_mediator_create_nfs_share_from_snapshot(self):
         self.init_mediator()
@@ -539,7 +643,8 @@ class HPE3ParMediatorTestCase(test.TestCase):
             constants.EXPECTED_SHARE_ID,
             constants.EXPECTED_SNAP_ID,
             constants.EXPECTED_FPG,
-            constants.EXPECTED_VFS)
+            constants.EXPECTED_VFS,
+            [constants.EXPECTED_IP_10203040])
 
         self.assertEqual(constants.EXPECTED_SHARE_PATH, location)
 
@@ -558,15 +663,107 @@ class HPE3ParMediatorTestCase(test.TestCase):
                                             (constants.EXPECTED_SNAP_ID,
                                              constants.EXPECTED_SHARE_ID),
                                    fstore=constants.EXPECTED_FSTORE,
-                                   clientip=constants.EXPECTED_IP_127_2,
+                                   clientip=constants.EXPECTED_MY_IP,
                                    options='ro,no_root_squash,insecure'),
             mock.call.getfshare(constants.NFS_LOWER,
                                 constants.EXPECTED_SHARE_ID,
                                 fpg=constants.EXPECTED_FPG,
                                 vfs=constants.EXPECTED_VFS,
-                                fstore=constants.EXPECTED_FSTORE)]
+                                fstore=constants.EXPECTED_FSTORE),
+            mock.call.createfshare(constants.NFS_LOWER,
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_SHARE_ID,
+                                   comment=mock.ANY,
+                                   fpg=constants.EXPECTED_FPG,
+                                   sharedir=constants.EXPECTED_SHARE_ID,
+                                   fstore=constants.EXPECTED_FSTORE,
+                                   clientip=','.join((
+                                       constants.EXPECTED_MY_IP,
+                                       constants.EXPECTED_IP_127)),
+                                   options='rw,no_root_squash,insecure'),
+            mock.call.getfshare(constants.NFS_LOWER,
+                                constants.EXPECTED_SHARE_ID,
+                                fpg=constants.EXPECTED_FPG,
+                                vfs=constants.EXPECTED_VFS,
+                                fstore=constants.EXPECTED_FSTORE),
+            mock.call.getfshare(constants.NFS_LOWER,
+                                constants.EXPECTED_SHARE_ID,
+                                fpg=constants.EXPECTED_FPG,
+                                vfs=constants.EXPECTED_VFS,
+                                fstore=constants.EXPECTED_FSTORE),
+            mock.call.setfshare(constants.NFS_LOWER,
+                                constants.EXPECTED_VFS,
+                                constants.EXPECTED_SHARE_ID,
+                                clientip=''.join(('-',
+                                                 constants.EXPECTED_MY_IP)),
+                                comment=mock.ANY,
+                                fpg=constants.EXPECTED_FPG,
+                                fstore=constants.EXPECTED_FSTORE),
+            mock.call.removefshare(constants.NFS_LOWER,
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_SHARE_ID,
+                                   fpg=constants.EXPECTED_FPG,
+                                   fstore=constants.EXPECTED_FSTORE),
+        ]
 
         self.mock_client.assert_has_calls(expected_calls)
+
+    def test_mediator_create_share_from_snap_copy_incomplete(self):
+        self.init_mediator()
+
+        self.mock_client.getfsnap.return_value = {
+            'message': None,
+            'total': 1,
+            'members': [{'snapName': constants.EXPECTED_SNAP_ID,
+                         'fstoreName': constants.EXPECTED_FSTORE}]
+        }
+
+        mock_bad_copy = mock.Mock()
+        mock_bad_copy.get_progress.return_value = {'total_progress': 99}
+        self.mock_object(
+            data_utils, 'Copy', mock.Mock(return_value=mock_bad_copy))
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.create_share_from_snapshot,
+                          constants.EXPECTED_SHARE_ID,
+                          constants.NFS,
+                          constants.EXPECTED_EXTRA_SPECS,
+                          constants.EXPECTED_PROJECT_ID,
+                          constants.EXPECTED_SHARE_ID,
+                          constants.EXPECTED_SNAP_ID,
+                          constants.EXPECTED_FPG,
+                          constants.EXPECTED_VFS,
+                          [constants.EXPECTED_IP_10203040])
+        self.assertTrue(mock_bad_copy.run.called)
+        self.assertTrue(mock_bad_copy.get_progress.called)
+
+    def test_mediator_create_share_from_snap_copy_exception(self):
+        self.init_mediator()
+
+        self.mock_client.getfsnap.return_value = {
+            'message': None,
+            'total': 1,
+            'members': [{'snapName': constants.EXPECTED_SNAP_ID,
+                         'fstoreName': constants.EXPECTED_FSTORE}]
+        }
+
+        mock_bad_copy = mock.Mock()
+        mock_bad_copy.run.side_effect = Exception('run exception')
+        self.mock_object(
+            data_utils, 'Copy', mock.Mock(return_value=mock_bad_copy))
+
+        self.assertRaises(exception.ShareBackendException,
+                          self.mediator.create_share_from_snapshot,
+                          constants.EXPECTED_SHARE_ID,
+                          constants.NFS,
+                          constants.EXPECTED_EXTRA_SPECS,
+                          constants.EXPECTED_PROJECT_ID,
+                          constants.EXPECTED_SHARE_ID,
+                          constants.EXPECTED_SNAP_ID,
+                          constants.EXPECTED_FPG,
+                          constants.EXPECTED_VFS,
+                          [constants.EXPECTED_IP_10203040])
+        self.assertTrue(mock_bad_copy.run.called)
 
     def test_mediator_create_share_from_snap_not_found(self):
         self.init_mediator()
@@ -586,7 +783,8 @@ class HPE3ParMediatorTestCase(test.TestCase):
                           constants.EXPECTED_SHARE_ID,
                           constants.EXPECTED_SNAP_ID,
                           constants.EXPECTED_FPG,
-                          constants.EXPECTED_VFS)
+                          constants.EXPECTED_VFS,
+                          [constants.EXPECTED_IP_10203040])
 
     def test_mediator_delete_nfs_share(self):
         self.init_mediator()
@@ -599,28 +797,16 @@ class HPE3ParMediatorTestCase(test.TestCase):
         self.mock_object(self.mediator,
                          '_find_fstore',
                          mock.Mock(return_value=fstore))
-        self.mock_object(self.mediator,
-                         '_create_mount_directory',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_mount_super_share',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_delete_share_directory',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_unmount_super_share',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_update_capacity_quotas',
-                         mock.Mock(return_value={}))
+        self.mock_object(self.mediator, '_delete_file_tree')
+        self.mock_object(self.mediator, '_update_capacity_quotas')
 
         self.mediator.delete_share(constants.EXPECTED_PROJECT_ID,
                                    share_id,
                                    constants.EXPECTED_SIZE_1,
                                    constants.NFS,
                                    constants.EXPECTED_FPG,
-                                   constants.EXPECTED_VFS)
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_SHARE_IP)
 
         expected_calls = [
             mock.call.removefshare(constants.NFS_LOWER,
@@ -633,35 +819,14 @@ class HPE3ParMediatorTestCase(test.TestCase):
                                    osf_ro_share_id,
                                    fpg=constants.EXPECTED_FPG,
                                    fstore=fstore),
-            mock.call.createfshare(constants.NFS_LOWER,
-                                   constants.EXPECTED_VFS,
-                                   constants.EXPECTED_SUPER_SHARE,
-                                   clientip=None,
-                                   comment=(
-                                       constants.EXPECTED_SUPER_SHARE_COMMENT),
-                                   fpg=constants.EXPECTED_FPG,
-                                   fstore=fstore,
-                                   options='rw,no_root_squash,insecure',
-                                   sharedir=''),
             mock.call.removefstore(constants.EXPECTED_VFS,
                                    fstore,
                                    fpg=constants.EXPECTED_FPG),
         ]
         self.mock_client.assert_has_calls(expected_calls)
 
-        expected_mount_path = constants.EXPECTED_MOUNT_PATH + osf_share_id
-        self.mediator._create_mount_directory.assert_called_with(
-            expected_mount_path)
-        self.mediator._mount_super_share.assert_called_with(
-            constants.NFS_LOWER, expected_mount_path, constants.EXPECTED_FPG,
-            constants.EXPECTED_VFS, fstore)
-        self.mediator._delete_share_directory.assert_called_with(
-            expected_mount_path)
-        self.mediator._unmount_super_share.assert_called_with(
-            expected_mount_path)
-        self.mediator._update_capacity_quotas.assert_called_with(
-            fstore, 0, constants.EXPECTED_SIZE_1,
-            constants.EXPECTED_FPG, constants.EXPECTED_VFS)
+        self.assertFalse(self.mediator._delete_file_tree.called)
+        self.assertFalse(self.mediator._update_capacity_quotas.called)
 
     def test_mediator_delete_share_not_found(self):
         self.init_mediator()
@@ -669,39 +834,21 @@ class HPE3ParMediatorTestCase(test.TestCase):
         self.mock_object(self.mediator,
                          '_find_fstore',
                          mock.Mock(return_value=None))
-        self.mock_object(self.mediator,
-                         '_create_mount_directory',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_mount_super_share',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_delete_share_directory',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_unmount_super_share',
-                         mock.Mock(return_value={}))
+        self.mock_object(self.mediator, '_delete_file_tree')
+        self.mock_object(self.mediator, '_update_capacity_quotas')
 
         self.mediator.delete_share(constants.EXPECTED_PROJECT_ID,
                                    constants.EXPECTED_SHARE_ID,
                                    constants.EXPECTED_SIZE_1,
                                    constants.CIFS,
                                    constants.EXPECTED_FPG,
-                                   constants.EXPECTED_VFS)
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_IP_10203040)
 
         self.assertFalse(self.mock_client.removefshare.called)
 
-        expected_mount_path = constants.EXPECTED_MOUNT_PATH + (
-            constants.EXPECTED_SHARE_ID)
-        self.mediator._create_mount_directory.assert_called_with(
-            expected_mount_path)
-        self.mediator._mount_super_share.assert_called_with(
-            constants.SMB_LOWER, expected_mount_path, constants.EXPECTED_FPG,
-            constants.EXPECTED_VFS, None)
-        self.mediator._delete_share_directory.assert_called_with(
-            expected_mount_path)
-        self.mediator._unmount_super_share.assert_called_with(
-            expected_mount_path)
+        self.assertFalse(self.mediator._delete_file_tree.called)
+        self.assertFalse(self.mediator._update_capacity_quotas.called)
 
     def test_mediator_delete_nfs_share_only_readonly(self):
         self.init_mediator()
@@ -710,25 +857,16 @@ class HPE3ParMediatorTestCase(test.TestCase):
         self.mock_object(self.mediator,
                          '_find_fstore',
                          mock.Mock(side_effect=fstores))
-        self.mock_object(self.mediator,
-                         '_create_mount_directory',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_mount_super_share',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_delete_share_directory',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_unmount_super_share',
-                         mock.Mock(return_value={}))
+        self.mock_object(self.mediator, '_delete_file_tree')
+        self.mock_object(self.mediator, '_update_capacity_quotas')
 
         self.mediator.delete_share(constants.EXPECTED_PROJECT_ID,
                                    constants.EXPECTED_SHARE_ID,
                                    constants.EXPECTED_SIZE_1,
                                    constants.NFS,
                                    constants.EXPECTED_FPG,
-                                   constants.EXPECTED_VFS)
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_IP_10203040)
 
         self.mock_client.removefshare.assert_called_once_with(
             constants.NFS_LOWER,
@@ -738,17 +876,8 @@ class HPE3ParMediatorTestCase(test.TestCase):
             fstore=constants.EXPECTED_FSTORE
         )
 
-        expected_mount_path = constants.EXPECTED_MOUNT_PATH + (
-            constants.EXPECTED_SHARE_ID)
-        self.mediator._create_mount_directory.assert_called_with(
-            expected_mount_path)
-        self.mediator._mount_super_share.assert_called_with(
-            constants.NFS_LOWER, expected_mount_path, constants.EXPECTED_FPG,
-            constants.EXPECTED_VFS, constants.EXPECTED_PROJECT_ID)
-        self.mediator._delete_share_directory.assert_called_with(
-            expected_mount_path)
-        self.mediator._unmount_super_share.assert_called_with(
-            expected_mount_path)
+        self.assertFalse(self.mediator._delete_file_tree.called)
+        self.assertFalse(self.mediator._update_capacity_quotas.called)
 
     def test_mediator_delete_share_exception(self):
         self.init_mediator()
@@ -762,7 +891,8 @@ class HPE3ParMediatorTestCase(test.TestCase):
                           constants.EXPECTED_SIZE_1,
                           constants.CIFS,
                           constants.EXPECTED_FPG,
-                          constants.EXPECTED_VFS)
+                          constants.EXPECTED_VFS,
+                          constants.EXPECTED_IP_10203040)
 
         expected_calls = [
             mock.call.removefshare(constants.SMB_LOWER,
@@ -779,32 +909,20 @@ class HPE3ParMediatorTestCase(test.TestCase):
         self.mock_object(self.mediator,
                          '_find_fstore',
                          mock.Mock(return_value=constants.EXPECTED_SHARE_ID))
-        self.mock_object(self.mediator,
-                         '_create_mount_directory',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_mount_super_share',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_delete_share_directory',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_unmount_super_share',
-                         mock.Mock(return_value={}))
-        self.mock_object(self.mediator,
-                         '_update_capacity_quotas',
-                         mock.Mock(return_value={}))
+        self.mock_object(self.mediator, '_delete_file_tree')
+        self.mock_object(self.mediator, '_update_capacity_quotas')
         self.mock_client.removefstore.side_effect = Exception(
             'removefstore fail.')
 
         self.assertRaises(exception.ShareBackendException,
                           self.mediator.delete_share,
                           constants.EXPECTED_PROJECT_ID,
-                          constants.EXPECTED_SHARE_ID,
+                          constants.SHARE_ID,
                           constants.EXPECTED_SIZE_1,
                           constants.CIFS,
                           constants.EXPECTED_FPG,
-                          constants.EXPECTED_VFS)
+                          constants.EXPECTED_VFS,
+                          constants.EXPECTED_IP_10203040)
 
         expected_calls = [
             mock.call.removefshare(constants.SMB_LOWER,
@@ -812,51 +930,63 @@ class HPE3ParMediatorTestCase(test.TestCase):
                                    constants.EXPECTED_SHARE_ID,
                                    fpg=constants.EXPECTED_FPG,
                                    fstore=constants.EXPECTED_SHARE_ID),
-            mock.call.createfshare(constants.SMB_LOWER,
+            mock.call.removefshare(constants.SMB_LOWER,
                                    constants.EXPECTED_VFS,
-                                   constants.EXPECTED_SUPER_SHARE,
-                                   allowip=None,
-                                   comment=(
-                                       constants.EXPECTED_SUPER_SHARE_COMMENT),
+                                   constants.EXPECTED_SHARE_ID_RO,
                                    fpg=constants.EXPECTED_FPG,
-                                   fstore=constants.EXPECTED_SHARE_ID,
-                                   sharedir=''),
-            mock.call.setfshare(constants.SMB_LOWER,
-                                constants.EXPECTED_VFS,
-                                constants.EXPECTED_SUPER_SHARE,
-                                comment=(
-                                    constants.EXPECTED_SUPER_SHARE_COMMENT),
-                                allowperm=(
-                                    '+' + constants.USERNAME + ':fullcontrol'),
-                                fpg=constants.EXPECTED_FPG,
-                                fstore=constants.EXPECTED_SHARE_ID),
+                                   fstore=constants.EXPECTED_SHARE_ID),
             mock.call.removefstore(constants.EXPECTED_VFS,
                                    constants.EXPECTED_SHARE_ID,
                                    fpg=constants.EXPECTED_FPG),
         ]
         self.mock_client.assert_has_calls(expected_calls)
 
-        expected_mount_path = constants.EXPECTED_MOUNT_PATH + (
-            constants.EXPECTED_SHARE_ID)
-        self.mediator._create_mount_directory.assert_called_with(
-            expected_mount_path)
-        self.mediator._mount_super_share.assert_called_with(
-            constants.SMB_LOWER, expected_mount_path, constants.EXPECTED_FPG,
-            constants.EXPECTED_VFS, constants.EXPECTED_SHARE_ID)
-        self.mediator._delete_share_directory.assert_called_with(
-            expected_mount_path)
-        self.mediator._unmount_super_share.assert_called_with(
-            expected_mount_path)
-        self.mediator._update_capacity_quotas.assert_called_with(
-            constants.EXPECTED_SHARE_ID, 0, constants.EXPECTED_SIZE_1,
-            constants.EXPECTED_FPG, constants.EXPECTED_VFS)
+        self.assertFalse(self.mediator._delete_file_tree.called)
+        self.assertFalse(self.mediator._update_capacity_quotas.called)
+
+    def test_mediator_delete_file_tree_exception(self):
+        self.init_mediator()
+        mock_log = self.mock_object(hpe3parmediator, 'LOG')
+        self.mock_object(self.mediator,
+                         '_find_fstore',
+                         mock.Mock(return_value=constants.EXPECTED_FSTORE))
+        self.mock_object(self.mediator,
+                         '_delete_file_tree',
+                         mock.Mock(side_effect=Exception('test')))
+        self.mock_object(self.mediator, '_update_capacity_quotas')
+
+        self.mediator.delete_share(constants.EXPECTED_PROJECT_ID,
+                                   constants.SHARE_ID,
+                                   constants.EXPECTED_SIZE_1,
+                                   constants.CIFS,
+                                   constants.EXPECTED_FPG,
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_IP_10203040)
+
+        expected_calls = [
+            mock.call.removefshare(constants.SMB_LOWER,
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_SHARE_ID,
+                                   fpg=constants.EXPECTED_FPG,
+                                   fstore=constants.EXPECTED_FSTORE),
+            mock.call.removefshare(constants.SMB_LOWER,
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_SHARE_ID_RO,
+                                   fpg=constants.EXPECTED_FPG,
+                                   fstore=constants.EXPECTED_FSTORE),
+        ]
+        self.mock_client.assert_has_calls(expected_calls)
+
+        self.assertTrue(self.mediator._delete_file_tree.called)
+        self.assertFalse(self.mediator._update_capacity_quotas.called)
+        mock_log.warning.assert_called_once_with(mock.ANY, mock.ANY)
 
     def test_mediator_delete_cifs_share(self):
         self.init_mediator()
 
         self.mock_object(self.mediator,
                          '_find_fstore',
-                         mock.Mock(return_value=constants.EXPECTED_SHARE_ID))
+                         mock.Mock(return_value=constants.EXPECTED_FSTORE))
         self.mock_object(self.mediator,
                          '_create_mount_directory',
                          mock.Mock(return_value={}))
@@ -867,7 +997,7 @@ class HPE3ParMediatorTestCase(test.TestCase):
                          '_delete_share_directory',
                          mock.Mock(return_value={}))
         self.mock_object(self.mediator,
-                         '_unmount_super_share',
+                         '_unmount_share',
                          mock.Mock(return_value={}))
         self.mock_object(self.mediator,
                          '_update_capacity_quotas',
@@ -878,22 +1008,23 @@ class HPE3ParMediatorTestCase(test.TestCase):
                                    constants.EXPECTED_SIZE_1,
                                    constants.CIFS,
                                    constants.EXPECTED_FPG,
-                                   constants.EXPECTED_VFS)
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_IP_10203040)
 
         expected_calls = [
             mock.call.removefshare(constants.SMB_LOWER,
                                    constants.EXPECTED_VFS,
                                    constants.EXPECTED_SHARE_ID,
                                    fpg=constants.EXPECTED_FPG,
-                                   fstore=constants.EXPECTED_SHARE_ID),
+                                   fstore=constants.EXPECTED_FSTORE),
             mock.call.createfshare(constants.SMB_LOWER,
                                    constants.EXPECTED_VFS,
                                    constants.EXPECTED_SUPER_SHARE,
-                                   allowip=None,
+                                   allowip=constants.EXPECTED_MY_IP,
                                    comment=(
                                        constants.EXPECTED_SUPER_SHARE_COMMENT),
                                    fpg=constants.EXPECTED_FPG,
-                                   fstore=constants.EXPECTED_SHARE_ID,
+                                   fstore=constants.EXPECTED_FSTORE,
                                    sharedir=''),
             mock.call.setfshare(constants.SMB_LOWER,
                                 constants.EXPECTED_VFS,
@@ -903,27 +1034,68 @@ class HPE3ParMediatorTestCase(test.TestCase):
                                 allowperm=(
                                     '+' + constants.USERNAME + ':fullcontrol'),
                                 fpg=constants.EXPECTED_FPG,
-                                fstore=constants.EXPECTED_SHARE_ID),
+                                fstore=constants.EXPECTED_FSTORE),
+        ]
+        self.mock_client.assert_has_calls(expected_calls)
+
+        expected_mount_path = constants.EXPECTED_MOUNT_PATH + (
+            constants.EXPECTED_SHARE_ID)
+
+        expected_share_path = '/'.join((expected_mount_path,
+                                        constants.EXPECTED_SHARE_ID))
+        self.mediator._create_mount_directory.assert_called_once_with(
+            expected_mount_path)
+        self.mediator._mount_super_share.assert_called_once_with(
+            constants.SMB_LOWER,
+            expected_mount_path,
+            constants.EXPECTED_FPG,
+            constants.EXPECTED_VFS,
+            constants.EXPECTED_FSTORE,
+            constants.EXPECTED_IP_10203040)
+        self.mediator._delete_share_directory.assert_has_calls([
+            mock.call(expected_share_path),
+            mock.call(expected_mount_path),
+        ])
+        self.mediator._unmount_share.assert_called_once_with(
+            expected_mount_path)
+        self.mediator._update_capacity_quotas.assert_called_once_with(
+            constants.EXPECTED_FSTORE,
+            0,
+            constants.EXPECTED_SIZE_1,
+            constants.EXPECTED_FPG,
+            constants.EXPECTED_VFS)
+
+    def test_mediator_delete_cifs_share_and_fstore(self):
+        self.init_mediator()
+
+        self.mock_object(self.mediator,
+                         '_find_fstore',
+                         mock.Mock(return_value=constants.EXPECTED_SHARE_ID))
+        self.mock_object(self.mediator, '_delete_file_tree')
+        self.mock_object(self.mediator, '_update_capacity_quotas')
+
+        self.mediator.delete_share(constants.EXPECTED_PROJECT_ID,
+                                   constants.EXPECTED_SHARE_ID,
+                                   constants.EXPECTED_SIZE_1,
+                                   constants.CIFS,
+                                   constants.EXPECTED_FPG,
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_IP_10203040)
+
+        expected_calls = [
+            mock.call.removefshare(constants.SMB_LOWER,
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_SHARE_ID,
+                                   fpg=constants.EXPECTED_FPG,
+                                   fstore=constants.EXPECTED_SHARE_ID),
             mock.call.removefstore(constants.EXPECTED_VFS,
                                    constants.EXPECTED_SHARE_ID,
                                    fpg=constants.EXPECTED_FPG),
         ]
         self.mock_client.assert_has_calls(expected_calls)
 
-        expected_mount_path = constants.EXPECTED_MOUNT_PATH + (
-            constants.EXPECTED_SHARE_ID)
-        self.mediator._create_mount_directory.assert_called_with(
-            expected_mount_path)
-        self.mediator._mount_super_share.assert_called_with(
-            constants.SMB_LOWER, expected_mount_path, constants.EXPECTED_FPG,
-            constants.EXPECTED_VFS, constants.EXPECTED_SHARE_ID)
-        self.mediator._delete_share_directory.assert_called_with(
-            expected_mount_path)
-        self.mediator._unmount_super_share.assert_called_with(
-            expected_mount_path)
-        self.mediator._update_capacity_quotas.assert_called_with(
-            constants.EXPECTED_SHARE_ID, 0, constants.EXPECTED_SIZE_1,
-            constants.EXPECTED_FPG, constants.EXPECTED_VFS)
+        self.assertFalse(self.mediator._delete_file_tree.called)
+        self.assertFalse(self.mediator._update_capacity_quotas.called)
 
     def test_mediator_delete_share_with_fstore_per_share_false(self):
         self.init_mediator()
@@ -946,7 +1118,7 @@ class HPE3ParMediatorTestCase(test.TestCase):
                          '_delete_share_directory',
                          mock.Mock(return_value={}))
         self.mock_object(self.mediator,
-                         '_unmount_super_share',
+                         '_unmount_share',
                          mock.Mock(return_value={}))
 
         self.mediator.delete_share(constants.EXPECTED_PROJECT_ID,
@@ -954,7 +1126,8 @@ class HPE3ParMediatorTestCase(test.TestCase):
                                    constants.EXPECTED_SIZE_1,
                                    constants.CIFS,
                                    constants.EXPECTED_FPG,
-                                   constants.EXPECTED_VFS)
+                                   constants.EXPECTED_VFS,
+                                   constants.EXPECTED_IP_10203040)
 
         expected_calls = [
             mock.call.removefshare(constants.SMB_LOWER,
@@ -965,7 +1138,7 @@ class HPE3ParMediatorTestCase(test.TestCase):
             mock.call.createfshare(constants.SMB_LOWER,
                                    constants.EXPECTED_VFS,
                                    constants.EXPECTED_SUPER_SHARE,
-                                   allowip=None,
+                                   allowip=constants.EXPECTED_MY_IP,
                                    comment=(
                                        constants.EXPECTED_SUPER_SHARE_COMMENT),
                                    fpg=constants.EXPECTED_FPG,
@@ -996,10 +1169,11 @@ class HPE3ParMediatorTestCase(test.TestCase):
             expected_mount_path)
         self.mediator._mount_super_share.assert_called_with(
             constants.SMB_LOWER, expected_mount_path, constants.EXPECTED_FPG,
-            constants.EXPECTED_VFS, constants.EXPECTED_FSTORE)
+            constants.EXPECTED_VFS, constants.EXPECTED_FSTORE,
+            constants.EXPECTED_IP_10203040)
         self.mediator._delete_share_directory.assert_called_with(
             expected_mount_path)
-        self.mediator._unmount_super_share.assert_called_with(
+        self.mediator._unmount_share.assert_called_with(
             expected_mount_path)
 
     def test_mediator_create_snapshot(self):
@@ -1351,6 +1525,7 @@ class HPE3ParMediatorTestCase(test.TestCase):
             'provisioningType': hpe3parmediator.DEDUPE}
 
         expected_result = {
+            'pool_name': constants.EXPECTED_FPG,
             'free_capacity_gb': expected_free,
             'hpe3par_flash_cache': False,
             'hp3par_flash_cache': False,
@@ -1445,18 +1620,93 @@ class HPE3ParMediatorTestCase(test.TestCase):
         expected_calls = [mock.call.getfsquota(fpg=constants.EXPECTED_FPG)]
         self.mock_client.assert_has_calls(expected_calls)
 
+    def test_update_access_resync_rules_nfs(self):
+        self.init_mediator()
+
+        getfshare_result = {
+            'shareName': constants.EXPECTED_SHARE_NAME,
+            'fstoreName': constants.EXPECTED_FSTORE,
+            'clients': [constants.EXPECTED_IP_127],
+            'comment': constants.EXPECTED_COMMENT,
+        }
+        self.mock_client.getfshare.return_value = {
+            'total': 1,
+            'members': [getfshare_result],
+            'message': None,
+        }
+
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    constants.EXPECTED_SHARE_ID,
+                                    constants.NFS,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_NFS],
+                                    None,
+                                    None,
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
+
+        expected_calls = [
+            mock.call.setfshare(
+                constants.NFS_LOWER,
+                constants.EXPECTED_VFS,
+                constants.EXPECTED_SHARE_NAME,
+                clientip='+'+constants.EXPECTED_IP_1234,
+                fpg=constants.EXPECTED_FPG,
+                fstore=constants.EXPECTED_FSTORE,
+                comment=constants.EXPECTED_COMMENT),
+        ]
+        self.mock_client.assert_has_calls(expected_calls)
+
+    def test_update_access_resync_rules_cifs(self):
+        self.init_mediator()
+
+        getfshare_result = {
+            'shareName': constants.EXPECTED_SHARE_NAME,
+            'fstoreName': constants.EXPECTED_FSTORE,
+            'allowPerm': [['foo_user', 'fullcontrol']],
+            'allowIP': '',
+            'comment': constants.EXPECTED_COMMENT,
+        }
+        self.mock_client.getfshare.return_value = {
+            'total': 1,
+            'members': [getfshare_result],
+            'message': None,
+        }
+
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    constants.EXPECTED_SHARE_ID,
+                                    constants.CIFS,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_CIFS],
+                                    None,
+                                    None,
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
+
+        expected_calls = [
+            mock.call.setfshare(
+                constants.SMB_LOWER,
+                constants.EXPECTED_VFS,
+                constants.EXPECTED_SHARE_NAME,
+                allowperm='+' + constants.USERNAME + ':fullcontrol',
+                fpg=constants.EXPECTED_FPG,
+                fstore=constants.EXPECTED_FSTORE,
+                comment=constants.EXPECTED_COMMENT),
+        ]
+        self.mock_client.assert_has_calls(expected_calls)
+
     def test_mediator_allow_ip_ro_access_cifs_error(self):
         self.init_mediator()
 
         self.assertRaises(exception.InvalidShareAccess,
-                          self.mediator.allow_access,
+                          self.mediator.update_access,
                           constants.EXPECTED_PROJECT_ID,
                           constants.EXPECTED_SHARE_ID,
                           constants.CIFS,
                           constants.EXPECTED_EXTRA_SPECS,
-                          constants.IP,
-                          constants.EXPECTED_IP_10203040,
-                          constants.READ_ONLY,
+                          [constants.ACCESS_RULE_NFS],
+                          [constants.ADD_RULE_IP_RO],
+                          [],
                           constants.EXPECTED_FPG,
                           constants.EXPECTED_VFS)
 
@@ -1481,14 +1731,14 @@ class HPE3ParMediatorTestCase(test.TestCase):
         }
 
         self.assertRaises(exception.InvalidShareAccess,
-                          self.mediator.allow_access,
+                          self.mediator.update_access,
                           constants.EXPECTED_PROJECT_ID,
                           constants.EXPECTED_SHARE_ID,
-                          proto,
+                          constants.CIFS,
                           constants.EXPECTED_EXTRA_SPECS,
-                          constants.IP,
-                          constants.EXPECTED_IP_10203040,
-                          constants.READ_WRITE,
+                          [constants.ACCESS_RULE_NFS],
+                          [constants.ADD_RULE_IP],
+                          [],
                           constants.EXPECTED_FPG,
                           constants.EXPECTED_VFS)
 
@@ -1512,15 +1762,16 @@ class HPE3ParMediatorTestCase(test.TestCase):
         else:
             expected_allowperm = '+%s:fullcontrol' % constants.USERNAME
 
-        self.mediator.allow_access(constants.EXPECTED_PROJECT_ID,
-                                   constants.EXPECTED_SHARE_ID,
-                                   constants.CIFS,
-                                   constants.EXPECTED_EXTRA_SPECS,
-                                   constants.USER,
-                                   constants.USERNAME,
-                                   access_level,
-                                   constants.EXPECTED_FPG,
-                                   constants.EXPECTED_VFS)
+        constants.ADD_RULE_USER['access_level'] = access_level
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    constants.EXPECTED_SHARE_ID,
+                                    constants.CIFS,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_CIFS],
+                                    [constants.ADD_RULE_USER],
+                                    [],
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
 
         expected_calls = [
             mock.call.setfshare(constants.SMB_LOWER,
@@ -1572,14 +1823,15 @@ class HPE3ParMediatorTestCase(test.TestCase):
         }
         mock_log = self.mock_object(hpe3parmediator, 'LOG')
 
-        self.mediator.deny_access(constants.EXPECTED_PROJECT_ID,
-                                  constants.EXPECTED_SHARE_ID,
-                                  proto,
-                                  constants.IP,
-                                  constants.EXPECTED_IP_10203040,
-                                  constants.READ_WRITE,
-                                  constants.EXPECTED_FPG,
-                                  constants.EXPECTED_VFS)
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    constants.EXPECTED_SHARE_ID,
+                                    proto,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_NFS],
+                                    [],
+                                    [constants.DELETE_RULE_IP],
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
 
         self.assertFalse(self.mock_client.setfshare.called)
         self.assertTrue(mock_log.error.called)
@@ -1590,14 +1842,15 @@ class HPE3ParMediatorTestCase(test.TestCase):
 
         expected_denyperm = '-%s:fullcontrol' % constants.USERNAME
 
-        self.mediator.deny_access(constants.EXPECTED_PROJECT_ID,
-                                  constants.EXPECTED_SHARE_ID,
-                                  constants.CIFS,
-                                  constants.USER,
-                                  constants.USERNAME,
-                                  constants.READ_WRITE,
-                                  constants.EXPECTED_FPG,
-                                  constants.EXPECTED_VFS)
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    constants.EXPECTED_SHARE_ID,
+                                    constants.CIFS,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_CIFS],
+                                    [],
+                                    [constants.DELETE_RULE_USER],
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
 
         expected_calls = [
             mock.call.setfshare(constants.SMB_LOWER,
@@ -1617,15 +1870,15 @@ class HPE3ParMediatorTestCase(test.TestCase):
 
         expected_allowip = '+%s' % constants.EXPECTED_IP_1234
 
-        self.mediator.allow_access(constants.EXPECTED_PROJECT_ID,
-                                   constants.EXPECTED_SHARE_ID,
-                                   constants.CIFS,
-                                   constants.EXPECTED_EXTRA_SPECS,
-                                   constants.IP,
-                                   constants.EXPECTED_IP_1234,
-                                   constants.READ_WRITE,
-                                   constants.EXPECTED_FPG,
-                                   constants.EXPECTED_VFS)
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    constants.EXPECTED_SHARE_ID,
+                                    constants.CIFS,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_NFS],
+                                    [constants.ADD_RULE_IP],
+                                    [],
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
 
         expected_calls = [
             mock.call.setfshare(constants.SMB_LOWER,
@@ -1644,14 +1897,15 @@ class HPE3ParMediatorTestCase(test.TestCase):
 
         expected_denyip = '-%s' % constants.EXPECTED_IP_1234
 
-        self.mediator.deny_access(constants.EXPECTED_PROJECT_ID,
-                                  constants.EXPECTED_SHARE_ID,
-                                  constants.CIFS,
-                                  constants.IP,
-                                  constants.EXPECTED_IP_1234,
-                                  constants.READ_WRITE,
-                                  constants.EXPECTED_FPG,
-                                  constants.EXPECTED_VFS)
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    constants.EXPECTED_SHARE_ID,
+                                    constants.CIFS,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_NFS],
+                                    [],
+                                    [constants.DELETE_RULE_IP],
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
 
         expected_calls = [
             mock.call.setfshare(constants.SMB_LOWER,
@@ -1674,15 +1928,15 @@ class HPE3ParMediatorTestCase(test.TestCase):
         expected_clientip = '+%s' % constants.EXPECTED_IP_1234
 
         for _ in range(2):  # Test 2nd allow w/ already exists message.
-            self.mediator.allow_access(constants.EXPECTED_PROJECT_ID,
-                                       constants.EXPECTED_SHARE_ID,
-                                       constants.NFS,
-                                       constants.EXPECTED_EXTRA_SPECS,
-                                       constants.IP,
-                                       constants.EXPECTED_IP_1234,
-                                       constants.READ_WRITE,
-                                       constants.EXPECTED_FPG,
-                                       constants.EXPECTED_VFS)
+            self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                        constants.EXPECTED_SHARE_ID,
+                                        constants.NFS,
+                                        constants.EXPECTED_EXTRA_SPECS,
+                                        [constants.ACCESS_RULE_NFS],
+                                        [constants.ADD_RULE_IP],
+                                        [],
+                                        constants.EXPECTED_FPG,
+                                        constants.EXPECTED_VFS)
 
         expected_calls = 2 * [
             mock.call.setfshare(constants.NFS.lower(),
@@ -1702,14 +1956,15 @@ class HPE3ParMediatorTestCase(test.TestCase):
 
         expected_clientip = '-%s' % constants.EXPECTED_IP_1234
 
-        self.mediator.deny_access(constants.EXPECTED_PROJECT_ID,
-                                  constants.EXPECTED_SHARE_ID,
-                                  constants.NFS,
-                                  constants.IP,
-                                  constants.EXPECTED_IP_1234,
-                                  constants.READ_WRITE,
-                                  constants.EXPECTED_FPG,
-                                  constants.EXPECTED_VFS)
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    constants.EXPECTED_SHARE_ID,
+                                    constants.NFS,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_NFS],
+                                    [],
+                                    [constants.DELETE_RULE_IP],
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
 
         expected_calls = [
             mock.call.setfshare(constants.NFS.lower(),
@@ -1739,14 +1994,15 @@ class HPE3ParMediatorTestCase(test.TestCase):
 
         expected_clientip = '-%s' % constants.EXPECTED_IP_1234
 
-        self.mediator.deny_access(constants.EXPECTED_PROJECT_ID,
-                                  constants.EXPECTED_SHARE_ID,
-                                  constants.NFS,
-                                  constants.IP,
-                                  constants.EXPECTED_IP_1234,
-                                  constants.READ_ONLY,
-                                  constants.EXPECTED_FPG,
-                                  constants.EXPECTED_VFS)
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    constants.EXPECTED_SHARE_ID,
+                                    constants.NFS,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_NFS],
+                                    [],
+                                    [constants.DELETE_RULE_IP_RO],
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
 
         expected_calls = [
             mock.call.setfshare(constants.NFS.lower(),
@@ -1780,14 +2036,14 @@ class HPE3ParMediatorTestCase(test.TestCase):
         self.init_mediator()
 
         self.assertRaises(exception.HPE3ParInvalid,
-                          self.mediator.allow_access,
+                          self.mediator.update_access,
                           constants.EXPECTED_PROJECT_ID,
                           constants.EXPECTED_SHARE_ID,
                           constants.NFS,
                           constants.EXPECTED_EXTRA_SPECS,
-                          constants.USER,
-                          constants.USERNAME,
-                          constants.READ_WRITE,
+                          [constants.ACCESS_RULE_NFS],
+                          [constants.ADD_RULE_USER],
+                          [],
                           constants.EXPECTED_FPG,
                           constants.EXPECTED_VFS)
 
@@ -1795,15 +2051,15 @@ class HPE3ParMediatorTestCase(test.TestCase):
         """"Allow user access to unsupported protocol."""
         self.init_mediator()
 
-        self.assertRaises(exception.InvalidInput,
-                          self.mediator.allow_access,
+        self.assertRaises(exception.InvalidShareAccess,
+                          self.mediator.update_access,
                           constants.EXPECTED_PROJECT_ID,
                           constants.EXPECTED_SHARE_ID,
                           'unsupported_other_protocol',
                           constants.EXPECTED_EXTRA_SPECS,
-                          constants.USER,
-                          constants.USERNAME,
-                          constants.READ_WRITE,
+                          [constants.ACCESS_RULE_NFS],
+                          [constants.ADD_RULE_IP],
+                          [],
                           constants.EXPECTED_FPG,
                           constants.EXPECTED_VFS)
 
@@ -1812,14 +2068,14 @@ class HPE3ParMediatorTestCase(test.TestCase):
         self.init_mediator()
 
         self.assertRaises(exception.InvalidInput,
-                          self.mediator.allow_access,
+                          self.mediator.update_access,
                           constants.EXPECTED_PROJECT_ID,
                           constants.EXPECTED_SHARE_ID,
                           constants.CIFS,
                           constants.EXPECTED_EXTRA_SPECS,
-                          'unsupported_other_type',
-                          constants.USERNAME,
-                          constants.READ_WRITE,
+                          [constants.ACCESS_RULE_NFS],
+                          [constants.ADD_RULE_BAD_TYPE],
+                          [],
                           constants.EXPECTED_FPG,
                           constants.EXPECTED_VFS)
 
@@ -1830,14 +2086,14 @@ class HPE3ParMediatorTestCase(test.TestCase):
                                             mock.Mock(return_value=None))
 
         self.assertRaises(exception.HPE3ParInvalid,
-                          self.mediator.allow_access,
+                          self.mediator.update_access,
                           constants.EXPECTED_PROJECT_ID,
                           constants.EXPECTED_SHARE_ID,
                           constants.NFS,
                           constants.EXPECTED_EXTRA_SPECS,
-                          constants.IP,
-                          constants.EXPECTED_IP_1234,
-                          constants.READ_WRITE,
+                          [constants.ACCESS_RULE_NFS],
+                          [constants.ADD_RULE_IP],
+                          [],
                           constants.EXPECTED_FPG,
                           constants.EXPECTED_VFS)
 
@@ -1877,15 +2133,15 @@ class HPE3ParMediatorTestCase(test.TestCase):
 
         share_id = 'foo'
 
-        self.mediator.allow_access(constants.EXPECTED_PROJECT_ID,
-                                   share_id,
-                                   constants.NFS,
-                                   constants.EXPECTED_EXTRA_SPECS,
-                                   constants.IP,
-                                   constants.EXPECTED_IP_1234,
-                                   constants.READ_ONLY,
-                                   constants.EXPECTED_FPG,
-                                   constants.EXPECTED_VFS)
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    share_id,
+                                    constants.NFS,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_NFS],
+                                    [constants.ADD_RULE_IP_RO],
+                                    [],
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
 
         expected_calls = [
             mock.call(constants.EXPECTED_PROJECT_ID,
@@ -1936,15 +2192,15 @@ class HPE3ParMediatorTestCase(test.TestCase):
                                             '_find_fshare',
                                             mock.Mock(return_value=None))
 
-        self.mediator.deny_access(
-            constants.EXPECTED_PROJECT_ID,
-            constants.EXPECTED_SHARE_ID,
-            constants.NFS,
-            constants.IP,
-            constants.READ_WRITE,
-            constants.EXPECTED_IP_1234,
-            constants.EXPECTED_FPG,
-            constants.EXPECTED_VFS)
+        self.mediator.update_access(constants.EXPECTED_PROJECT_ID,
+                                    constants.EXPECTED_SHARE_ID,
+                                    constants.NFS,
+                                    constants.EXPECTED_EXTRA_SPECS,
+                                    [constants.ACCESS_RULE_NFS],
+                                    [],
+                                    [constants.DELETE_RULE_IP],
+                                    constants.EXPECTED_FPG,
+                                    constants.EXPECTED_VFS)
 
         expected_calls = [
             mock.call(constants.EXPECTED_PROJECT_ID,
@@ -2111,7 +2367,7 @@ class HPE3ParMediatorTestCase(test.TestCase):
 
     @ddt.data('', 'bogus')
     def test_other_protocol_exception(self, protocol):
-        self.assertRaises(exception.InvalidInput,
+        self.assertRaises(exception.InvalidShareAccess,
                           hpe3parmediator.HPE3ParMediator().other_protocol,
                           protocol)
 
@@ -2541,8 +2797,6 @@ class HPE3ParMediatorTestCase(test.TestCase):
     def test__create_mount_directory(self):
         self.init_mediator()
 
-        self.mock_object(utils, 'execute', mock.Mock(return_value={}))
-
         mount_location = '/mnt/foo'
         self.mediator._create_mount_directory(mount_location)
 
@@ -2567,8 +2821,6 @@ class HPE3ParMediatorTestCase(test.TestCase):
     def test__mount_super_share(self):
         self.init_mediator()
 
-        self.mock_object(utils, 'execute', mock.Mock(return_value={}))
-
         # Test mounting NFS share.
         protocol = 'nfs'
         mount_location = '/mnt/foo'
@@ -2578,7 +2830,8 @@ class HPE3ParMediatorTestCase(test.TestCase):
         mount_path = '%s:/%s/%s/%s/' % (constants.EXPECTED_IP_10203040, fpg,
                                         vfs, fstore)
         self.mediator._mount_super_share(protocol, mount_location, fpg, vfs,
-                                         fstore)
+                                         fstore,
+                                         constants.EXPECTED_IP_10203040)
 
         utils.execute.assert_called_with('mount', '-t', protocol, mount_path,
                                          mount_location, run_as_root=True)
@@ -2591,7 +2844,8 @@ class HPE3ParMediatorTestCase(test.TestCase):
             constants.USERNAME, constants.PASSWORD,
             constants.EXPECTED_CIFS_DOMAIN)
         self.mediator._mount_super_share(protocol, mount_location, fpg, vfs,
-                                         fstore)
+                                         fstore,
+                                         constants.EXPECTED_IP_10203040)
 
         utils.execute.assert_called_with('mount', '-t', 'cifs', mount_path,
                                          mount_location, '-o', user,
@@ -2610,15 +2864,14 @@ class HPE3ParMediatorTestCase(test.TestCase):
         vfs = 'bar-vfs'
         fstore = 'fstore'
         self.mediator._mount_super_share(protocol, mount_location, fpg, vfs,
-                                         fstore)
+                                         fstore,
+                                         constants.EXPECTED_IP_10203040)
 
         # Warning is logged (no exception thrown).
         self.assertTrue(mock_log.warning.called)
 
     def test__delete_share_directory(self):
         self.init_mediator()
-
-        self.mock_object(utils, 'execute', mock.Mock(return_value={}))
 
         mount_location = '/mnt/foo'
         self.mediator._delete_share_directory(mount_location)
@@ -2639,26 +2892,23 @@ class HPE3ParMediatorTestCase(test.TestCase):
         # Warning is logged (no exception thrown).
         self.assertTrue(mock_log.warning.called)
 
-    def test__unmount_super_share(self):
+    def test__unmount_share(self):
         self.init_mediator()
 
-        self.mock_object(utils, 'execute', mock.Mock(return_value={}))
+        mount_dir = '/mnt/foo'
+        self.mediator._unmount_share(mount_dir)
 
-        mount_location = '/mnt/foo'
-        self.mediator._unmount_super_share(mount_location)
+        utils.execute.assert_called_with('umount', mount_dir, run_as_root=True)
 
-        utils.execute.assert_called_with('umount', mount_location,
-                                         run_as_root=True)
-
-    def test__unmount_super_share_error(self):
+    def test__unmount_share_error(self):
         self.init_mediator()
 
         self.mock_object(utils, 'execute',
                          mock.Mock(side_effect=Exception('umount error.')))
         mock_log = self.mock_object(hpe3parmediator, 'LOG')
 
-        mount_location = '/mnt/foo'
-        self.mediator._unmount_super_share(mount_location)
+        mount_dir = '/mnt/foo'
+        self.mediator._unmount_share(mount_dir)
 
         # Warning is logged (no exception thrown).
         self.assertTrue(mock_log.warning.called)
@@ -2674,7 +2924,8 @@ class HPE3ParMediatorTestCase(test.TestCase):
             constants.SMB_LOWER,
             constants.EXPECTED_FPG,
             constants.EXPECTED_VFS,
-            constants.EXPECTED_FSTORE)
+            constants.EXPECTED_FSTORE,
+            constants.EXPECTED_SHARE_IP)
 
         # Warning is logged (no exception thrown).
         self.assertTrue(mock_log.warning.called)
@@ -2700,12 +2951,48 @@ class HPE3ParMediatorTestCase(test.TestCase):
             Exception("setfshare error."))
 
         self.assertRaises(
-            exception.ShareMountException,
+            exception.ShareBackendException,
             self.mediator._create_super_share,
             constants.SMB_LOWER,
             constants.EXPECTED_FPG,
             constants.EXPECTED_VFS,
             constants.EXPECTED_FSTORE)
+
+    def test__revoke_admin_smb_access_error(self):
+        self.init_mediator()
+
+        self.mock_client.setfshare.side_effect = (
+            Exception("setfshare error"))
+
+        self.assertRaises(
+            exception.ShareBackendException,
+            self.mediator._revoke_admin_smb_access,
+            constants.SMB_LOWER,
+            constants.EXPECTED_FPG,
+            constants.EXPECTED_VFS,
+            constants.EXPECTED_FSTORE,
+            constants.EXPECTED_COMMENT)
+
+    def test_build_export_locations_bad_protocol(self):
+        self.assertRaises(exception.InvalidShareAccess,
+                          self.mediator.build_export_locations,
+                          "BOGUS",
+                          [constants.EXPECTED_IP_1234],
+                          constants.EXPECTED_SHARE_PATH)
+
+    def test_build_export_locations_bad_ip(self):
+        self.assertRaises(exception.InvalidInput,
+                          self.mediator.build_export_locations,
+                          constants.NFS,
+                          None,
+                          None)
+
+    def test_build_export_locations_bad_path(self):
+        self.assertRaises(exception.InvalidInput,
+                          self.mediator.build_export_locations,
+                          constants.NFS,
+                          [constants.EXPECTED_IP_1234],
+                          None)
 
 
 class OptionMatcher(object):

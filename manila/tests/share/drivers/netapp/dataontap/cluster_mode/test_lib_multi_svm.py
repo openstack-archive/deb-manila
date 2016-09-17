@@ -273,6 +273,8 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
     def test_create_vserver(self):
 
+        versions = ['fake_v1', 'fake_v2']
+        self.library.configuration.netapp_enabled_share_protocols = versions
         vserver_id = fake.NETWORK_INFO['server_id']
         vserver_name = fake.VSERVER_NAME_TEMPLATE % vserver_id
         vserver_client = mock.Mock()
@@ -306,7 +308,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             vserver_name, vserver_client, fake.NETWORK_INFO, fake.IPSPACE)
         self.library._create_vserver_admin_lif.assert_called_with(
             vserver_name, vserver_client, fake.NETWORK_INFO, fake.IPSPACE)
-        self.assertTrue(vserver_client.enable_nfs.called)
+        vserver_client.enable_nfs.assert_called_once_with(versions)
         self.library._client.setup_security_services.assert_called_with(
             fake.NETWORK_INFO['security_services'], vserver_client,
             vserver_name)
@@ -538,7 +540,19 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
 
         self.assertEqual('os_132dbb10-9a36-46f2-8d89-3d909830c356', result)
 
-    def test_create_lif(self):
+    @ddt.data(fake.MTU, None, 'not-present')
+    def test_create_lif(self, mtu):
+        """Tests cases where MTU is a valid value, None or not present."""
+
+        expected_mtu = (mtu if mtu not in (None, 'not-present') else
+                        fake.DEFAULT_MTU)
+
+        network_allocations = copy.deepcopy(
+            fake.NETWORK_INFO['network_allocations'][0])
+        network_allocations['mtu'] = mtu
+
+        if mtu == 'not-present':
+            network_allocations.pop('mtu')
 
         vserver_client = mock.Mock()
         vserver_client.network_interface_exists = mock.Mock(
@@ -552,12 +566,12 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                                  'fake_ipspace',
                                  'fake_node',
                                  'fake_lif',
-                                 fake.NETWORK_INFO['network_allocations'][0])
+                                 network_allocations)
 
         self.library._client.create_network_interface.assert_has_calls([
             mock.call('10.10.10.10', '255.255.255.0', '1000', 'fake_node',
                       'fake_port', 'fake_vserver', 'fake_lif',
-                      'fake_ipspace')])
+                      'fake_ipspace', expected_mtu)])
 
     def test_create_lif_if_nonexistent_already_present(self):
 
@@ -698,7 +712,8 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
         mock_delete_vserver_vlan.assert_called_once_with(
             c_fake.NETWORK_INTERFACES)
 
-    def test_delete_vserver_with_ipspace(self):
+    @ddt.data([], c_fake.NETWORK_INTERFACES)
+    def test_delete_vserver_with_ipspace(self, interfaces):
 
         self.mock_object(self.library._client,
                          'get_vserver_ipspace',
@@ -714,7 +729,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
                                                     '_delete_vserver_vlan')
         self.mock_object(vserver_client,
                          'get_network_interfaces',
-                         mock.Mock(return_value=c_fake.NETWORK_INTERFACES))
+                         mock.Mock(return_value=interfaces))
 
         security_services = fake.NETWORK_INFO['security_services']
 
@@ -727,8 +742,7 @@ class NetAppFileStorageLibraryTestCase(test.TestCase):
             fake.VSERVER1, vserver_client, security_services=security_services)
         self.library._client.delete_ipspace.assert_called_once_with(
             fake.IPSPACE)
-        mock_delete_vserver_vlan.assert_called_once_with(
-            c_fake.NETWORK_INTERFACES)
+        mock_delete_vserver_vlan.assert_called_once_with(interfaces)
 
     def test_delete_vserver_vlan(self):
 

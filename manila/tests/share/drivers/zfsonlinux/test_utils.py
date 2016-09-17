@@ -77,6 +77,16 @@ class ExecuteMixinTestCase(test.TestCase):
             max_size=10,
         )
 
+    def test_execute_with_provided_executor(self):
+        self.mock_object(self.driver, '_execute')
+        fake_executor = mock.Mock()
+
+        self.driver.execute('fake', '--foo', '--bar', executor=fake_executor)
+
+        self.assertFalse(self.driver._execute.called)
+        self.assertFalse(self.ssh_executor.called)
+        fake_executor.assert_called_once_with('fake', '--foo', '--bar')
+
     def test_local_shell_execute(self):
         self.mock_object(self.driver, '_execute')
 
@@ -213,6 +223,16 @@ foo_res  opt_3           some_value       local"""
         self.driver.execute.asssert_called_once_with(
             'sudo', 'zfs', 'foo', 'bar')
 
+    def test_zfs_with_retry(self):
+        self.mock_object(self.driver, 'execute')
+        self.mock_object(self.driver, 'execute_with_retry')
+
+        self.driver.zfs_with_retry('foo', 'bar')
+
+        self.assertEqual(0, self.driver.execute.call_count)
+        self.driver.execute_with_retry.asssert_called_once_with(
+            'sudo', 'zfs', 'foo', 'bar')
+
 
 @ddt.ddt
 class NFSviaZFSHelperTestCase(test.TestCase):
@@ -254,6 +274,7 @@ class NFSviaZFSHelperTestCase(test.TestCase):
         ])
 
     def test_is_kernel_version_true(self):
+        delattr(self.helper, '_is_kernel_version')
         zfs_utils.utils.execute.reset_mock()
 
         self.assertTrue(self.helper.is_kernel_version)
@@ -263,6 +284,7 @@ class NFSviaZFSHelperTestCase(test.TestCase):
         ])
 
     def test_is_kernel_version_false(self):
+        delattr(self.helper, '_is_kernel_version')
         zfs_utils.utils.execute.reset_mock()
         zfs_utils.utils.execute.side_effect = (
             exception.ProcessExecutionError('Fake'))
@@ -274,6 +296,7 @@ class NFSviaZFSHelperTestCase(test.TestCase):
         ])
 
     def test_is_kernel_version_second_call(self):
+        delattr(self.helper, '_is_kernel_version')
         zfs_utils.utils.execute.reset_mock()
 
         self.assertTrue(self.helper.is_kernel_version)
@@ -307,7 +330,8 @@ class NFSviaZFSHelperTestCase(test.TestCase):
         result = self.helper.get_exports('foo')
 
         self.assertEqual(expected, result)
-        self.helper.get_zfs_option.assert_called_once_with('foo', 'mountpoint')
+        self.helper.get_zfs_option.assert_called_once_with(
+            'foo', 'mountpoint', executor=None)
 
     def test_remove_exports(self):
         zfs_utils.utils.execute.reset_mock()
@@ -316,7 +340,8 @@ class NFSviaZFSHelperTestCase(test.TestCase):
 
         self.helper.remove_exports('foo')
 
-        self.helper.get_zfs_option.assert_called_once_with('foo', 'sharenfs')
+        self.helper.get_zfs_option.assert_called_once_with(
+            'foo', 'sharenfs', executor=None)
         zfs_utils.utils.execute.assert_called_once_with(
             'zfs', 'set', 'sharenfs=off', 'foo', run_as_root=True)
 
@@ -327,7 +352,8 @@ class NFSviaZFSHelperTestCase(test.TestCase):
 
         self.helper.remove_exports('foo')
 
-        self.helper.get_zfs_option.assert_called_once_with('foo', 'sharenfs')
+        self.helper.get_zfs_option.assert_called_once_with(
+            'foo', 'sharenfs', executor=None)
         self.assertEqual(0, zfs_utils.utils.execute.call_count)
 
     @ddt.data(
@@ -347,6 +373,7 @@ class NFSviaZFSHelperTestCase(test.TestCase):
     @ddt.unpack
     def test_update_access_rw_and_ro(self, modinfo_response, access_str,
                                      make_all_ro):
+        delattr(self.helper, '_is_kernel_version')
         zfs_utils.utils.execute.reset_mock()
         dataset_name = 'zpoolz/foo_dataset_name/fake'
         zfs_utils.utils.execute.side_effect = [
@@ -434,7 +461,6 @@ class NFSviaZFSHelperTestCase(test.TestCase):
         self.helper.update_access(dataset_name, access_rules, [], [])
 
         zfs_utils.utils.execute.assert_has_calls([
-            mock.call('modinfo', 'zfs'),
             mock.call('zfs', 'list', '-r', 'zpoolz', run_as_root=True),
         ])
         zfs_utils.LOG.warning.assert_called_once_with(
@@ -445,7 +471,6 @@ class NFSviaZFSHelperTestCase(test.TestCase):
         zfs_utils.utils.execute.reset_mock()
         dataset_name = 'zpoolz/foo_dataset_name/fake'
         zfs_utils.utils.execute.side_effect = [
-            ('fake_modinfo_result', ''),
             ("""NAME            USED  AVAIL  REFER  MOUNTPOINT\n
 %s          2.58M  14.8G  27.5K  /%s\n
              """ % (dataset_name, dataset_name), ''),
@@ -455,7 +480,6 @@ class NFSviaZFSHelperTestCase(test.TestCase):
         self.helper.update_access(dataset_name, [], [], [])
 
         zfs_utils.utils.execute.assert_has_calls([
-            mock.call('modinfo', 'zfs'),
             mock.call('zfs', 'list', '-r', 'zpoolz', run_as_root=True),
             mock.call('zfs', 'set', 'sharenfs=off', dataset_name,
                       run_as_root=True),

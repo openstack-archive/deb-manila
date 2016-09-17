@@ -114,6 +114,10 @@ class NetworkException(ManilaException):
     message = _("Exception due to network failure.")
 
 
+class NetworkBindException(ManilaException):
+    message = _("Exception due to failed port status in binding.")
+
+
 class NetworkBadConfigurationException(NetworkException):
     message = _("Bad network configuration: %(reason)s.")
 
@@ -238,6 +242,10 @@ class InvalidShareServer(Invalid):
     message = _("Share server %(share_server_id)s is not valid.")
 
 
+class ShareMigrationError(ManilaException):
+    message = _("Error in share migration: %(reason)s")
+
+
 class ShareMigrationFailed(ManilaException):
     message = _("Share migration failed: %(reason)s")
 
@@ -261,6 +269,11 @@ class AdminIPNotFound(ManilaException):
 
 class ShareServerNotCreated(ManilaException):
     message = _("Share server %(share_server_id)s failed on creation.")
+
+
+class ShareServerNotReady(ManilaException):
+    message = _("Share server %(share_server_id)s failed to reach '%(state)s' "
+                "within %(time)s seconds.")
 
 
 class ServiceNotFound(NotFound):
@@ -554,6 +567,10 @@ class ShareTypeInUse(ManilaException):
                 "shares present with the type.")
 
 
+class IPAddressInUse(InUse):
+    message = _("IP address %(ip)s is already used.")
+
+
 class ShareTypeExists(ManilaException):
     message = _("Share Type %(id)s already exists.")
 
@@ -643,6 +660,10 @@ class EMCVnxLockRequiredException(ManilaException):
 
 class EMCVnxInvalidMoverID(ManilaException):
     message = _("Invalid mover or vdm %(id)s.")
+
+
+class EMCUnityError(ShareBackendException):
+    message = _("%(err)s")
 
 
 class HPE3ParInvalidClient(Invalid):
@@ -782,3 +803,24 @@ class TegileAPIException(ShareBackendException):
 
 class StorageCommunicationException(ShareBackendException):
     message = _("Could not communicate with storage array.")
+
+
+class EvaluatorParseException(ManilaException):
+    message = _("Error during evaluator parsing: %(reason)s")
+
+
+# Hitachi Scaleout Platform driver
+class HSPBackendException(ShareBackendException):
+    message = _("HSP Backend Exception: %(msg)s")
+
+
+class HSPTimeoutException(ShareBackendException):
+    message = _("HSP Timeout Exception: %(msg)s")
+
+
+class HSPItemNotFoundException(ShareBackendException):
+    message = _("HSP Item Not Found Exception: %(msg)s")
+
+
+class NexentaException(ShareBackendException):
+    message = _("Exception due to Nexenta failure. %(reason)s")

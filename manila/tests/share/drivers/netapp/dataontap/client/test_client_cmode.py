@@ -189,7 +189,7 @@ class NetAppClientCmodeTestCase(test.TestCase):
             max_page_length=10)
 
         num_records = result.get_child_content('num-records')
-        self.assertEqual('1', num_records)
+        self.assertEqual('4', num_records)
 
         args = copy.deepcopy(storage_disk_get_iter_args)
         args['max-records'] = 10
@@ -869,7 +869,8 @@ class NetAppClientCmodeTestCase(test.TestCase):
                                              fake.PORT,
                                              fake.VSERVER_NAME,
                                              fake.LIF_NAME,
-                                             fake.IPSPACE_NAME)
+                                             fake.IPSPACE_NAME,
+                                             fake.MTU)
 
         if use_vlans:
             self.client._create_vlan.assert_called_with(
@@ -880,7 +881,7 @@ class NetAppClientCmodeTestCase(test.TestCase):
         if broadcast_domains_supported:
             self.client._ensure_broadcast_domain_for_port.assert_called_with(
                 fake.NODE_NAME, fake.VLAN_PORT if use_vlans else fake.PORT,
-                ipspace=fake.IPSPACE_NAME)
+                fake.MTU, ipspace=fake.IPSPACE_NAME)
         else:
             self.assertFalse(
                 self.client._ensure_broadcast_domain_for_port.called)
@@ -993,14 +994,17 @@ class NetAppClientCmodeTestCase(test.TestCase):
                          '_broadcast_domain_exists',
                          mock.Mock(return_value=True))
         self.mock_object(self.client, '_create_broadcast_domain')
+        self.mock_object(self.client, '_modify_broadcast_domain')
         self.mock_object(self.client, '_add_port_to_broadcast_domain')
 
         self.client._ensure_broadcast_domain_for_port(
-            fake.NODE_NAME, fake.PORT, domain=fake.BROADCAST_DOMAIN,
+            fake.NODE_NAME, fake.PORT, fake.MTU, domain=fake.BROADCAST_DOMAIN,
             ipspace=fake.IPSPACE_NAME)
 
-        self.client._get_broadcast_domain_for_port.assert_has_calls([
-            mock.call(fake.NODE_NAME, fake.PORT)])
+        self.client._get_broadcast_domain_for_port.assert_called_once_with(
+            fake.NODE_NAME, fake.PORT)
+        self.client._modify_broadcast_domain.assert_called_once_with(
+            fake.BROADCAST_DOMAIN, fake.IPSPACE_NAME, fake.MTU)
         self.assertFalse(self.client._broadcast_domain_exists.called)
         self.assertFalse(self.client._create_broadcast_domain.called)
         self.assertFalse(self.client._add_port_to_broadcast_domain.called)
@@ -1018,24 +1022,26 @@ class NetAppClientCmodeTestCase(test.TestCase):
                          '_broadcast_domain_exists',
                          mock.Mock(return_value=True))
         self.mock_object(self.client, '_create_broadcast_domain')
+        self.mock_object(self.client, '_modify_broadcast_domain')
         self.mock_object(self.client, '_remove_port_from_broadcast_domain')
         self.mock_object(self.client, '_add_port_to_broadcast_domain')
 
         self.client._ensure_broadcast_domain_for_port(
             fake.NODE_NAME, fake.PORT, domain=fake.BROADCAST_DOMAIN,
-            ipspace=fake.IPSPACE_NAME)
+            ipspace=fake.IPSPACE_NAME, mtu=fake.MTU)
 
-        self.client._get_broadcast_domain_for_port.assert_has_calls([
-            mock.call(fake.NODE_NAME, fake.PORT)])
-        self.client._remove_port_from_broadcast_domain.assert_has_calls([
-            mock.call(fake.NODE_NAME, fake.PORT, 'other_domain',
-                      fake.IPSPACE_NAME)])
-        self.client._broadcast_domain_exists.assert_has_calls([
-            mock.call(fake.BROADCAST_DOMAIN, fake.IPSPACE_NAME)])
+        self.client._get_broadcast_domain_for_port.assert_called_once_with(
+            fake.NODE_NAME, fake.PORT)
+        self.client._remove_port_from_broadcast_domain.assert_called_once_with(
+            fake.NODE_NAME, fake.PORT, 'other_domain', fake.IPSPACE_NAME)
+        self.client._broadcast_domain_exists.assert_called_once_with(
+            fake.BROADCAST_DOMAIN, fake.IPSPACE_NAME)
         self.assertFalse(self.client._create_broadcast_domain.called)
-        self.client._add_port_to_broadcast_domain.assert_has_calls([
-            mock.call(fake.NODE_NAME, fake.PORT, fake.BROADCAST_DOMAIN,
-                      fake.IPSPACE_NAME)])
+        self.client._modify_broadcast_domain.assert_called_once_with(
+            fake.BROADCAST_DOMAIN, fake.IPSPACE_NAME, fake.MTU)
+        self.client._add_port_to_broadcast_domain.assert_called_once_with(
+            fake.NODE_NAME, fake.PORT, fake.BROADCAST_DOMAIN,
+            fake.IPSPACE_NAME)
 
     def test_ensure_broadcast_domain_for_port_no_domain(self):
 
@@ -1050,23 +1056,25 @@ class NetAppClientCmodeTestCase(test.TestCase):
                          '_broadcast_domain_exists',
                          mock.Mock(return_value=False))
         self.mock_object(self.client, '_create_broadcast_domain')
+        self.mock_object(self.client, '_modify_broadcast_domain')
         self.mock_object(self.client, '_remove_port_from_broadcast_domain')
         self.mock_object(self.client, '_add_port_to_broadcast_domain')
 
         self.client._ensure_broadcast_domain_for_port(
             fake.NODE_NAME, fake.PORT, domain=fake.BROADCAST_DOMAIN,
-            ipspace=fake.IPSPACE_NAME)
+            ipspace=fake.IPSPACE_NAME, mtu=fake.MTU)
 
-        self.client._get_broadcast_domain_for_port.assert_has_calls([
-            mock.call(fake.NODE_NAME, fake.PORT)])
+        self.client._get_broadcast_domain_for_port.assert_called_once_with(
+            fake.NODE_NAME, fake.PORT)
         self.assertFalse(self.client._remove_port_from_broadcast_domain.called)
-        self.client._broadcast_domain_exists.assert_has_calls([
-            mock.call(fake.BROADCAST_DOMAIN, fake.IPSPACE_NAME)])
-        self.client._create_broadcast_domain.assert_has_calls([
-            mock.call(fake.BROADCAST_DOMAIN, fake.IPSPACE_NAME)])
-        self.client._add_port_to_broadcast_domain.assert_has_calls([
-            mock.call(fake.NODE_NAME, fake.PORT, fake.BROADCAST_DOMAIN,
-                      fake.IPSPACE_NAME)])
+        self.client._broadcast_domain_exists.assert_called_once_with(
+            fake.BROADCAST_DOMAIN, fake.IPSPACE_NAME)
+        self.client._create_broadcast_domain.assert_called_once_with(
+            fake.BROADCAST_DOMAIN, fake.IPSPACE_NAME, fake.MTU)
+        self.assertFalse(self.client._modify_broadcast_domain.called)
+        self.client._add_port_to_broadcast_domain.assert_called_once_with(
+            fake.NODE_NAME, fake.PORT, fake.BROADCAST_DOMAIN,
+            fake.IPSPACE_NAME)
 
     def test_get_broadcast_domain_for_port(self):
 
@@ -1177,7 +1185,7 @@ class NetAppClientCmodeTestCase(test.TestCase):
 
         result = self.client._create_broadcast_domain(fake.BROADCAST_DOMAIN,
                                                       fake.IPSPACE_NAME,
-                                                      mtu=fake.MTU)
+                                                      fake.MTU)
 
         net_port_broadcast_domain_create_args = {
             'ipspace': fake.IPSPACE_NAME,
@@ -1188,6 +1196,24 @@ class NetAppClientCmodeTestCase(test.TestCase):
         self.client.send_request.assert_has_calls([
             mock.call('net-port-broadcast-domain-create',
                       net_port_broadcast_domain_create_args)])
+
+    def test_modify_broadcast_domain(self):
+
+        self.mock_object(self.client, 'send_request')
+
+        result = self.client._modify_broadcast_domain(fake.BROADCAST_DOMAIN,
+                                                      fake.IPSPACE_NAME,
+                                                      fake.MTU)
+
+        net_port_broadcast_domain_modify_args = {
+            'ipspace': fake.IPSPACE_NAME,
+            'broadcast-domain': fake.BROADCAST_DOMAIN,
+            'mtu': fake.MTU,
+        }
+        self.assertIsNone(result)
+        self.client.send_request.assert_called_once_with(
+            'net-port-broadcast-domain-modify',
+            net_port_broadcast_domain_modify_args)
 
     def test_delete_broadcast_domain(self):
 
@@ -1927,10 +1953,46 @@ class NetAppClientCmodeTestCase(test.TestCase):
     def test_enable_nfs(self):
 
         self.mock_object(self.client, 'send_request')
+        self.mock_object(self.client, '_enable_nfs_protocols')
+        self.mock_object(self.client, '_create_default_nfs_export_rule')
 
-        self.client.enable_nfs()
+        self.client.enable_nfs(fake.NFS_VERSIONS)
 
-        nfs_service_modify_args = {'is-nfsv40-enabled': 'true'}
+        self.client.send_request.assert_called_once_with('nfs-enable')
+        self.client._enable_nfs_protocols.assert_called_once_with(
+            fake.NFS_VERSIONS)
+        self.client._create_default_nfs_export_rule.assert_called_once_with()
+
+    @ddt.data((True, True, True), (True, False, False), (False, True, True))
+    @ddt.unpack
+    def test_enable_nfs_protocols(self, v3, v40, v41):
+
+        self.mock_object(self.client, 'send_request')
+
+        versions = []
+        if v3:
+            versions.append('nfs3')
+        if v40:
+            versions.append('nfs4.0')
+        if v41:
+            versions.append('nfs4.1')
+
+        self.client._enable_nfs_protocols(versions)
+
+        nfs_service_modify_args = {
+            'is-nfsv3-enabled': 'true' if v3 else 'false',
+            'is-nfsv40-enabled': 'true' if v40 else 'false',
+            'is-nfsv41-enabled': 'true' if v41 else 'false',
+        }
+        self.client.send_request.assert_called_once_with(
+            'nfs-service-modify', nfs_service_modify_args)
+
+    def test_create_default_nfs_export_rule(self):
+
+        self.mock_object(self.client, 'send_request')
+
+        self.client._create_default_nfs_export_rule()
+
         export_rule_create_args = {
             'client-match': '0.0.0.0/0',
             'policy-name': 'default',
@@ -1941,11 +2003,8 @@ class NetAppClientCmodeTestCase(test.TestCase):
                 'security-flavor': 'never'
             }
         }
-
-        self.client.send_request.assert_has_calls([
-            mock.call('nfs-enable'),
-            mock.call('nfs-service-modify', nfs_service_modify_args),
-            mock.call('export-rule-create', export_rule_create_args)])
+        self.client.send_request.assert_called_once_with(
+            'export-rule-create', export_rule_create_args)
 
     def test_configure_ldap(self):
 
@@ -2981,6 +3040,7 @@ class NetAppClientCmodeTestCase(test.TestCase):
     def test_create_volume_clone(self):
 
         self.mock_object(self.client, 'send_request')
+        self.mock_object(self.client, 'split_volume_clone')
 
         self.client.create_volume_clone(fake.SHARE_NAME,
                                         fake.PARENT_SHARE_NAME,
@@ -2995,6 +3055,33 @@ class NetAppClientCmodeTestCase(test.TestCase):
 
         self.client.send_request.assert_has_calls([
             mock.call('volume-clone-create', volume_clone_create_args)])
+        self.assertFalse(self.client.split_volume_clone.called)
+
+    @ddt.data(True, False)
+    def test_create_volume_clone_split(self, split):
+
+        self.mock_object(self.client, 'send_request')
+        self.mock_object(self.client, 'split_volume_clone')
+
+        self.client.create_volume_clone(fake.SHARE_NAME,
+                                        fake.PARENT_SHARE_NAME,
+                                        fake.PARENT_SNAPSHOT_NAME,
+                                        split=split)
+
+        volume_clone_create_args = {
+            'volume': fake.SHARE_NAME,
+            'parent-volume': fake.PARENT_SHARE_NAME,
+            'parent-snapshot': fake.PARENT_SNAPSHOT_NAME,
+            'junction-path': '/%s' % fake.SHARE_NAME
+        }
+
+        self.client.send_request.assert_has_calls([
+            mock.call('volume-clone-create', volume_clone_create_args)])
+        if split:
+            self.client.split_volume_clone.assert_called_once_with(
+                fake.SHARE_NAME)
+        else:
+            self.assertFalse(self.client.split_volume_clone.called)
 
     @ddt.data(None,
               mock.Mock(side_effect=netapp_api.NaApiError(
@@ -4255,90 +4342,185 @@ class NetAppClientCmodeTestCase(test.TestCase):
             mock.call('ems-autosupport-log', fake.EMS_MESSAGE)])
         self.assertEqual(1, client_cmode.LOG.warning.call_count)
 
-    def test_get_aggregate_raid_types(self):
+    def test_get_aggregate_none_specified(self):
 
-        api_response = netapp_api.NaElement(fake.AGGR_GET_RAID_TYPE_RESPONSE)
+        result = self.client.get_aggregate('')
+
+        self.assertEqual({}, result)
+
+    def test_get_aggregate(self):
+
+        api_response = netapp_api.NaElement(
+            fake.AGGR_GET_ITER_SSC_RESPONSE).get_child_by_name(
+            'attributes-list').get_children()
         self.mock_object(self.client,
-                         'send_iter_request',
+                         '_get_aggregates',
                          mock.Mock(return_value=api_response))
 
-        result = self.client.get_aggregate_raid_types(
-            fake.SHARE_AGGREGATE_NAMES)
+        result = self.client.get_aggregate(fake.SHARE_AGGREGATE_NAME)
 
-        aggr_get_iter_args = {
-            'query': {
-                'aggr-attributes': {
-                    'aggregate-name': '|'.join(fake.SHARE_AGGREGATE_NAMES),
-                }
+        desired_attributes = {
+            'aggr-attributes': {
+                'aggregate-name': None,
+                'aggr-raid-attributes': {
+                    'raid-type': None,
+                    'is-hybrid': None,
+                },
             },
-            'desired-attributes': {
-                'aggr-attributes': {
-                    'aggregate-name': None,
-                    'aggr-raid-attributes': {
-                        'raid-type': None,
-                    }
-                }
-            }
         }
+        self.client._get_aggregates.assert_has_calls([
+            mock.call(
+                aggregate_names=[fake.SHARE_AGGREGATE_NAME],
+                desired_attributes=desired_attributes)])
 
         expected = {
-            fake.SHARE_AGGREGATE_NAMES[0]:
-            fake.SHARE_AGGREGATE_RAID_TYPES[0],
-            fake.SHARE_AGGREGATE_NAMES[1]:
-            fake.SHARE_AGGREGATE_RAID_TYPES[1]
+            'name': fake.SHARE_AGGREGATE_NAME,
+            'raid-type': 'raid_dp',
+            'is-hybrid': False,
         }
+        self.assertEqual(expected, result)
 
-        self.client.send_iter_request.assert_has_calls([
-            mock.call('aggr-get-iter', aggr_get_iter_args)])
-        self.assertDictEqual(expected, result)
-
-    def test_get_aggregate_raid_types_not_found(self):
+    def test_get_aggregate_not_found(self):
 
         api_response = netapp_api.NaElement(fake.NO_RECORDS_RESPONSE)
         self.mock_object(self.client,
-                         'send_iter_request',
+                         'send_request',
                          mock.Mock(return_value=api_response))
 
-        result = self.client.get_aggregate_raid_types(
-            fake.SHARE_AGGREGATE_NAMES)
+        result = self.client.get_aggregate(fake.SHARE_AGGREGATE_NAME)
 
-        self.assertDictEqual({}, result)
+        self.assertEqual({}, result)
 
-    def test_get_aggregate_disk_types(self):
+    def test_get_aggregate_api_error(self):
+
+        self.mock_object(self.client,
+                         'send_request',
+                         mock.Mock(side_effect=self._mock_api_error()))
+
+        result = self.client.get_aggregate(fake.SHARE_AGGREGATE_NAME)
+
+        self.assertEqual({}, result)
+
+    @ddt.data({'types': {'FCAL'}, 'expected': ['FCAL']},
+              {'types': {'SATA', 'SSD'}, 'expected': ['SATA', 'SSD']},)
+    @ddt.unpack
+    def test_get_aggregate_disk_types(self, types, expected):
+
+        mock_get_aggregate_disk_types = self.mock_object(
+            self.client, '_get_aggregate_disk_types',
+            mock.Mock(return_value=types))
+
+        result = self.client.get_aggregate_disk_types(
+            fake.SHARE_AGGREGATE_NAME)
+
+        self.assertItemsEqual(expected, result)
+        mock_get_aggregate_disk_types.assert_called_once_with(
+            fake.SHARE_AGGREGATE_NAME)
+
+    def test_get_aggregate_disk_types_not_found(self):
+
+        mock_get_aggregate_disk_types = self.mock_object(
+            self.client, '_get_aggregate_disk_types',
+            mock.Mock(return_value=set()))
+
+        result = self.client.get_aggregate_disk_types(
+            fake.SHARE_AGGREGATE_NAME)
+
+        self.assertIsNone(result)
+        mock_get_aggregate_disk_types.assert_called_once_with(
+            fake.SHARE_AGGREGATE_NAME)
+
+    def test_get_aggregate_disk_types_shared(self):
+
+        self.client.features.add_feature('ADVANCED_DISK_PARTITIONING')
+        mock_get_aggregate_disk_types = self.mock_object(
+            self.client, '_get_aggregate_disk_types',
+            mock.Mock(side_effect=[set(['SSD']), set(['SATA'])]))
+
+        result = self.client.get_aggregate_disk_types(
+            fake.SHARE_AGGREGATE_NAME)
+
+        self.assertIsInstance(result, list)
+        self.assertItemsEqual(['SATA', 'SSD'], result)
+        mock_get_aggregate_disk_types.assert_has_calls([
+            mock.call(fake.SHARE_AGGREGATE_NAME),
+            mock.call(fake.SHARE_AGGREGATE_NAME, shared=True),
+        ])
+
+    @ddt.data({
+        'shared': False,
+        'query_disk_raid_info': {
+            'disk-aggregate-info': {
+                'aggregate-name': fake.SHARE_AGGREGATE_NAME,
+            },
+        },
+    }, {
+        'shared': True,
+        'query_disk_raid_info': {
+            'disk-shared-info': {
+                'aggregate-list': {
+                    'shared-aggregate-info': {
+                        'aggregate-name':
+                        fake.SHARE_AGGREGATE_NAME,
+                    },
+                },
+            },
+        },
+    })
+    @ddt.unpack
+    def test__get_aggregate_disk_types_ddt(self, shared, query_disk_raid_info):
 
         api_response = netapp_api.NaElement(
             fake.STORAGE_DISK_GET_ITER_RESPONSE)
         self.mock_object(self.client,
-                         'send_request',
+                         'send_iter_request',
                          mock.Mock(return_value=api_response))
 
-        result = self.client.get_aggregate_disk_types(
-            fake.SHARE_AGGREGATE_NAMES)
+        result = self.client._get_aggregate_disk_types(
+            fake.SHARE_AGGREGATE_NAME, shared=shared)
 
-        expected = {
-            fake.SHARE_AGGREGATE_NAMES[0]:
-            fake.SHARE_AGGREGATE_DISK_TYPE,
-            fake.SHARE_AGGREGATE_NAMES[1]:
-            fake.SHARE_AGGREGATE_DISK_TYPE
+        storage_disk_get_iter_args = {
+            'query': {
+                'storage-disk-info': {
+                    'disk-raid-info': query_disk_raid_info,
+                },
+            },
+            'desired-attributes': {
+                'storage-disk-info': {
+                    'disk-raid-info': {
+                        'effective-disk-type': None,
+                    },
+                },
+            },
         }
+        self.client.send_iter_request.assert_called_once_with(
+            'storage-disk-get-iter', storage_disk_get_iter_args)
 
-        self.assertEqual(len(fake.SHARE_AGGREGATE_NAMES),
-                         self.client.send_request.call_count)
-        self.assertDictEqual(expected, result)
+        expected = set(fake.SHARE_AGGREGATE_DISK_TYPES)
+        self.assertEqual(expected, result)
 
-    def test_get_aggregate_disk_types_not_found(self):
+    def test__get_aggregate_disk_types_not_found(self):
 
         api_response = netapp_api.NaElement(fake.NO_RECORDS_RESPONSE)
         self.mock_object(self.client,
-                         'send_request',
+                         'send_iter_request',
                          mock.Mock(return_value=api_response))
 
-        result = self.client.get_aggregate_disk_types(
-            fake.SHARE_AGGREGATE_NAMES)
+        result = self.client._get_aggregate_disk_types(
+            fake.SHARE_AGGREGATE_NAME)
 
-        self.assertEqual(len(fake.SHARE_AGGREGATE_NAMES),
-                         self.client.send_request.call_count)
-        self.assertDictEqual({}, result)
+        self.assertEqual(set(), result)
+
+    def test__get_aggregate_disk_types_api_error(self):
+
+        self.mock_object(self.client,
+                         'send_iter_request',
+                         mock.Mock(side_effect=self._mock_api_error()))
+
+        result = self.client._get_aggregate_disk_types(
+            fake.SHARE_AGGREGATE_NAME)
+
+        self.assertEqual(set([]), result)
 
     def test_check_for_cluster_credentials(self):
 

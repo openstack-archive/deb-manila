@@ -75,6 +75,12 @@ function configure_default_backends {
         iniset $MANILA_CONF $group_name service_instance_user $MANILA_SERVICE_INSTANCE_USER
         iniset $MANILA_CONF $group_name driver_handles_share_servers True
 
+        if [ "$SHARE_DRIVER" == $MANILA_CONTAINER_DRIVER ]; then
+            iniset $MANILA_CONF $group_name network_api_class $MANILA_NETWORK_API_CLASS
+            iniset $MANILA_CONF $group_name neutron_host_id $(hostname)
+            iniset $MANILA_CONF $group_name neutron_vnic_type $MANILA_NEUTRON_VNIC_TYPE
+        fi
+
         if [ $(trueorfalse False MANILA_USE_SERVICE_INSTANCE_PASSWORD) == True ]; then
             iniset $MANILA_CONF $group_name service_instance_password $MANILA_SERVICE_INSTANCE_PASSWORD
         fi
@@ -176,6 +182,10 @@ function configure_manila {
     iniset $MANILA_CONF DEFAULT state_path $MANILA_STATE_PATH
     iniset $MANILA_CONF DEFAULT default_share_type $MANILA_DEFAULT_SHARE_TYPE
 
+    if ! [[ -z $MANILA_SHARE_MIGRATION_PERIOD_TASK_INTERVAL ]]; then
+        iniset $MANILA_CONF DEFAULT migration_driver_continue_update_interval $MANILA_SHARE_MIGRATION_PERIOD_TASK_INTERVAL
+    fi
+
     iniset $MANILA_CONF DEFAULT enabled_share_protocols $MANILA_ENABLED_SHARE_PROTOCOLS
 
     iniset $MANILA_CONF oslo_concurrency lock_path $MANILA_LOCK_PATH
@@ -271,6 +281,18 @@ function create_manila_service_keypair {
 }
 
 
+function is_driver_enabled {
+    driver_name=$1
+    for BE in ${MANILA_ENABLED_BACKENDS//,/ }; do
+        share_driver=$(iniget $MANILA_CONF $BE share_driver)
+        if [ "$share_driver" == "$driver_name" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+
 # create_service_share_servers - creates service Nova VMs, one per generic
 # driver, and only if it is configured to mode without handling of share servers.
 function create_service_share_servers {
@@ -300,21 +322,23 @@ function create_service_share_servers {
                 iniset $MANILA_CONF $BE tenant_net_name_or_ip private
             else
                 if is_service_enabled neutron; then
-                    if [ $created_admin_network == false ]; then
-                        project_id=$(openstack project show $SERVICE_PROJECT_NAME -c id -f value)
-                        local admin_net_id=$( neutron net-list --all-tenants | grep " admin_net " | get_field 1 )
-                        if [[ -z $admin_net_id ]]; then
-                            admin_net_id=$(neutron net-create --tenant-id $project_id admin_net | grep ' id ' | get_field 2)
-                        fi
+                    if ! [[ -z $MANILA_ADMIN_NET_RANGE ]]; then
+                        if [ $created_admin_network == false ]; then
+                            project_id=$(openstack project show $SERVICE_PROJECT_NAME -c id -f value)
+                            local admin_net_id=$( neutron net-list --all-tenants | grep " admin_net " | get_field 1 )
+                            if [[ -z $admin_net_id ]]; then
+                                admin_net_id=$(neutron net-create --tenant-id $project_id admin_net | grep ' id ' | get_field 2)
+                            fi
 
-                        local admin_subnet_id=$( neutron subnet-list --all-tenants | grep " admin_subnet " | get_field 1 )
-                        if [[ -z $admin_subnet_id ]]; then
-                            admin_subnet_id=$(neutron subnet-create --tenant-id $project_id --ip_version 4 --no-gateway --name admin_subnet --subnetpool None $admin_net_id $FIXED_RANGE | grep ' id ' | get_field 2)
+                            local admin_subnet_id=$( neutron subnet-list --all-tenants | grep " admin_subnet " | get_field 1 )
+                            if [[ -z $admin_subnet_id ]]; then
+                                admin_subnet_id=$(neutron subnet-create --tenant-id $project_id --ip_version 4 --no-gateway --name admin_subnet --subnetpool None $admin_net_id $MANILA_ADMIN_NET_RANGE | grep ' id ' | get_field 2)
+                            fi
+                            created_admin_network=true
                         fi
-                        created_admin_network=true
+                        iniset $MANILA_CONF $BE admin_network_id $admin_net_id
+                        iniset $MANILA_CONF $BE admin_subnet_id $admin_subnet_id
                     fi
-                    iniset $MANILA_CONF $BE admin_network_id $admin_net_id
-                    iniset $MANILA_CONF $BE admin_subnet_id $admin_subnet_id
                 fi
             fi
         fi
@@ -331,7 +355,9 @@ function configure_data_service_generic_driver {
         if [[ $(trueorfalse False driver_handles_share_servers) == False ]]; then
             iniset $MANILA_CONF DEFAULT data_node_access_ip $PUBLIC_NETWORK_GATEWAY
         else
-            iniset $MANILA_CONF DEFAULT data_node_access_ip $FIXED_RANGE
+            if ! [[ -z $MANILA_DATA_NODE_IP ]]; then
+                iniset $MANILA_CONF DEFAULT data_node_access_ip $MANILA_DATA_NODE_IP
+            fi
         fi
     fi
 }
@@ -443,13 +469,38 @@ function create_default_share_type {
 
     local type_exists=$( manila type-list | grep " $MANILA_DEFAULT_SHARE_TYPE " )
     if [[ -z $type_exists ]]; then
-        manila type-create $MANILA_DEFAULT_SHARE_TYPE $driver_handles_share_servers
+        local command_args="$MANILA_DEFAULT_SHARE_TYPE $driver_handles_share_servers"
+        #if is_driver_enabled $MANILA_CONTAINER_DRIVER; then
+        #    # TODO(aovchinnikov): Remove this condition when Container driver supports
+        #    # snapshots
+        #    command_args="$command_args --snapshot_support false"
+        #fi
+        manila type-create $command_args
     fi
     if [[ $MANILA_DEFAULT_SHARE_TYPE_EXTRA_SPECS ]]; then
         manila type-key $MANILA_DEFAULT_SHARE_TYPE set $MANILA_DEFAULT_SHARE_TYPE_EXTRA_SPECS
     fi
 }
 
+
+# configure_backing_file - Set up backing file for LVM
+function configure_backing_file {
+    if ! sudo vgs $SHARE_GROUP; then
+        if [ "$CONFIGURE_BACKING_FILE" = "True" ]; then
+            SHARE_BACKING_FILE=${SHARE_BACKING_FILE:-$DATA_DIR/${SHARE_GROUP}-backing-file}
+            # Only create if the file doesn't already exists
+            [[ -f $SHARE_BACKING_FILE ]] || truncate -s $SHARE_BACKING_FILE_SIZE $SHARE_BACKING_FILE
+            DEV=`sudo losetup -f --show $SHARE_BACKING_FILE`
+        else
+            DEV=$SHARE_BACKING_FILE
+        fi
+        # Only create if the loopback device doesn't contain $SHARE_GROUP
+        if ! sudo vgs $SHARE_GROUP; then sudo vgcreate $SHARE_GROUP $DEV; fi
+    fi
+
+    mkdir -p $MANILA_STATE_PATH/shares
+    mkdir -p /tmp/shares
+}
 
 # init_manila - Initializes database and creates manila dir if absent
 function init_manila {
@@ -480,21 +531,14 @@ function init_manila {
             #
             # By default, the backing file is 8G in size, and is stored in ``/opt/stack/data``.
 
-            if ! sudo vgs $SHARE_GROUP; then
-                if [ "$CONFIGURE_BACKING_FILE" = "True" ]; then
-                    SHARE_BACKING_FILE=${SHARE_BACKING_FILE:-$DATA_DIR/${SHARE_GROUP}-backing-file}
-                    # Only create if the file doesn't already exists
-                    [[ -f $SHARE_BACKING_FILE ]] || truncate -s $SHARE_BACKING_FILE_SIZE $SHARE_BACKING_FILE
-                    DEV=`sudo losetup -f --show $SHARE_BACKING_FILE`
-                else
-                    DEV=$SHARE_BACKING_FILE
-                fi
-                # Only create if the loopback device doesn't contain $SHARE_GROUP
-                if ! sudo vgs $SHARE_GROUP; then sudo vgcreate $SHARE_GROUP $DEV; fi
-            fi
-
-            mkdir -p $MANILA_STATE_PATH/shares
+            configure_backing_file
         fi
+    elif [ "$SHARE_DRIVER" == $MANILA_CONTAINER_DRIVER ]; then
+        if is_service_enabled m-shr; then
+            SHARE_GROUP=$MANILA_CONTAINER_VOLUME_GROUP_NAME
+            configure_backing_file
+        fi
+
     elif [ "$SHARE_DRIVER" == "manila.share.drivers.zfsonlinux.driver.ZFSonLinuxShareDriver" ]; then
         if is_service_enabled m-shr; then
             mkdir -p $MANILA_ZFSONLINUX_BACKEND_FILES_CONTAINER_DIR
@@ -578,7 +622,15 @@ function install_manila {
                 # NOTE(vponomaryov): following installation is valid for Ubuntu 'trusty'.
                 sudo apt-get install -y software-properties-common
                 sudo apt-add-repository --yes ppa:zfs-native/stable
+
+                # Workaround for bug #1609696
+                sudo apt-mark hold grub*
+
                 sudo apt-get -y -q update && sudo apt-get -y -q upgrade
+
+                # Workaround for bug #1609696
+                sudo apt-mark unhold grub*
+
                 sudo apt-get install -y linux-headers-generic
                 sudo apt-get install -y build-essential
                 sudo apt-get install -y ubuntu-zfs
@@ -588,6 +640,20 @@ function install_manila {
                     "of ZFS packages for non-'Ubuntu-trusty' distros. "\
                     "Please, install it first by other means or add its support "\
                     "for your distro."
+                exit 1
+            fi
+        fi
+    elif [ "$SHARE_DRIVER" == $MANILA_CONTAINER_DRIVER ]; then
+        if is_service_enabled m-shr; then
+            echo "m-shr service is enabled"
+            if is_ubuntu; then
+                echo "Installing docker...."
+                install_docker_ubuntu
+                echo "Importing docker image"
+                import_docker_service_image_ubuntu
+            else
+                echo "Manila Devstack plugin does not support Container Driver on  "\
+                     " distros other than Ubuntu."
                 exit 1
             fi
         fi
@@ -688,9 +754,61 @@ function update_tempest {
     fi
 }
 
+function install_docker_ubuntu {
+    sudo apt-get update
+    install_package apparmor
+    install_package docker.io
+}
+
+function download_image {
+    local image_url=$1
+
+    local image image_fname
+
+    image_fname=`basename "$image_url"`
+    if [[ $image_url != file* ]]; then
+        # Downloads the image (uec ami+akistyle), then extracts it.
+        if [[ ! -f $FILES/$image_fname || "$(stat -c "%s" $FILES/$image_fname)" = "0" ]]; then
+            wget --progress=dot:giga -c $image_url -O $FILES/$image_fname
+            if [[ $? -ne 0 ]]; then
+                echo "Not found: $image_url"
+                return
+            fi
+        fi
+        image="$FILES/${image_fname}"
+    else
+        # File based URL (RFC 1738): ``file://host/path``
+        # Remote files are not considered here.
+        # unix: ``file:///home/user/path/file``
+        # windows: ``file:///C:/Documents%20and%20Settings/user/path/file``
+        image=$(echo $image_url | sed "s/^file:\/\///g")
+        if [[ ! -f $image || "$(stat -c "%s" $image)" == "0" ]]; then
+            echo "Not found: $image_url"
+            return
+        fi
+    fi
+}
+
+function import_docker_service_image_ubuntu {
+    GZIPPED_IMG_NAME=`basename "$MANILA_DOCKER_IMAGE_URL"`
+    IMG_NAME_LOAD=${GZIPPED_IMG_NAME%.*}
+    LOCAL_IMG_NAME=${IMG_NAME_LOAD%.*}
+    if [[ "$(sudo docker images -q $LOCAL_IMG_NAME)" == "" ]]; then
+        download_image $MANILA_DOCKER_IMAGE_URL
+        # Import image in Docker
+        gzip -d $FILES/$GZIPPED_IMG_NAME
+        sudo docker load --input $FILES/$IMG_NAME_LOAD
+    fi
+}
+
+function remove_docker_service_image {
+    sudo docker rmi $MANILA_DOCKER_IMAGE_ALIAS
+}
+
+
 function install_libraries {
     if [ $(trueorfalse False MANILA_MULTI_BACKEND) == True ]; then
-        if [ $(trueorfalse True RUN_MANILA_MIGRATION_TESTS) == True ]; then
+        if [ $(trueorfalse True RUN_MANILA_HOST_ASSISTED_MIGRATION_TESTS) == True ]; then
             if is_ubuntu; then
                 install_package nfs-common
             else

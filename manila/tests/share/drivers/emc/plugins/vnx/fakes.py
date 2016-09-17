@@ -247,6 +247,21 @@ class StorageObjectTestData(object):
             '</Fault> '
         )
 
+    @response
+    def resp_need_retry(self):
+        return ('<TaskResponse taskId="915525">'
+                '<Status maxSeverity = "error">'
+                '<Problem messageCode = "13421840537" component = "fake"'
+                '    message = "unable to acquire lock(s), try later"'
+                '    severity = "error" >'
+                '<Description> fake desp. </Description>'
+                '<Action>fake action </Action>'
+                '</Problem></Status></TaskResponse>')
+
+    @start_task
+    def req_fake_start_task(self):
+        return '<StartFake name="foo"></StartFake>'
+
 
 class FileSystemTestData(StorageObjectTestData):
     def __init__(self):
@@ -1024,7 +1039,7 @@ class MoverTestData(StorageObjectTestData):
             '    Link: Down\n'
             '    0:  cge-1-3  IRQ: 27\n'
             '    speed=auto duplex=auto txflowctl=disable rxflowctl=disable\n'
-            '    Link: Down\n'
+            '    Link: Up\n'
             'Slot: 4\n'
             '  PLX PCI-Express Switch  Controller\n'
             '    1:  PLX PEX8648  IRQ: 10\n'

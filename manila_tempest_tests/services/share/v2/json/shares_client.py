@@ -14,6 +14,7 @@
 #    under the License.
 
 import json
+import six
 import time
 
 from six.moves.urllib import parse as urlparse
@@ -552,6 +553,68 @@ class SharesV2Client(shares_client.SharesClient):
 
 ###############
 
+    def get_snapshot_instance(self, instance_id, version=LATEST_MICROVERSION):
+        resp, body = self.get("snapshot-instances/%s" % instance_id,
+                              version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def list_snapshot_instances(self, detail=False, snapshot_id=None,
+                                version=LATEST_MICROVERSION):
+        """Get list of share snapshot instances."""
+        uri = "snapshot-instances%s" % ('/detail' if detail else '')
+        if snapshot_id is not None:
+            uri += '?snapshot_id=%s' % snapshot_id
+        resp, body = self.get(uri, version=version)
+        self.expected_success(200, resp.status)
+        return self._parse_resp(body)
+
+    def reset_snapshot_instance_status(self, instance_id,
+                                       status=constants.STATUS_AVAILABLE,
+                                       version=LATEST_MICROVERSION):
+        """Reset the status."""
+        uri = 'snapshot-instances/%s/action' % instance_id
+        post_body = {
+            'reset_status': {
+                'status': status
+            }
+        }
+        body = json.dumps(post_body)
+        resp, body = self.post(uri, body, extra_headers=True, version=version)
+        self.expected_success(202, resp.status)
+        return self._parse_resp(body)
+
+    def wait_for_snapshot_instance_status(self, instance_id, expected_status):
+        """Waits for a snapshot instance status to reach a given status."""
+        body = self.get_snapshot_instance(instance_id)
+        instance_status = body['status']
+        start = int(time.time())
+
+        while instance_status != expected_status:
+            time.sleep(self.build_interval)
+            body = self.get_snapshot_instance(instance_id)
+            instance_status = body['status']
+            if instance_status == expected_status:
+                return
+            if 'error' in instance_status:
+                raise share_exceptions.SnapshotInstanceBuildErrorException(
+                    id=instance_id)
+
+            if int(time.time()) - start >= self.build_timeout:
+                message = ('The status of snapshot instance %(id)s failed to '
+                           'reach %(expected_status)s status within the '
+                           'required time (%(time)ss). Current '
+                           'status: %(current_status)s.' %
+                           {
+                               'expected_status': expected_status,
+                               'time': self.build_timeout,
+                               'id': instance_id,
+                               'current_status': instance_status,
+                           })
+                raise exceptions.TimeoutException(message)
+
+###############
+
     def _get_access_action_name(self, version, action):
         if utils.is_microversion_gt(version, "2.6"):
             return action.split('os-')[-1]
@@ -626,8 +689,11 @@ class SharesV2Client(shares_client.SharesClient):
 
 ###############
 
-    def list_share_types(self, params=None, version=LATEST_MICROVERSION):
+    def list_share_types(self, params=None, default=False,
+                         version=LATEST_MICROVERSION):
         uri = 'types'
+        if default:
+            uri += '/default'
         if params is not None:
             uri += '?%s' % urlparse.urlencode(params)
         resp, body = self.get(uri, version=version)
@@ -951,22 +1017,25 @@ class SharesV2Client(shares_client.SharesClient):
 
 ###############
 
-    def migrate_share(self, share_id, host, notify,
-                      version=LATEST_MICROVERSION, action_name=None):
-        if action_name is None:
-            if utils.is_microversion_lt(version, "2.7"):
-                action_name = 'os-migrate_share'
-            elif utils.is_microversion_lt(version, "2.15"):
-                action_name = 'migrate_share'
-            else:
-                action_name = 'migration_start'
-        post_body = {
-            action_name: {
+    def migrate_share(self, share_id, host,
+                      force_host_assisted_migration=False,
+                      new_share_network_id=None, writable=False,
+                      preserve_metadata=False, nondisruptive=False,
+                      new_share_type_id=None, version=LATEST_MICROVERSION):
+
+        body = {
+            'migration_start': {
                 'host': host,
-                'notify': notify,
+                'force_host_assisted_migration': force_host_assisted_migration,
+                'new_share_network_id': new_share_network_id,
+                'new_share_type_id': new_share_type_id,
+                'writable': writable,
+                'preserve_metadata': preserve_metadata,
+                'nondisruptive': nondisruptive,
             }
         }
-        body = json.dumps(post_body)
+
+        body = json.dumps(body)
         return self.post('shares/%s/action' % share_id, body,
                          headers=EXPERIMENTAL, extra_headers=True,
                          version=version)
@@ -997,9 +1066,10 @@ class SharesV2Client(shares_client.SharesClient):
             action_name: None,
         }
         body = json.dumps(post_body)
-        return self.post('shares/%s/action' % share_id, body,
-                         headers=EXPERIMENTAL, extra_headers=True,
-                         version=version)
+        result = self.post('shares/%s/action' % share_id, body,
+                           headers=EXPERIMENTAL, extra_headers=True,
+                           version=version)
+        return json.loads(result[1])
 
     def reset_task_state(
             self, share_id, task_state, version=LATEST_MICROVERSION,
@@ -1014,22 +1084,25 @@ class SharesV2Client(shares_client.SharesClient):
                          headers=EXPERIMENTAL, extra_headers=True,
                          version=version)
 
-    def wait_for_migration_status(self, share_id, dest_host, status,
+    def wait_for_migration_status(self, share_id, dest_host, status_to_wait,
                                   version=LATEST_MICROVERSION):
         """Waits for a share to migrate to a certain host."""
+        statuses = ((status_to_wait,)
+                    if not isinstance(status_to_wait, (tuple, list, set))
+                    else status_to_wait)
         share = self.get_share(share_id, version=version)
         migration_timeout = CONF.share.migration_timeout
         start = int(time.time())
-        while share['task_state'] != status:
+        while share['task_state'] not in statuses:
             time.sleep(self.build_interval)
             share = self.get_share(share_id, version=version)
-            if share['task_state'] == status:
-                return share
+            if share['task_state'] in statuses:
+                break
             elif share['task_state'] == 'migration_error':
                 raise share_exceptions.ShareMigrationException(
                     share_id=share['id'], src=share['host'], dest=dest_host)
             elif int(time.time()) - start >= migration_timeout:
-                message = ('Share %(share_id)s failed to reach status '
+                message = ('Share %(share_id)s failed to reach a status in'
                            '%(status)s when migrating from host %(src)s to '
                            'host %(dest)s within the required time '
                            '%(timeout)s.' % {
@@ -1037,9 +1110,10 @@ class SharesV2Client(shares_client.SharesClient):
                                'dest': dest_host,
                                'share_id': share['id'],
                                'timeout': self.build_timeout,
-                               'status': status,
+                               'status': six.text_type(statuses),
                            })
                 raise exceptions.TimeoutException(message)
+        return share
 
 ################
 

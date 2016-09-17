@@ -18,6 +18,7 @@ import os
 import mock
 
 from manila.data import utils as data_utils
+from manila import exception
 from manila import test
 from manila import utils
 
@@ -32,6 +33,7 @@ class CopyClassTestCase(test.TestCase):
         self._copy.total_size = 10000
         self._copy.current_size = 100
         self._copy.current_copy = {'file_path': '/fake/path', 'size': 100}
+        self._copy.check_hash = True
 
         self.mock_log = self.mock_object(data_utils, 'LOG')
 
@@ -45,6 +47,7 @@ class CopyClassTestCase(test.TestCase):
                          mock.Mock(return_value=("100", "")))
 
         # run
+        self._copy.initialized = True
         out = self._copy.get_progress()
 
         # asserts
@@ -53,11 +56,34 @@ class CopyClassTestCase(test.TestCase):
         utils.execute.assert_called_once_with("stat", "-c", "%s", "/fake/path",
                                               run_as_root=True)
 
-    def test_get_progress_current_copy_none(self):
-        self._copy.current_copy = None
+    def test_get_progress_not_initialized(self):
+        expected = {'total_progress': 0}
+
+        # run
+        self._copy.initialized = False
+        out = self._copy.get_progress()
+
+        # asserts
+        self.assertEqual(expected, out)
+
+    def test_get_progress_completed_empty(self):
         expected = {'total_progress': 100}
 
         # run
+        self._copy.initialized = True
+        self._copy.completed = True
+        self._copy.total_size = 0
+        out = self._copy.get_progress()
+
+        # asserts
+        self.assertEqual(expected, out)
+
+    def test_get_progress_current_copy_none(self):
+        self._copy.current_copy = None
+        expected = {'total_progress': 0}
+
+        # run
+        self._copy.initialized = True
         out = self._copy.get_progress()
 
         # asserts
@@ -74,6 +100,7 @@ class CopyClassTestCase(test.TestCase):
             mock.Mock(side_effect=utils.processutils.ProcessExecutionError()))
 
         # run
+        self._copy.initialized = True
         out = self._copy.get_progress()
 
         # asserts
@@ -168,12 +195,16 @@ class CopyClassTestCase(test.TestCase):
                   "",
                   ("", ""),
                   ("10000", ""),
+                  "",
                   ""]
 
         def get_output(*args, **kwargs):
             return values.pop(0)
 
         # mocks
+        self.mock_object(data_utils, '_validate_item',
+                         mock.Mock(side_effect=[exception.ShareDataCopyFailed(
+                             reason='fake'), None]))
         self.mock_object(utils, 'execute', mock.Mock(
             side_effect=get_output))
         self.mock_object(self._copy, 'get_progress')
@@ -196,7 +227,24 @@ class CopyClassTestCase(test.TestCase):
                       os.path.join(self._copy.src, "file1"), run_as_root=True),
             mock.call("cp", "-P", "--preserve=all",
                       os.path.join(self._copy.src, "file1"),
+                      os.path.join(self._copy.dest, "file1"),
+                      run_as_root=True),
+            mock.call("cp", "-P", "--preserve=all",
+                      os.path.join(self._copy.src, "file1"),
                       os.path.join(self._copy.dest, "file1"), run_as_root=True)
+        ])
+
+    def test__validate_item(self):
+
+        self.mock_object(utils, 'execute', mock.Mock(
+            side_effect=[("abcxyz", ""), ("defrst", "")]))
+
+        self.assertRaises(exception.ShareDataCopyFailed,
+                          data_utils._validate_item, 'src', 'dest')
+
+        utils.execute.assert_has_calls([
+            mock.call("sha256sum", "src", run_as_root=True),
+            mock.call("sha256sum", "dest", run_as_root=True),
         ])
 
     def test_copy_data_cancelled_1(self):

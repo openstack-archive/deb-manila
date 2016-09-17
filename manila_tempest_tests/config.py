@@ -34,7 +34,7 @@ ShareGroup = [
                help="The minimum api microversion is configured to be the "
                     "value of the minimum microversion supported by Manila."),
     cfg.StrOpt("max_api_microversion",
-               default="2.18",
+               default="2.22",
                help="The maximum api microversion is configured to be the "
                     "value of the latest microversion supported by Manila."),
     cfg.StrOpt("region",
@@ -56,6 +56,15 @@ ShareGroup = [
                 help="This option used to determine backend driver type, "
                      "multitenant driver uses share-networks, but "
                      "single-tenant doesn't."),
+    cfg.BoolOpt("create_networks_when_multitenancy_enabled",
+                default=True,
+                help="This option is used only when other "
+                     "'multitenancy_enabled' option is set to 'True'. "
+                     "If this one is set to True, then tempest will create "
+                     "neutron networks for each new manila share-network "
+                     "it creates. Else it will use manila share-networks with "
+                     "empty values (case of StandAloneNetworkPlugin and "
+                     "NeutronSingleNetworkPlugin)."),
     cfg.ListOpt("enable_protocols",
                 default=["nfs", "cifs"],
                 help="First value of list is protocol by default, "
@@ -159,9 +168,19 @@ ShareGroup = [
                 help="Defines whether to run replication tests or not. "
                      "Enable this feature if the driver is configured "
                      "for replication."),
-    cfg.BoolOpt("run_migration_tests",
+    cfg.BoolOpt("run_multiple_share_replicas_tests",
+                default=True,
+                help="Defines whether to run multiple replicas creation test "
+                     "or not. Enable this if the driver can create more than "
+                     "one replica for a share."),
+    cfg.BoolOpt("run_host_assisted_migration_tests",
+                deprecated_name="run_migration_tests",
                 default=False,
-                help="Enable or disable migration tests."),
+                help="Enable or disable host-assisted migration tests."),
+    cfg.BoolOpt("run_driver_assisted_migration_tests",
+                deprecated_name="run_migration_tests",
+                default=False,
+                help="Enable or disable driver-assisted migration tests."),
     cfg.BoolOpt("run_manage_unmanage_tests",
                 default=False,
                 help="Defines whether to run manage/unmanage tests or not. "
