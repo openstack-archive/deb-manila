@@ -32,8 +32,7 @@ from manila.common import constants as const
 from manila import compute
 from manila import context
 from manila import exception
-from manila.i18n import _
-from manila.i18n import _LW
+from manila.i18n import _, _LW
 from manila.network.linux import ip_lib
 from manila.network.neutron import api as neutron
 from manila import utils
@@ -948,6 +947,8 @@ class NeutronNetworkHelper(BaseNetworkhelper):
                 device.route.clear_outdated_routes(subnet['cidr'])
             self._plug_interface_in_host(interface_name, device, port)
 
+    @utils.synchronized("service_instance_plug_interface_in_host",
+                        external=True)
     def _plug_interface_in_host(self, interface_name, device, port):
 
         self.vif_driver.plug(interface_name, port['id'], port['mac_address'])
@@ -966,8 +967,6 @@ class NeutronNetworkHelper(BaseNetworkhelper):
         # here we are checking for garbage devices from removed service port
         self._remove_outdated_interfaces(device)
 
-    @utils.synchronized(
-        "service_instance_remove_outdated_interfaces", external=True)
     def _remove_outdated_interfaces(self, device):
         """Finds and removes unused network device."""
         device_cidr_set = self._get_set_of_device_cidrs(device)

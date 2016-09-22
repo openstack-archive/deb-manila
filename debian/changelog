@@ -1,4 +1,4 @@
-manila (1:3.0.0~b3-1) experimental; urgency=medium
+manila (1:3.0.0~rc1-1) experimental; urgency=medium
 
   * New upstream release.
   * Fixed (build-)depends for this release.

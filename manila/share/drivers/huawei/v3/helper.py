@@ -25,9 +25,7 @@ from six.moves import http_cookiejar
 from six.moves.urllib import request as urlreq  # pylint: disable=E0611
 
 from manila import exception
-from manila.i18n import _
-from manila.i18n import _LE
-from manila.i18n import _LW
+from manila.i18n import _, _LE, _LW
 from manila.share.drivers.huawei import constants
 from manila import utils
 
@@ -216,7 +214,7 @@ class RestHelper(object):
 
         except Exception as err:
             LOG.error(_LE('Bad response from change file: %s.') % err)
-            raise err
+            raise
 
     def create_share(self, share_name, fs_id, share_proto):
         """Create a share."""

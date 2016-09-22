@@ -23,9 +23,7 @@ import six
 import time
 
 from manila import exception
-from manila.i18n import _
-from manila.i18n import _LE
-from manila.i18n import _LW
+from manila.i18n import _, _LE, _LW
 from manila import utils as mutils
 
 LOG = log.getLogger(__name__)
@@ -67,7 +65,12 @@ class HNASSSHBackend(object):
         path = '/shares/' + share_id
         command = ['nfs-export', 'add', '-S', 'disable', '-c', '127.0.0.1',
                    path, self.fs_name, path]
-        self._execute(command)
+        try:
+            self._execute(command)
+        except processutils.ProcessExecutionError:
+            msg = _("Could not create NFS export %s.") % share_id
+            LOG.exception(msg)
+            raise exception.HNASBackendException(msg=msg)
 
     def nfs_export_del(self, share_id):
         path = '/shares/' + share_id
@@ -87,7 +90,12 @@ class HNASSSHBackend(object):
         path = r'\\shares\\' + share_id
         command = ['cifs-share', 'add', '-S', 'disable', '--enable-abe',
                    '--nodefaultsaa', share_id, self.fs_name, path]
-        self._execute(command)
+        try:
+            self._execute(command)
+        except processutils.ProcessExecutionError:
+            msg = _("Could not create CIFS share %s.") % share_id
+            LOG.exception(msg)
+            raise exception.HNASBackendException(msg=msg)
 
     def cifs_share_del(self, share_id):
         command = ['cifs-share', 'del', '--target-label', self.fs_name,
@@ -254,7 +262,7 @@ class HNASSSHBackend(object):
             else:
                 msg = six.text_type(e)
                 LOG.exception(msg)
-                raise e
+                raise
 
     def create_directory(self, dest_path):
         self._locked_selectfs('create', dest_path)
@@ -282,7 +290,7 @@ class HNASSSHBackend(object):
             if 'file system is already mounted' not in e.stderr:
                 msg = six.text_type(e)
                 LOG.exception(msg)
-                raise e
+                raise
 
     def vvol_create(self, vvol_name):
         # create a virtual-volume inside directory
@@ -504,7 +512,7 @@ class HNASSSHBackend(object):
                 else:
                     msg = six.text_type(e)
                     LOG.exception(msg)
-                    raise e
+                    raise
 
 
 class Export(object):

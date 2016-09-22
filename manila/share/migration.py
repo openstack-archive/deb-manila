@@ -21,8 +21,7 @@ from oslo_log import log
 
 from manila.common import constants
 from manila import exception
-from manila.i18n import _
-from manila.i18n import _LW
+from manila.i18n import _, _LW
 from manila.share import api as share_api
 import manila.utils as utils
 
@@ -194,6 +193,10 @@ class ShareMigrationHelper(object):
         if len(rules) > 0:
             LOG.debug("Restoring all of share %s access rules according to "
                       "DB.", self.share['id'])
+
+            # refresh share instance
+            new_share_instance = self.db.share_instance_get(
+                self.context, new_share_instance['id'], with_share_data=True)
 
             self.api.allow_access_to_instance(self.context, new_share_instance,
                                               rules)

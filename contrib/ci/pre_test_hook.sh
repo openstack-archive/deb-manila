@@ -68,6 +68,7 @@ fi
 # Set MANILA_ADMIN_NET_RANGE for admin_network and data_service IP
 echo "MANILA_ADMIN_NET_RANGE=${MANILA_ADMIN_NET_RANGE:=10.2.5.0/24}" >> $localrc_path
 echo "MANILA_DATA_NODE_IP=${MANILA_DATA_NODE_IP:=$MANILA_ADMIN_NET_RANGE}" >> $localrc_path
+echo "MANILA_DATA_COPY_CHECK_HASH=${MANILA_DATA_COPY_CHECK_HASH:=True}" >> $localrc_path
 
 # Share Migration CI tests migration_continue period task interval
 echo "MANILA_SHARE_MIGRATION_PERIOD_TASK_INTERVAL=${MANILA_SHARE_MIGRATION_PERIOD_TASK_INTERVAL:=5}" >> $localrc_path
@@ -141,7 +142,7 @@ elif [[ "$DRIVER" == "zfsonlinux" ]]; then
     # replication tests run faster. The default is 300, which is greater than
     # the build timeout for ZFS on the gate.
     echo "MANILA_REPLICA_STATE_UPDATE_INTERVAL=60" >> $localrc_path
-    echo "MANILA_ZFSONLINUX_USE_SSH=False" >> $localrc_path
+    echo "MANILA_ZFSONLINUX_USE_SSH=True" >> $localrc_path
 elif [[ "$DRIVER" == "container" ]]; then
     echo "SHARE_DRIVER=manila.share.drivers.container.driver.ContainerShareDriver" >> $localrc_path
     echo "SHARE_BACKING_FILE_SIZE=32000M" >> $localrc_path
