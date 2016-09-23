@@ -16,6 +16,7 @@ Build-Depends: debhelper (>= 9),
                python-sphinx,
 Build-Depends-Indep: alembic (>= 0.8.4),
                      git,
+                     ipython,
                      python-babel (>= 2.3.4),
                      python-bashate,
                      python-cinderclient (>= 1:1.6.0),
@@ -72,7 +73,6 @@ Build-Depends-Indep: alembic (>= 0.8.4),
                      subunit,
                      testrepository,
 Build-Conflicts: bpython,
-                 ipython,
 Standards-Version: 3.9.8
 Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-manila
 Vcs-Git: https://git.openstack.org/openstack/deb-manila
