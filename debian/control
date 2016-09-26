@@ -74,8 +74,8 @@ Build-Depends-Indep: alembic (>= 0.8.4),
 Build-Conflicts: bpython,
                  ipython,
 Standards-Version: 3.9.8
-Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-manila
-Vcs-Git: https://git.openstack.org/openstack/deb-manila
+Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-manila?h=debian%2Fnewton
+Vcs-Git: https://git.openstack.org/openstack/deb-manila -b debian/newton
 Homepage: https://github.com/openstack/manila
 
 Package: python-manila
