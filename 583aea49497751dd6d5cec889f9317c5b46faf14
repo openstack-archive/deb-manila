@@ -1,0 +1,11 @@
+Code-Review+2: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Code-Review+1: Ha Van Tu <tuhv@vn.fujitsu.com>
+Code-Review+1: Yingzhe Zeng <zengyingzhe@huawei.com>
+Code-Review+2: Tom Barron <tpb@dyncloud.net>
+Workflow+1: Tom Barron <tpb@dyncloud.net>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 29 Sep 2016 11:00:53 +0000
+Reviewed-on: https://review.openstack.org/367726
+Project: openstack/deb-manila
+Branch: refs/heads/master
