@@ -1,0 +1,9 @@
+Code-Review+2: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Code-Review+2: xing-yang <xing.yang@emc.com>
+Workflow+1: xing-yang <xing.yang@emc.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 29 Sep 2016 21:44:26 +0000
+Reviewed-on: https://review.openstack.org/378839
+Project: openstack/deb-manila
+Branch: refs/heads/master
