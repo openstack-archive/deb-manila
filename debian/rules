@@ -22,10 +22,12 @@ override_dh_auto_install:
 		--namespace manila \
 		--namespace oslo.messaging \
 		--namespace oslo.middleware.cors \
+		--namespace oslo.middleware.http_proxy_to_wsgi \
 		--namespace oslo.db \
 		--namespace oslo.db.concurrency \
 		--namespace keystonemiddleware.auth_token \
 		--output-file $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf
+
 	pkgos-fix-config-default $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf keystone_authtoken auth_protocol http
 	pkgos-fix-config-default $(CURDIR)/debian/manila-common/usr/share/manila-common/manila.conf oslo_concurrency lock_path /var/lock/manila
 
