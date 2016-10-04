@@ -1,13 +1,13 @@
 # Italian description of manila debconf messages.
-# Copyright (C) 2012, manila package copyright holder.
+# Copyright (C) 2016, manila package copyright holder.
 # This file is distributed under the same license as the manila package.
-# Beatrice Torracca <beatricet@libero.it>, 2012, 2013, 2014.
+# Beatrice Torracca <beatricet@libero.it>, 2012, 2013, 2014, 2016.
 msgid ""
 msgstr ""
 "Project-Id-Version: manila\n"
 "Report-Msgid-Bugs-To: manila@packages.debian.org\n"
 "POT-Creation-Date: 2016-03-29 13:41+0000\n"
-"PO-Revision-Date: 2014-04-21 10:03+0200\n"
+"PO-Revision-Date: 2016-09-21 18:31+0200\n"
 "Last-Translator: Beatrice Torracca <beatricet@libero.it>\n"
 "Language-Team: Italian <debian-l10n-italian@lists.debian.org>\n"
 "Language: it\n"
@@ -26,7 +26,6 @@ msgstr "Impostare un database per Manila?"
 #. Type: boolean
 #. Description
 #: ../manila-common.templates:2001
-#, fuzzy
 #| msgid ""
 #| "No database has been set up for manila-registry or glance-api to use. "
 #| "Before continuing, you should make sure you have the following "
@@ -35,9 +34,8 @@ msgid ""
 "No database has been set up for Manila to use. Before continuing, you should "
 "make sure you have the following information:"
 msgstr ""
-"Non è stato impostato alcun database per essere usato da manila-registry o "
-"manila-api. Prima di continuare assicurarsi di avere le seguenti "
-"informazioni:"
+"Non è stato impostato alcun database per l'uso da parte di Manila. Prima di "
+"continuare, assicurarsi di avere le seguenti informazioni:"
 
 #. Type: boolean
 #. Description
@@ -67,7 +65,6 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../manila-common.templates:2001
-#, fuzzy
 #| msgid ""
 #| "You can change this setting later on by running \"dpkg-reconfigure -plow "
 #| "manila-common\"."
@@ -76,7 +73,7 @@ msgid ""
 "manila\"."
 msgstr ""
 "È possibile cambiare questa impostazione successivamente eseguendo «dpkg-"
-"reconfigure -plow manila-common»."
+"reconfigure -plow manila»."
 
 #. Type: string
 #. Description
@@ -87,7 +84,6 @@ msgstr "Nome host del server di autenticazione:"
 #. Type: string
 #. Description
 #: ../manila-common.templates:3001
-#, fuzzy
 #| msgid ""
 #| "Please specify the hostname of the authentication server for Manila. "
 #| "Typically this is also the hostname of the OpenStack Identity Service "
@@ -96,8 +92,8 @@ msgid ""
 "Please specify the hostname of the authentication server. Typically this is "
 "also the hostname of the OpenStack Identity Service (Keystone)."
 msgstr ""
-"Specificare il nome host del server di autenticazione per Manila. "
-"Tipicamente, è anche il nome host dell'OpenStack Identity Service (Keystone)."
+"Specificare il nome host del server di autenticazione. Tipicamente, è anche "
+"il nome host dell'OpenStack Identity Service (Keystone)."
 
 #. Type: string
 #. Description
@@ -223,7 +219,6 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../manila-api.templates:2001
-#, fuzzy
 #| msgid ""
 #| "Note that you will need to have an up and running Keystone server on "
 #| "which to connect using the Keystone authentication token."
@@ -233,7 +228,9 @@ msgid ""
 "The admin auth token is not used anymore."
 msgstr ""
 "Notare che sarà necessario avere un server Keystone in funzione a cui "
-"connettersi usando il token di autenticazione Keystone."
+"connettersi usando un nome di progetto di amministrazione conosciuto, un "
+"nome utente e password di amministratore. Il token di autenticazione di "
+"amministratore non è più usato."
 
 #. Type: string
 #. Description
@@ -255,10 +252,9 @@ msgstr ""
 #. Type: string
 #. Description
 #: ../manila-api.templates:4001
-#, fuzzy
 #| msgid "Keystone authentication token:"
 msgid "Keystone admin name:"
-msgstr "Token di autenticazione Keystone:"
+msgstr "Nome amministratore Keystone:"
 
 #. Type: string
 #. Description
@@ -272,18 +268,21 @@ msgid ""
 "To register the service endpoint, this package needs to know the Admin "
 "login, name, project name, and password to the Keystone server."
 msgstr ""
+"Per registrare il punto terminale del servizio questo pacchetto deve "
+"conoscere il login, il nome, il nome del progetto e la password "
+"dell'amministratore per il server Keystone."
 
 #. Type: string
 #. Description
 #: ../manila-api.templates:5001
 msgid "Keystone admin project name:"
-msgstr ""
+msgstr "Nome del progetto di amministrazione Keystone:"
 
 #. Type: password
 #. Description
 #: ../manila-api.templates:6001
 msgid "Keystone admin password:"
-msgstr ""
+msgstr "Password amministratore Keystone:"
 
 #. Type: string
 #. Description
@@ -326,75 +325,3 @@ msgstr ""
 "OpenStack gestisce le zone di disponibilità, con ogni regione che "
 "rappresenta una posizione. Inserire la zona che si desidera usare durante la "
 "registrazione del punto terminale."
-
-#~ msgid ""
-#~ "To configure its endpoint in Keystone, manila-api needs the Keystone "
-#~ "authentication token."
-#~ msgstr ""
-#~ "Per configurare il proprio punto terminale in Keystone, manila-api ha "
-#~ "bisogno del token di autenticazione Keystone."
-
-#~ msgid "keystone"
-#~ msgstr "keystone"
-
-#~ msgid "caching"
-#~ msgstr "caching"
-
-#~ msgid "keystone+caching"
-#~ msgstr "keystone+caching"
-
-#~ msgid "cachemanagement"
-#~ msgstr "cachemanagement"
-
-#~ msgid "keystone+cachemanagement"
-#~ msgstr "keystone+cachemanagement"
-
-#~ msgid "Pipeline flavor:"
-#~ msgstr "Tipo di pipeline:"
-
-#~| msgid "Please specify the flavor of pipeline to be used by Manila."
-#~ msgid "Please specify the flavor of the pipeline to be used by Manila."
-#~ msgstr "Specificare il tipo di pipeline da usare con Manila."
-
-#~ msgid ""
-#~ "If you use the OpenStack Identity Service (Keystone), you might want to "
-#~ "select \"keystone\". If you don't use this service, you can safely choose "
-#~ "\"caching\" only."
-#~ msgstr ""
-#~ "Se si usa OpenStack Identity Service (Keystone) si può selezionare "
-#~ "«keystone». Se non si usa questo servizio, si può senza problemi "
-#~ "scegliere semplicemente «caching»."
-
-#~ msgid "Set up a database for manila-registry?"
-#~ msgstr "Impostare un database per manila-registry?"
-
-#~ msgid ""
-#~ "No database has been set up for manila-registry to use. Before "
-#~ "continuing, you should make sure you have:"
-#~ msgstr ""
-#~ "Non è stato impostato alcun database per essere usato da manila-registry. "
-#~ "Prima di continuare ci si dovrebbe assicurare di avere:"
-
-#~ msgid ""
-#~ " - the server host name (that server must allow TCP connections\n"
-#~ "   from this machine);\n"
-#~ " - a username and password to access the database.\n"
-#~ " - A database type that you want to use."
-#~ msgstr ""
-#~ " - il nome host del server (tale server deve permettere le connessioni\n"
-#~ "   TCP da questo macchina);\n"
-#~ " - un nome utente e una password per accedere al database;\n"
-#~ " - un tipo di database che si desidera usare."
-
-#~ msgid ""
-#~ "You can change this setting later on by running 'dpkg-reconfigure -plow "
-#~ "manila-registry"
-#~ msgstr ""
-#~ "È possibile cambiare questa impostazione successivamente eseguendo \"dpkg-"
-#~ "reconfigure -plow manila-registry\""
-
-#~ msgid "Auth server URL:"
-#~ msgstr "URL del server di autenticazione:"
-
-#~ msgid "Auth server admin token:"
-#~ msgstr "Token di ammnistrazione del server di autenticazione:"
