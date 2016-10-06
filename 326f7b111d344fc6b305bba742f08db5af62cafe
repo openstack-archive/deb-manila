@@ -1,0 +1,10 @@
+Code-Review+2: Tom Barron <tpb@dyncloud.net>
+Code-Review+1: Goutham Pacha Ravi <gouthampravi@gmail.com>
+Code-Review+2: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Workflow+1: Tom Barron <tpb@dyncloud.net>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 05 Oct 2016 11:45:47 +0000
+Reviewed-on: https://review.openstack.org/381022
+Project: openstack/deb-manila
+Branch: refs/heads/master
