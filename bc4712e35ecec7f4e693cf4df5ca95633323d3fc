@@ -1,0 +1,11 @@
+Code-Review+2: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Code-Review+1: zhongjun <jun.zhongjun2@gmail.com>
+Code-Review+2: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Code-Review+2: xing-yang <xing.yang@emc.com>
+Workflow+1: xing-yang <xing.yang@emc.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 12 Oct 2016 20:17:19 +0000
+Reviewed-on: https://review.openstack.org/359491
+Project: openstack/deb-manila
+Branch: refs/heads/master
