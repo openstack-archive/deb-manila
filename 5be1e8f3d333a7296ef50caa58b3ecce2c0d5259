@@ -1,0 +1,10 @@
+Code-Review+2: Ben Swartzlander <ben@swartzlander.org>
+Code-Review+1: Goutham Pacha Ravi <gouthampravi@gmail.com>
+Code-Review+2: Mark Sturdevant <mark.sturdevant@ibm.com>
+Workflow+1: Mark Sturdevant <mark.sturdevant@ibm.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 19 Oct 2016 17:24:30 +0000
+Reviewed-on: https://review.openstack.org/383795
+Project: openstack/deb-manila
+Branch: refs/heads/master
