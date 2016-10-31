@@ -1,0 +1,9 @@
+Code-Review+2: Clinton Knight <cknight@netapp.com>
+Code-Review+2: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Workflow+1: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 31 Oct 2016 17:01:34 +0000
+Reviewed-on: https://review.openstack.org/389415
+Project: openstack/deb-manila
+Branch: refs/heads/master
