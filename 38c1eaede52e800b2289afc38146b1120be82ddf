@@ -1,0 +1,11 @@
+Code-Review+1: Goutham Pacha Ravi <gouthampravi@gmail.com>
+Code-Review+1: Yingzhe Zeng <zengyingzhe@huawei.com>
+Code-Review+2: Clinton Knight <cknight@netapp.com>
+Code-Review+2: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Workflow+1: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 01 Nov 2016 11:17:03 +0000
+Reviewed-on: https://review.openstack.org/390773
+Project: openstack/deb-manila
+Branch: refs/heads/master
