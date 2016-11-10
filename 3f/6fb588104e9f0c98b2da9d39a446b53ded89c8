@@ -1,0 +1,10 @@
+Code-Review+2: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Code-Review+1: Yingzhe Zeng <zengyingzhe@huawei.com>
+Code-Review+2: Ben Swartzlander <ben@swartzlander.org>
+Workflow+1: Ben Swartzlander <ben@swartzlander.org>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 10 Nov 2016 19:10:38 +0000
+Reviewed-on: https://review.openstack.org/393271
+Project: openstack/deb-manila
+Branch: refs/heads/master
