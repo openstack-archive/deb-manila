@@ -1,0 +1,10 @@
+Code-Review+2: Mark Sturdevant <mark.sturdevant@ibm.com>
+Code-Review+1: Marc Koderer <marc@koderer.com>
+Code-Review+2: Tom Barron <tpb@dyncloud.net>
+Workflow+1: Tom Barron <tpb@dyncloud.net>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 11 Nov 2016 13:40:54 +0000
+Reviewed-on: https://review.openstack.org/386627
+Project: openstack/deb-manila
+Branch: refs/heads/master
