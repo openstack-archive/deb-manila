@@ -1,0 +1,11 @@
+Code-Review+2: Tom Barron <tpb@dyncloud.net>
+Code-Review+1: Victoria Martinez de la Cruz <victoria@redhat.com>
+Code-Review+1: Yingzhe Zeng <zengyingzhe@huawei.com>
+Code-Review+2: Thomas Bechtold <tbechtold@suse.com>
+Workflow+1: Thomas Bechtold <tbechtold@suse.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 17 Nov 2016 08:53:58 +0000
+Reviewed-on: https://review.openstack.org/398564
+Project: openstack/deb-manila
+Branch: refs/heads/master
