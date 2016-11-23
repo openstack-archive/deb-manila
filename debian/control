@@ -5,7 +5,7 @@ Maintainer: PKG OpenStack <openstack-devel@lists.alioth.debian.org>
 Uploaders: Malihe Asemani <ml.asemani@gmail.com>,
            Andreas Tille <andreas@an3as.eu>,
            Thomas Goirand <zigo@debian.org>,
-Build-Depends: debhelper (>= 9),
+Build-Depends: debhelper (>= 10),
                dh-python,
                dh-systemd,
                openstack-pkg-tools (>= 53~),
@@ -159,6 +159,7 @@ Depends: adduser,
          manila-common (= ${binary:Version}),
          python-openstackclient,
          q-text-as-data,
+         lsb-base,
          ${misc:Depends},
          ${python:Depends},
 Description: OpenStack shared file system as a service - API server
@@ -176,6 +177,7 @@ Description: OpenStack shared file system as a service - API server
 Package: manila-scheduler
 Architecture: all
 Depends: manila-common (= ${binary:Version}),
+         lsb-base,
          ${misc:Depends},
          ${python:Depends},
 Description: OpenStack shared file system as a service - Scheduler server
@@ -193,6 +195,7 @@ Description: OpenStack shared file system as a service - Scheduler server
 Package: manila-share
 Architecture: all
 Depends: manila-common (= ${binary:Version}),
+         lsb-base,
          ${misc:Depends},
          ${python:Depends},
 Description: OpenStack shared file system as a service - Share server
