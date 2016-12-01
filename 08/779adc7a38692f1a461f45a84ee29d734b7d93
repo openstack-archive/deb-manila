@@ -1,0 +1,11 @@
+Code-Review+1: xing-yang <xing.yang@emc.com>
+Code-Review+1: Tom Barron <tpb@dyncloud.net>
+Code-Review+1: Mark Sturdevant <mark.sturdevant@ibm.com>
+Code-Review+2: Ben Swartzlander <ben@swartzlander.org>
+Workflow+1: Ben Swartzlander <ben@swartzlander.org>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 30 Nov 2016 20:35:20 +0000
+Reviewed-on: https://review.openstack.org/404700
+Project: openstack/deb-manila
+Branch: refs/heads/stable/newton
