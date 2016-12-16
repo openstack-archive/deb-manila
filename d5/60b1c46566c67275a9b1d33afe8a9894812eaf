@@ -1,0 +1,9 @@
+Code-Review+2: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Code-Review+2: Mark Sturdevant <mark.sturdevant@ibm.com>
+Workflow+1: Mark Sturdevant <mark.sturdevant@ibm.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 15 Dec 2016 22:44:13 +0000
+Reviewed-on: https://review.openstack.org/408275
+Project: openstack/deb-manila
+Branch: refs/heads/master
