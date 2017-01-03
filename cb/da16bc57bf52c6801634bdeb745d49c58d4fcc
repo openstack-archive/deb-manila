@@ -1,0 +1,9 @@
+Code-Review+2: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Code-Review+2: Thomas Bechtold <tbechtold@suse.com>
+Workflow+1: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 03 Jan 2017 14:55:25 +0000
+Reviewed-on: https://review.openstack.org/409950
+Project: openstack/deb-manila
+Branch: refs/heads/master
