@@ -1,0 +1,9 @@
+Code-Review+2: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Code-Review+2: xing-yang <xing.yang@emc.com>
+Workflow+1: xing-yang <xing.yang@emc.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 13 Jan 2017 14:49:27 +0000
+Reviewed-on: https://review.openstack.org/419746
+Project: openstack/deb-manila
+Branch: refs/heads/master
