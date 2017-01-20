@@ -1,0 +1,10 @@
+Code-Review+1: Tom Barron <tpb@dyncloud.net>
+Code-Review+2: xing-yang <xing.yang@emc.com>
+Code-Review+2: Clinton Knight <cknight@netapp.com>
+Workflow+1: Clinton Knight <cknight@netapp.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 20 Jan 2017 00:04:56 +0000
+Reviewed-on: https://review.openstack.org/318336
+Project: openstack/deb-manila
+Branch: refs/heads/master
