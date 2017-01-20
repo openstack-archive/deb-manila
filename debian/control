@@ -159,7 +159,7 @@ Depends: adduser,
          manila-common (= ${binary:Version}),
          python-openstackclient,
          q-text-as-data,
-         lsb-base,
+         ${ostack-lsb-base},
          ${misc:Depends},
          ${python:Depends},
 Description: OpenStack shared file system as a service - API server
@@ -177,7 +177,7 @@ Description: OpenStack shared file system as a service - API server
 Package: manila-scheduler
 Architecture: all
 Depends: manila-common (= ${binary:Version}),
-         lsb-base,
+         ${ostack-lsb-base},
          ${misc:Depends},
          ${python:Depends},
 Description: OpenStack shared file system as a service - Scheduler server
@@ -195,7 +195,7 @@ Description: OpenStack shared file system as a service - Scheduler server
 Package: manila-share
 Architecture: all
 Depends: manila-common (= ${binary:Version}),
-         lsb-base,
+         ${ostack-lsb-base},
          ${misc:Depends},
          ${python:Depends},
 Description: OpenStack shared file system as a service - Share server
