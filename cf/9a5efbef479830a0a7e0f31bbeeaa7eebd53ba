@@ -1,0 +1,17 @@
+Code-Review+2: Goutham Pacha Ravi <gouthampravi@gmail.com>
+Code-Review+1: Adriano Freires Rosso <adriano.rosso@fit-tecnologia.org.br>
+Code-Review+1: José Mello <jose.eduardo.jr@gmail.com>
+Code-Review+1: Lucio Seki <lucioseki@gmail.com>
+Code-Review+1: Tiago Pasqualini da Silva <tiago.pasqualini@gmail.com>
+Code-Review+1: Miriam Yumi <miriamyume@gmail.com>
+Code-Review+1: Tom Barron <tpb@dyncloud.net>
+Code-Review+1: Thiago Liberati <thiago.mliberati@gmail.com>
+Code-Review+1: Clinton Knight <cknight@netapp.com>
+Code-Review+2: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Workflow+1: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 23 Jan 2017 12:04:24 +0000
+Reviewed-on: https://review.openstack.org/411923
+Project: openstack/deb-manila
+Branch: refs/heads/master
