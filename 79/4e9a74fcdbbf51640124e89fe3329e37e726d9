@@ -1,0 +1,10 @@
+Code-Review+1: xing-yang <xing.yang@emc.com>
+Code-Review+2: Goutham Pacha Ravi <gouthampravi@gmail.com>
+Code-Review+2: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Workflow+1: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 24 Jan 2017 20:43:27 +0000
+Reviewed-on: https://review.openstack.org/357545
+Project: openstack/deb-manila
+Branch: refs/heads/master
