@@ -1,0 +1,16 @@
+Code-Review+1: Marc Koderer <marc@koderer.com>
+Code-Review+1: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Code-Review+1: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Code-Review+1: venkatamahesh <Venkata.Kotha@infinite.com>
+Code-Review+1: xing-yang <xing.yang@emc.com>
+Code-Review+1: Mark Sturdevant <mark.sturdevant@ibm.com>
+Code-Review+1: Goutham Pacha Ravi <gouthampravi@gmail.com>
+Code-Review+1: Victoria Martinez de la Cruz <victoria@redhat.com>
+Code-Review+2: Ben Swartzlander <ben@swartzlander.org>
+Workflow+1: Ben Swartzlander <ben@swartzlander.org>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Wed, 01 Feb 2017 19:38:25 +0000
+Reviewed-on: https://review.openstack.org/373284
+Project: openstack/deb-manila
+Branch: refs/heads/stable/newton
