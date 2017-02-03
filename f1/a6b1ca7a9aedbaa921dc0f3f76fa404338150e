@@ -1,0 +1,11 @@
+Code-Review+1: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Code-Review+1: Mark Sturdevant <mark.sturdevant@ibm.com>
+Code-Review+2: Goutham Pacha Ravi <gouthampravi@gmail.com>
+Code-Review+2: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Workflow+1: Goutham Pacha Ravi <gouthampravi@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 02 Feb 2017 17:17:38 +0000
+Reviewed-on: https://review.openstack.org/427096
+Project: openstack/deb-manila
+Branch: refs/heads/master
