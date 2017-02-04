@@ -1,0 +1,10 @@
+Code-Review+2: Mark Sturdevant <mark.sturdevant@ibm.com>
+Code-Review+1: Alyson <alyson.rodrigues.rosa@gmail.com>
+Code-Review+2: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Workflow+1: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 03 Feb 2017 17:32:08 +0000
+Reviewed-on: https://review.openstack.org/427660
+Project: openstack/deb-manila
+Branch: refs/heads/master
