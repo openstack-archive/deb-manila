@@ -1,0 +1,10 @@
+Code-Review+2: Ben Swartzlander <ben@swartzlander.org>
+Code-Review+1: Rodrigo Barbieri <rodrigo.barbieri2010@gmail.com>
+Code-Review+1: Tom Barron <tpb@dyncloud.net>
+Workflow+1: Ben Swartzlander <ben@swartzlander.org>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 03 Mar 2017 20:49:44 +0000
+Reviewed-on: https://review.openstack.org/441253
+Project: openstack/deb-manila
+Branch: refs/heads/stable/ocata

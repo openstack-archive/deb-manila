@@ -1,0 +1,10 @@
+Code-Review+1: Valeriy Ponomaryov <vponomaryov@mirantis.com>
+Code-Review+2: Ben Swartzlander <ben@swartzlander.org>
+Workflow+1: Ben Swartzlander <ben@swartzlander.org>
+Code-Review+1: xing-yang <xing.yang@emc.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Sat, 04 Mar 2017 00:25:40 +0000
+Reviewed-on: https://review.openstack.org/435424
+Project: openstack/deb-manila
+Branch: refs/heads/stable/ocata
