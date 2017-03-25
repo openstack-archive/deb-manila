@@ -157,6 +157,7 @@ Package: manila-api
 Architecture: all
 Depends: adduser,
          manila-common (= ${binary:Version}),
+         net-tools,
          python-openstackclient,
          q-text-as-data,
          ${ostack-lsb-base},
