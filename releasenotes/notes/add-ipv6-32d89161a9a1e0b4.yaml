@@ -1,4 +1,0 @@
----
-features:
-  - Validation of IPv6 based addresses has been added
-    for allow access API when access type is IP.

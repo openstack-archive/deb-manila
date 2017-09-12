@@ -1,9 +1,0 @@
----
-features:
-  - Added Mountable Snapshots support to HNAS driver.
-upgrade:
-  - If using existing share types with the HNAS back end,
-    set the 'mount_snapshot_support' extra-spec to allow
-    creating shares that support mountable snapshots.
-    This modification will not affect existing shares of
-    such types.

@@ -1,4 +1,0 @@
----
-features:
-  - Added like filter support in ``shares``, ``snapshots``, ``share-networks``,
-    ``share-groups`` list APIs.

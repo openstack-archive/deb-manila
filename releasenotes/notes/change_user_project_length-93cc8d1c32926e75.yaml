@@ -1,3 +1,0 @@
----
-fixes:
-  - User_id and project_id DB fields are extended to also support LDAP setups.

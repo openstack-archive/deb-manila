@@ -1,5 +1,0 @@
----
-features:
-  - |
-    Added a periodic task which cleans up expired user messages. Cleanup
-    interval can be set by message_reap_interval config option.

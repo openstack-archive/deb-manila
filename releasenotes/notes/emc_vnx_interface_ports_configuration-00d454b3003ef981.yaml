@@ -1,5 +1,0 @@
----
-fixes:
-  - EMC VNX driver supports interface ports configuration now.
-    The ports of Data Mover that can be used by share server
-    interfaces are configurable.

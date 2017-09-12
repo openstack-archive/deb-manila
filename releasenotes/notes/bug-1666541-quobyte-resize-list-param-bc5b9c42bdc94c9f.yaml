@@ -1,3 +1,0 @@
----
-fixes:
-  - Quobyte share extend/shrink operations now work with all Quobyte API versions

@@ -1,7 +1,0 @@
-[run]
-branch = True
-source = manila
-omit = manila/test*
-
-[report]
-precision = 2

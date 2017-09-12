@@ -1,4 +1,0 @@
----
-fixes:
-  - Fixed race-condition in generic driver while updating
-    network routes in host.

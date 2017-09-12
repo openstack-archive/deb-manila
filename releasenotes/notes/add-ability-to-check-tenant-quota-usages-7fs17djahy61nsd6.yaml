@@ -1,4 +1,0 @@
----
-features:
-  - Added detail API to show user and tenant specific usages through the
-    quota-sets resource.

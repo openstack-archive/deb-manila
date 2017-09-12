@@ -1,4 +1,0 @@
----
-features:
-  - Store network gateway value in DB.
-  - Gateway is added to the JSON response of the /share-networks API.

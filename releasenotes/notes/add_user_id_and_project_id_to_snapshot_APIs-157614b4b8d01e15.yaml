@@ -1,4 +1,0 @@
----
-features:
-  - user_id and project_id fields are added to the JSON response of /snapshots
-    APIs.

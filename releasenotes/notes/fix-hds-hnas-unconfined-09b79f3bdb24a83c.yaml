@@ -1,5 +1,0 @@
----
-fixes:
-  - Crash when using unconfined filesystems in HDS HNAS driver using
-    SSH backend.
-  - HDS HNAS Driver no longer mounts unmounted filesystems automatically.

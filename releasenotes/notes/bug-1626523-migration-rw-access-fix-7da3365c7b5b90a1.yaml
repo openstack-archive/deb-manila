@@ -1,5 +1,0 @@
----
-fixes:
-  - Fixed share remaining with read/write access rules during a
-    host-assisted share migration.
-

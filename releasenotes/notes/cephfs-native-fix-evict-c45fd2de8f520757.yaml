@@ -1,3 +1,0 @@
----
-fixes:
-  - In cephfs_native driver, fixed client eviction call during access denial.

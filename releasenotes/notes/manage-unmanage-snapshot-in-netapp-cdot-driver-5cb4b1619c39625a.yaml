@@ -1,5 +1,0 @@
----
-features:
-  - Add support for snapshot manage/unmanage to the
-    NetApp cDOT driver.
-

@@ -1,4 +1,0 @@
----
-fixes:
-  - Fixed the error that share metadata records are not soft-deleted
-    when deleting a share.

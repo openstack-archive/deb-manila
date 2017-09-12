@@ -1,3 +1,0 @@
----
-fixes:
-  - Fixed the prerequisite of GPFS path export needed for initializing driver.

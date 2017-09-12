@@ -1,5 +1,0 @@
----
-fixes:
-  - Fixed HNAS driver error when creating or deleting
-    snapshots caused by concurrency in backend.
-

@@ -1,3 +1,0 @@
----
-features:
-  - Added NFS protocol support for shares backed by CephFS.

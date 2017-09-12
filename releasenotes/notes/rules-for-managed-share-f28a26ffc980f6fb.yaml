@@ -1,6 +1,0 @@
----
-fixes:
-  - Fixed HSP driver not supporting adding rules
-    that exist in backend for managed shares.
-  - Fixed HSP driver not supporting deleting share if
-    it has rules in backend that are not in Manila.

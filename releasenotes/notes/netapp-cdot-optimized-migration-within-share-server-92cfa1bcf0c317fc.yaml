@@ -1,5 +1,0 @@
----
-features:
-  - Driver assisted migration support has been added to the NetApp cDOT
-    driver to efficiently and nondisruptively migrate shares within Vservers
-    by ensuring data, snapshots and metadata.

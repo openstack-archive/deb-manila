@@ -1,4 +1,0 @@
----
-fixes:
-  - Fixed failure when reverting a share to a snapshot using the LVM driver
-    while access rules exist for that share.

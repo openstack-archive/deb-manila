@@ -1,4 +1,0 @@
----
-features:
-  - Added perodic task to clean up expired reservation
-    at manila scheduler service.

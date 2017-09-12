@@ -1,4 +1,0 @@
----
-fixes:
-  - Fixed incorrect exportfs command used while extending and shrinking
-    shares on Generic driver.

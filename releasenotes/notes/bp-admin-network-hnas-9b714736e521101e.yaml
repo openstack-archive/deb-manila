@@ -1,7 +1,0 @@
----
-features:
-  - Added admin network support to Hitachi HNAS Driver
-upgrade:
-  - Added a new config option to Hitachi HNAS Driver to
-    allow configuration of Admin Network support.
-

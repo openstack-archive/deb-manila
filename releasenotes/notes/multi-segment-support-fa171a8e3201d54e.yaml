@@ -1,3 +1,0 @@
----
-features:
-  - Added port binding support for neutron networks with multiple segments.
